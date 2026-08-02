@@ -46,9 +46,43 @@ end
 local function refresh_commands(client)
   client:request("get_commands", {}, function(success, data)
     if success and data then
-      chat_for(client.root):set_commands(data.commands or {})
+      local commands = data.commands or {}
+      client.commands_by_name = {}
+      for _, command in ipairs(commands) do
+        if command.name then
+          client.commands_by_name[command.name] = command
+        end
+      end
+      chat_for(client.root):set_commands(commands)
     end
   end)
+end
+
+local function pending_display(client, message, display)
+  if display ~= nil then
+    return { text = display }
+  end
+
+  local command_name = message:match("^/([^%s]+)")
+  if command_name then
+    local command = client.commands_by_name and client.commands_by_name[command_name] or nil
+    if not command or command.source == "extension" then
+      return nil
+    end
+  end
+  return { text = message }
+end
+
+local function remove_pending_display(queue, entry)
+  if not entry then
+    return
+  end
+  for index, candidate in ipairs(queue) do
+    if candidate == entry then
+      table.remove(queue, index)
+      return
+    end
+  end
 end
 
 local function refresh_stats(client)
@@ -106,7 +140,8 @@ local function attach(client)
       chat:render_history(event.messages)
     elseif event.type == "message_start" and event.message then
       if event.message.role == "user" then
-        local display = table.remove(display_queue, 1) or text_content(event.message.content)
+        local pending = table.remove(display_queue, 1)
+        local display = pending and pending.text or text_content(event.message.content)
         chat:add_user(display)
       elseif event.message.role == "assistant" then
         chat:start_assistant(event.message)
@@ -126,7 +161,10 @@ local function attach(client)
     elseif event.type == "queue_update" then
       chat:set_queue(event)
     elseif event.type == "extension_ui_request" then
-      dialog.handle(client, event)
+      dialog.handle(client, event, function(text)
+        chat:open(false)
+        chat:set_input(text)
+      end)
     elseif event.type == "agent_start" then
       chat:set_activity("working")
     elseif event.type == "agent_settled" then
@@ -192,7 +230,10 @@ end
 
 local function send_prompt(message, display, root, behavior)
   local client = get_client(root)
-  table.insert(client.display_queue, display or message)
+  local display_entry = pending_display(client, message, display)
+  if display_entry then
+    table.insert(client.display_queue, display_entry)
+  end
   local payload = { message = message }
   if behavior == "followUp" and (client.state == "streaming" or client.state == "compacting") then
     payload.streamingBehavior = "followUp"
@@ -201,7 +242,7 @@ local function send_prompt(message, display, root, behavior)
   end
   client:request("prompt", payload, function(success, _, err)
     if not success then
-      table.remove(client.display_queue, 1)
+      remove_pending_display(client.display_queue, display_entry)
       notify_error(err)
     end
   end)
@@ -586,9 +627,7 @@ function M.status(root)
     local output = tonumber(tokens.output) or 0
     local cache_read = tonumber(tokens.cacheRead) or 0
     local cache_hit = input + cache_read > 0 and (cache_read / (input + cache_read) * 100) or nil
-    local context_window = tonumber(usage.contextWindow)
-      and chat_ui.format_count(usage.contextWindow)
-      or "n/a"
+    local context_window = tonumber(usage.contextWindow) and chat_ui.format_count(usage.contextWindow) or "n/a"
     local auto_compaction = client.session and client.session.autoCompactionEnabled
     local cache_detail = chat_ui.format_count(cache_read)
     if cache_hit then
@@ -853,15 +892,16 @@ function M.bash(command, root)
   request_id = client:request("bash", { command = command }, function(success, data, err)
     client.bash_running = nil
     if not request_id then
+      if not success then
+        notify_error(err or "Unable to start Bash command")
+      end
       return
     end
     if not success then
       chat:end_tool(request_id, { content = { { type = "text", text = err or "Bash failed" } } }, true)
     else
-      chat:end_tool(request_id, {
-        content = { { type = "text", text = data.output or "" } },
-        details = data,
-      }, (data.exitCode or 0) ~= 0)
+      data = data or {}
+      chat:end_bash(request_id, data, (data.exitCode or 0) ~= 0)
     end
   end, 0)
   if request_id then
@@ -881,7 +921,7 @@ function M.track_buffer(bufnr)
   end
   path = vim.fs.normalize(path)
   for root, chat in pairs(chats) do
-    if path == root or vim.startswith(path, root .. "/") then
+    if context.is_within_root(root, path) then
       chat:set_path(path)
     end
   end

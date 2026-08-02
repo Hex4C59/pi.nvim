@@ -300,8 +300,7 @@ local function add_markdown(canvas, text, opts)
     local fence = line:match("^%s*```%s*(.*)$")
     local heading, heading_text = line:match("^%s*(#+)%s+(.+)$")
     local quote = line:match("^%s*>%s?(.*)$")
-    local strong_heading = line:match("^%s*%*%*([^*]+)%*%*%s*$")
-      or line:match("^%s*__([^_]+)__%s*$")
+    local strong_heading = line:match("^%s*%*%*([^*]+)%*%*%s*$") or line:match("^%s*__([^_]+)__%s*$")
     if fence then
       if code_block then
         apply_code_highlights(canvas, code_block)
@@ -321,10 +320,13 @@ local function add_markdown(canvas, text, opts)
       end
     elseif code_block then
       table.insert(code_block.lines, line)
-      table.insert(code_block.rows, canvas:add(code_block.prefix .. line, {
-        highlight = "PiMarkdownCode",
-        line_highlight = "PiCodeBg",
-      }))
+      table.insert(
+        code_block.rows,
+        canvas:add(code_block.prefix .. line, {
+          highlight = "PiMarkdownCode",
+          line_highlight = "PiCodeBg",
+        })
+      )
     elseif heading then
       add_inline_line(canvas, opts.prefix or "   ", heading_text, { highlight = "PiMarkdownHeading" })
     elseif strong_heading then
@@ -661,11 +663,7 @@ local function render_tool_header(canvas, item, opts, last_in_group)
   local status_highlight = item.error and "PiToolFailed" or pending and "PiToolRunning" or "PiToolSuccess"
   local verb = tool_verb(item)
   local subject = tool_subject(item)
-  if
-    (opts.width or 80) < 60
-    and subject ~= ""
-    and vim.tbl_contains({ "read", "write", "edit", "ls" }, item.name)
-  then
+  if (opts.width or 80) < 60 and subject ~= "" and vim.tbl_contains({ "read", "write", "edit", "ls" }, item.name) then
     subject = vim.fs.basename(subject)
   end
   if item.error then
@@ -761,14 +759,22 @@ local function render_tool(canvas, item, opts, last_in_group)
         highlight = "PiToolOmitted",
       },
     }
-  elseif
-    output ~= ""
-    and ((item.name ~= "edit" and item.name ~= "write") or item.error or #entries == 0)
-  then
+  elseif output ~= "" and ((item.name ~= "edit" and item.name ~= "write") or item.error or #entries == 0) then
     vim.list_extend(entries, output_entries(output_lines, item, expanded))
   end
 
-  local read_language = item.name == "read" and expanded and not item.error
+  local details = item.result and item.result.details or nil
+  if item.name == "bash" and details and details.truncated then
+    table.insert(entries, {
+      text = details.fullOutputPath and ("Full output: " .. details.fullOutputPath)
+        or "Streamed output preserved; final response was truncated",
+      highlight = "PiToolOmitted",
+    })
+  end
+
+  local read_language = item.name == "read"
+      and expanded
+      and not item.error
       and code_language_for_path((item.args or {}).path)
     or nil
   local code_block = read_language and { language = read_language, lines = {}, rows = {} } or nil
@@ -817,7 +823,7 @@ local process_action_labels = {
 }
 
 local function assistant_has_thinking(item)
-  for _, block in ipairs(((item.message or {}).content) or {}) do
+  for _, block in ipairs((item.message or {}).content or {}) do
     if block.type == "thinking" and vim.trim(block.thinking or "") ~= "" then
       return true
     end
@@ -921,12 +927,19 @@ end
 local function render_process_summary(canvas, summary, width)
   canvas:space()
   local prefix = "   ▸ "
-  local line = truncate_display(prefix .. summary, math.max(1, (width or 80) - 1))
+  local hint = " · Ctrl-O"
+  local available = math.max(1, (width or 80) - 1)
+  local summary_line = prefix .. summary
+  local line = vim.api.nvim_strwidth(summary_line .. hint) <= available and (summary_line .. hint)
+    or truncate_display(summary_line, available)
   local row = canvas:add(line, { highlight = "PiProcessSummary" })
   local marker_start = #"   "
   local marker_end = math.min(#prefix, #line)
   if marker_end > marker_start then
     canvas:mark(row, marker_start, marker_end, "PiProcessToggle", 140)
+  end
+  if line:sub(-#hint) == hint then
+    canvas:mark(row, #line - #hint, #line, "PiHeaderHint", 140)
   end
   return row + 1
 end
@@ -962,8 +975,6 @@ local function render_compact_process(canvas, items, first, last, opts, process_
     return
   end
 
-  local row = render_process_summary(canvas, summary, opts.width)
-  table.insert(process_ranges, { first = row, last = row })
   for index = first, last do
     local item = items[index]
     if item.type == "assistant" then
@@ -973,6 +984,37 @@ local function render_compact_process(canvas, items, first, last, opts, process_
       end
     elseif item.type == "status" then
       render_status(canvas, item)
+    end
+  end
+
+  local row = render_process_summary(canvas, summary, opts.width)
+  table.insert(process_ranges, { first = row, last = row })
+end
+
+local function process_segments(items, first, last)
+  local segments = {}
+  local segment_first = first
+  for index = first + 1, last do
+    if items[index].type == "assistant" then
+      table.insert(segments, { first = segment_first, last = index - 1 })
+      segment_first = index
+    end
+  end
+  table.insert(segments, { first = segment_first, last = last })
+  return segments
+end
+
+local function render_process_segments(canvas, items, first, last, opts, active, tool_ranges, process_ranges)
+  local segments = process_segments(items, first, last)
+  for index, segment in ipairs(segments) do
+    if active and index == #segments then
+      local detail_opts = vim.tbl_extend("force", {}, opts, {
+        hide_thinking = false,
+        tools_expanded = opts.tools_expanded == true,
+      })
+      render_item_range(canvas, items, segment.first, segment.last, detail_opts, tool_ranges)
+    else
+      render_compact_process(canvas, items, segment.first, segment.last, opts, process_ranges)
     end
   end
 end
@@ -1024,15 +1066,7 @@ local function mark_welcome_text(canvas, row, offset, visible, marks)
   end
 end
 
-local function add_welcome_split_row(
-  canvas,
-  left_width,
-  right_width,
-  left_text,
-  left_marks,
-  right_text,
-  right_marks
-)
+local function add_welcome_split_row(canvas, left_width, right_width, left_text, left_marks, right_text, right_marks)
   local left_cell, left_visible, left_padding = fit_welcome_cell(left_text, left_width, {
     align = "center",
     padding = 0,
@@ -1148,10 +1182,11 @@ local function welcome_detail(label, value, highlight)
   local label_width = 13
   local label_text = label .. string.rep(" ", math.max(1, label_width - #label))
   local text = label_text .. value
-  return text, {
-    { start_col = 0, end_col = #label_text, highlight = "PiWelcomeLabel" },
-    { start_col = #label_text, end_col = #text, highlight = highlight },
-  }
+  return text,
+    {
+      { start_col = 0, end_col = #label_text, highlight = "PiWelcomeLabel" },
+      { start_col = #label_text, end_col = #text, highlight = highlight },
+    }
 end
 
 local function welcome_model_detail(model, thinking)
@@ -1159,22 +1194,24 @@ local function welcome_model_detail(model, thinking)
   local label_text = "model" .. string.rep(" ", label_width - #"model")
   if model == "loading" then
     local text = label_text .. "connecting..."
-    return text, {
-      { start_col = 0, end_col = #label_text, highlight = "PiWelcomeLabel" },
-      { start_col = #label_text, end_col = #text, highlight = "PiWelcomeModelValue" },
-    }
+    return text,
+      {
+        { start_col = 0, end_col = #label_text, highlight = "PiWelcomeLabel" },
+        { start_col = #label_text, end_col = #text, highlight = "PiWelcomeModelValue" },
+      }
   end
 
   local separator = " · "
   local text = label_text .. model .. separator .. thinking
   local model_end = #label_text + #model
   local thinking_start = model_end + #separator
-  return text, {
-    { start_col = 0, end_col = #label_text, highlight = "PiWelcomeLabel" },
-    { start_col = #label_text, end_col = model_end, highlight = "PiWelcomeModelValue" },
-    { start_col = model_end, end_col = thinking_start, highlight = "PiWelcomeLabel" },
-    { start_col = thinking_start, end_col = #text, highlight = "PiWelcomeThinkingValue" },
-  }
+  return text,
+    {
+      { start_col = 0, end_col = #label_text, highlight = "PiWelcomeLabel" },
+      { start_col = #label_text, end_col = model_end, highlight = "PiWelcomeModelValue" },
+      { start_col = model_end, end_col = thinking_start, highlight = "PiWelcomeLabel" },
+      { start_col = thinking_start, end_col = #text, highlight = "PiWelcomeThinkingValue" },
+    }
 end
 
 local function render_welcome(canvas, opts)
@@ -1304,14 +1341,14 @@ function M.render(items, opts)
       local active = opts.process_active == true and next_turn > #items
 
       if turn_first <= turn_last then
-        if opts.process_expanded == true or active then
+        if opts.process_expanded == true then
           local detail_opts = vim.tbl_extend("force", {}, opts, {
             hide_thinking = false,
-            tools_expanded = opts.process_expanded == true or opts.tools_expanded == true,
+            tools_expanded = true,
           })
           render_item_range(canvas, items, turn_first, turn_last, detail_opts, tool_ranges)
         else
-          render_compact_process(canvas, items, turn_first, turn_last, opts, process_ranges)
+          render_process_segments(canvas, items, turn_first, turn_last, opts, active, tool_ranges, process_ranges)
         end
       end
       index = next_turn

@@ -606,9 +606,7 @@ function Chat:_input_frame(width)
   end
 
   local top = line_chunks(1, width, "▔")
-  local label = active and (" " .. self:_activity_text() .. " ")
-    or self.activity == "error" and " Error "
-    or nil
+  local label = active and (" " .. self:_activity_text() .. " ") or self.activity == "error" and " Error " or nil
   if not label then
     return top, line_chunks(1, width, "▁"), base_highlight, corner_highlight
   end
@@ -1013,8 +1011,7 @@ function Chat:_update_command_menu()
     return false
   end
 
-  local selected_word = self.command_matches[self.command_selected]
-    and self.command_matches[self.command_selected].word
+  local selected_word = self.command_matches[self.command_selected] and self.command_matches[self.command_selected].word
   self.command_matches = matches
   self.command_selected = 1
   if selected_word then
@@ -1540,11 +1537,7 @@ function Chat:open(focus_input)
   vim.wo[self.win].winbar = ""
 
   local width = vim.api.nvim_win_get_width(self.win)
-  self.input_win = vim.api.nvim_open_win(
-    input_buf,
-    false,
-    self:_input_window_config(0, math.max(1, width - 4), 3)
-  )
+  self.input_win = vim.api.nvim_open_win(input_buf, false, self:_input_window_config(0, math.max(1, width - 4), 3))
   style_window(self.input_win, "PiInputNormal")
   vim.wo[self.input_win].cursorline = false
   vim.wo[self.input_win].spell = false
@@ -1766,6 +1759,22 @@ function Chat:append_bash_delta(id, delta)
   item.bash_output = (item.bash_output or "") .. (delta or "")
   item.result = { content = { { type = "text", text = item.bash_output } } }
   self:_schedule_render()
+end
+
+function Chat:end_bash(id, data, is_error)
+  local item = self.tools_by_id[id]
+  if not item then
+    return
+  end
+  data = data or {}
+  local output = item.bash_output
+  if not output or output == "" then
+    output = data.output or ""
+  end
+  self:end_tool(id, {
+    content = { { type = "text", text = output } },
+    details = data,
+  }, is_error)
 end
 
 function Chat:end_tool(id, result, is_error)

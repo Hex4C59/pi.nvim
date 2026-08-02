@@ -15,7 +15,7 @@ local defaults = {
     mode = "confirm",
   },
   context = {
-    max_chars = 100000,
+    max_bytes = 100000,
     include_diagnostics = true,
   },
   chat = {
@@ -41,6 +41,10 @@ end
 function M.setup(opts)
   opts = opts or {}
   options = vim.tbl_deep_extend("force", vim.deepcopy(defaults), opts)
+
+  if opts.context and opts.context.max_chars ~= nil and opts.context.max_bytes == nil then
+    options.context.max_bytes = opts.context.max_chars
+  end
 
   -- vim.tbl_deep_extend merges list indices. Lists are configuration values,
   -- so an explicitly supplied list should replace the default in full.

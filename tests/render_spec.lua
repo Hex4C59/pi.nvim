@@ -1,5 +1,11 @@
 local renderer = require("pi.ui.render")
 
+local lua_parser_available = pcall(function()
+  local parser = vim.treesitter.get_string_parser("local value = true", "lua")
+  assert(parser:parse()[1])
+  assert(vim.treesitter.query.get("lua", "highlights"))
+end)
+
 local welcome_lines, welcome_marks = renderer.render_welcome({
   width = 80,
   model = "gpt-5.6-sol",
@@ -159,8 +165,10 @@ end
 assert(highlights.PiUserMessageText, "user semantic highlight is missing")
 assert(highlights.PiMarkdownHeading, "heading semantic highlight is missing")
 assert(highlights.PiMarkdownCode, "code semantic highlight is missing")
-assert(highlights["@keyword.lua"], "Lua keyword syntax highlight is missing")
-assert(highlights["@boolean.lua"], "Lua boolean syntax highlight is missing")
+if lua_parser_available then
+  assert(highlights["@keyword.lua"], "Lua keyword syntax highlight is missing")
+  assert(highlights["@boolean.lua"], "Lua boolean syntax highlight is missing")
+end
 assert(highlights.PiMarkdownStrong, "strong inline highlight is missing")
 assert(highlights.PiMarkdownInlineCode, "inline code highlight is missing")
 assert(highlights.PiMarkdownLink, "link highlight is missing")
@@ -182,11 +190,14 @@ local compact_lines, compact_marks, compact_tool_ranges, compact_process_ranges 
   width = 80,
 })
 local compact_text = table.concat(compact_lines, "\n")
-assert(
+local compact_answer =
+  assert(compact_text:find(" Result", 1, true), "completed process lost the public assistant response")
+local compact_summary = assert(
   compact_text:find("▸ Thought for 18.1s, ran 1 command, read 1 file, edited 1 file", 1, true),
   "completed process summary is missing its duration and action counts"
 )
-assert(compact_text:find(" Result", 1, true), "completed process lost the public assistant response")
+assert(compact_answer < compact_summary, "process summary must follow the public assistant response")
+assert(compact_text:find("· Ctrl-O", compact_summary, true), "process summary is missing its toggle hint")
 assert(not compact_text:find("reasoning", 1, true), "completed process leaked thinking details")
 assert(not compact_text:find("Actions", 1, true), "completed process leaked its tool timeline")
 assert(not compact_text:find("printf hello", 1, true), "completed process leaked a command")
@@ -200,6 +211,82 @@ for _, mark in ipairs(compact_marks) do
 end
 assert(compact_highlights.PiProcessSummary, "process summary semantic highlight is missing")
 assert(compact_highlights.PiProcessToggle, "process disclosure marker highlight is missing")
+assert(compact_highlights.PiHeaderHint, "process toggle hint semantic highlight is missing")
+
+local staged_items = {
+  { type = "user", text = "Inspect the project" },
+  {
+    type = "assistant",
+    duration_ms = 1000,
+    message = {
+      role = "assistant",
+      content = {
+        { type = "thinking", thinking = "first private step" },
+        { type = "text", text = "First update" },
+      },
+    },
+  },
+  {
+    type = "tool",
+    id = "staged-read",
+    name = "read",
+    state = "done",
+    duration_ms = 1000,
+    args = { path = "README.md" },
+    result = { content = { { type = "text", text = "contents" } } },
+  },
+  {
+    type = "assistant",
+    duration_ms = 3000,
+    message = {
+      role = "assistant",
+      content = {
+        { type = "thinking", thinking = "final private step" },
+        { type = "text", text = "Final answer" },
+      },
+      stopReason = "stop",
+    },
+  },
+}
+local staged_lines, _, staged_tool_ranges, staged_process_ranges = renderer.render(staged_items, {
+  collapse_processes = true,
+  process_active = false,
+  process_expanded = false,
+  width = 80,
+})
+local staged_text = table.concat(staged_lines, "\n")
+local first_update = assert(staged_text:find("First update", 1, true), "first staged update is missing")
+local first_summary = assert(
+  staged_text:find("▸ Thought for 2s, read 1 file", first_update, true),
+  "first stage summary lost its duration or file count"
+)
+local final_answer = assert(staged_text:find("Final answer", first_summary, true), "final staged answer is missing")
+local final_summary =
+  assert(staged_text:find("▸ Thought for 3s", final_answer, true), "final stage summary lost its duration")
+assert(
+  first_update < first_summary and first_summary < final_answer and final_answer < final_summary,
+  "staged process order is wrong"
+)
+assert(#staged_tool_ranges == 0, "collapsed staged tools retained clickable ranges")
+assert(#staged_process_ranges == 2, "each completed stage must expose a process toggle")
+
+local active_staged_lines, _, active_staged_tool_ranges, active_staged_process_ranges = renderer.render(staged_items, {
+  collapse_processes = true,
+  process_active = true,
+  process_expanded = false,
+  width = 80,
+})
+local active_staged_text = table.concat(active_staged_lines, "\n")
+assert(active_staged_text:find("First update", 1, true), "completed active-turn stage lost its public update")
+assert(
+  active_staged_text:find("▸ Thought for 2s, read 1 file", 1, true),
+  "completed active-turn stage did not collapse"
+)
+assert(not active_staged_text:find("first private step", 1, true), "completed active-turn stage leaked private details")
+assert(active_staged_text:find("final private step", 1, true), "current active stage did not remain expanded")
+assert(not active_staged_text:find("▸ Thought for 3s", 1, true), "current active stage collapsed before settlement")
+assert(#active_staged_tool_ranges == 0, "hidden completed-stage tool retained a clickable range")
+assert(#active_staged_process_ranges == 1, "only completed active-turn stages should expose process toggles")
 
 local narrow_compact_lines = renderer.render(items, {
   collapse_processes = true,
@@ -279,8 +366,10 @@ for _, mark in ipairs(expanded_code_marks) do
     expanded_code_highlights[mark.highlight] = true
   end
 end
-assert(expanded_code_highlights["@keyword.lua"], "expanded Lua read is missing keyword highlighting")
-assert(expanded_code_highlights["@boolean.lua"], "expanded Lua read is missing boolean highlighting")
+if lua_parser_available then
+  assert(expanded_code_highlights["@keyword.lua"], "expanded Lua read is missing keyword highlighting")
+  assert(expanded_code_highlights["@boolean.lua"], "expanded Lua read is missing boolean highlighting")
+end
 
 local narrow_tool_lines = renderer.render({ items[3] }, {
   hide_thinking = true,
@@ -305,7 +394,10 @@ local branded_lines = renderer.render({ items[1] }, {
   },
 })
 local branded_text = table.concat(branded_lines, "\n")
-assert(branded_text:find("████████████", 1, true), "welcome logo did not persist in the transcript")
+assert(
+  branded_text:find("████████████", 1, true),
+  "welcome logo did not persist in the transcript"
+)
 assert(branded_text:find("Review this", 1, true), "conversation did not render after the welcome card")
 assert(
   branded_text:find("████████████", 1, true) < branded_text:find("Review this", 1, true),

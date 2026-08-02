@@ -30,6 +30,17 @@ function Parser:_decode(line)
   self.on_message(message)
 end
 
+function Parser:_consume(line)
+  if line:sub(-1) == "\r" then
+    line = line:sub(1, -2)
+  end
+  if #line > self.max_frame_bytes then
+    self.on_error("RPC frame exceeded maximum size", line)
+    return
+  end
+  self:_decode(line)
+end
+
 function Parser:push(chunk)
   if not chunk or chunk == "" then
     return
@@ -44,10 +55,7 @@ function Parser:push(chunk)
 
     local line = self.buffer:sub(1, newline - 1)
     self.buffer = self.buffer:sub(newline + 1)
-    if line:sub(-1) == "\r" then
-      line = line:sub(1, -2)
-    end
-    self:_decode(line)
+    self:_consume(line)
   end
 
   if #self.buffer > self.max_frame_bytes then
@@ -63,10 +71,7 @@ function Parser:finish()
   end
   local line = self.buffer
   self.buffer = ""
-  if line:sub(-1) == "\r" then
-    line = line:sub(1, -2)
-  end
-  self:_decode(line)
+  self:_consume(line)
 end
 
 M.Parser = Parser

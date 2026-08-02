@@ -47,7 +47,7 @@ local function editor(client, request)
   end, { buffer = buf, silent = true })
 end
 
-function M.handle(client, request)
+function M.handle(client, request, set_editor_text)
   local method = request.method
   if method == "select" then
     vim.ui.select(request.options or {}, { prompt = request.title or "Pi" }, function(choice)
@@ -82,8 +82,8 @@ function M.handle(client, request)
       error = vim.log.levels.ERROR,
     }
     vim.notify(request.message or "", levels[request.notifyType] or vim.log.levels.INFO, { title = "Pi" })
-  elseif method == "set_editor_text" and request.text and request.text ~= "" then
-    require("pi").ask(request.text)
+  elseif method == "set_editor_text" and set_editor_text then
+    set_editor_text(request.text or "")
   end
 end
 

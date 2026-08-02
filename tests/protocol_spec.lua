@@ -33,6 +33,35 @@ assert(#errors == 1, "malformed JSON must report an error")
 parser:push(string.rep("x", 129))
 assert(#errors == 2, "oversized frames must report an error")
 
+local bounded_received = {}
+local bounded_errors = {}
+local bounded = Parser.new({
+  max_frame_bytes = 16,
+  on_message = function(message)
+    table.insert(bounded_received, message)
+  end,
+  on_error = function(err)
+    table.insert(bounded_errors, err)
+  end,
+})
+bounded:push(vim.json.encode({ value = string.rep("x", 100) }) .. "\n{\"ok\":true}\n")
+assert(#bounded_errors == 1, "oversized complete frames must report one error")
+assert(#bounded_received == 1 and bounded_received[1].ok, "a valid frame after an oversized frame was lost")
+
+local oversized_eof = Parser.new({
+  max_frame_bytes = 16,
+  on_message = function(message)
+    table.insert(bounded_received, message)
+  end,
+  on_error = function(err)
+    table.insert(bounded_errors, err)
+  end,
+})
+oversized_eof.buffer = vim.json.encode({ value = string.rep("y", 100) })
+oversized_eof:finish()
+assert(#bounded_errors == 2, "oversized EOF frames must report an error")
+assert(#bounded_received == 1, "oversized EOF frames must not be decoded")
+
 local trailing = Parser.new({
   on_message = function(message)
     table.insert(received, message)

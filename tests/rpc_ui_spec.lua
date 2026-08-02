@@ -1,6 +1,12 @@
 local config = require("pi.config")
 local pi = require("pi")
 
+local lua_parser_available = pcall(function()
+  local parser = vim.treesitter.get_string_parser("local value = true", "lua")
+  assert(parser:parse()[1])
+  assert(vim.treesitter.query.get("lua", "highlights"))
+end)
+
 local root = vim.fn.getcwd()
 config.setup({
   command = root .. "/tests/fake_pi.js",
@@ -21,6 +27,7 @@ local function find_buffer(kind)
 end
 
 local chat_buf = assert(find_buffer("chat"), "chat buffer was not created")
+local input_buf = assert(find_buffer("prompt"), "prompt buffer was not created")
 assert(
   vim.wait(3000, function()
     local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
@@ -29,6 +36,29 @@ assert(
   "history was not rendered"
 )
 
+assert(
+  vim.wait(3000, function()
+    return #require("pi.ui.chat").complete(0, "/fixture-noop") == 1
+  end, 20),
+  "extension command catalog was not loaded"
+)
+
+pi.submit("/fixture-prefill", root)
+assert(
+  vim.wait(3000, function()
+    return vim.api.nvim_buf_get_lines(input_buf, 0, 1, false)[1] == "extension draft"
+  end, 20),
+  "set_editor_text did not prefill the Pi prompt"
+)
+pi.submit("/fixture-clear", root)
+assert(
+  vim.wait(3000, function()
+    return vim.api.nvim_buf_get_lines(input_buf, 0, 1, false)[1] == ""
+  end, 20),
+  "set_editor_text did not clear the Pi prompt"
+)
+
+pi.submit("/fixture-noop", root)
 pi.submit("hello from fixture", root)
 local status_buf = assert(find_buffer("status"), "status buffer was not created")
 local settled = vim.wait(3000, function()
@@ -47,7 +77,11 @@ end
 
 local transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
 assert(transcript:find("hello from fixture", 1, true), "live user message is missing")
-assert(transcript:find("▸ Thought", 1, true), "settled RPC task did not collapse its process")
+assert(not transcript:find("/fixture-noop", 1, true), "extension command leaked into the next user message")
+assert(not transcript:find("extension draft", 1, true), "set_editor_text submitted an unrequested model prompt")
+local rpc_answer = assert(transcript:find("live answer", 1, true), "live RPC answer is missing")
+local rpc_summary = assert(transcript:find("▸ Thought", 1, true), "settled RPC task did not collapse its process")
+assert(rpc_answer < rpc_summary, "settled RPC process summary must appear below the public answer")
 assert(not transcript:find("live reasoning", 1, true), "settled RPC task leaked thinking details")
 assert(not transcript:find("fixture.txt", 1, true), "settled RPC task leaked its file read")
 assert(transcript:find(" Analysis", 1, true), "Markdown heading is missing")
@@ -59,12 +93,40 @@ local ui_namespace = assert(vim.api.nvim_get_namespaces()["pi.nvim"], "Pi UI nam
 for _, extmark in ipairs(vim.api.nvim_buf_get_extmarks(chat_buf, ui_namespace, 0, -1, { details = true })) do
   syntax_highlight = syntax_highlight or extmark[4].hl_group == "@keyword.lua"
 end
-assert(syntax_highlight, "Tree-sitter syntax highlight did not reach the chat buffer")
+if lua_parser_available then
+  assert(syntax_highlight, "Tree-sitter syntax highlight did not reach the chat buffer")
+end
 assert(not transcript:find("Edited  example.lua", 1, true), "settled RPC task leaked its edit tool")
 assert(not transcript:find("- local old = true", 1, true), "settled RPC task leaked its diff")
 assert(not transcript:find("final output", 1, true), "collapsed read leaked its output")
 local completions = require("pi.ui.chat").complete(0, "/fix")
-assert(#completions == 1 and completions[1].word == "/fixture", "dynamic command was not loaded")
+assert(#completions >= 1 and completions[1].word:find("/fixture", 1, true), "dynamic commands were not loaded")
+
+pi.submit("/fixture-template concise", root)
+assert(
+  vim.wait(3000, function()
+    local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+    return text:find("/fixture-template concise", 1, true) ~= nil
+  end, 20),
+  "prompt template lost its concise display text"
+)
+transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+assert(
+  not transcript:find("expanded template payload", 1, true),
+  "expanded template content leaked into the transcript"
+)
+
+pi.submit("first accepted", root)
+pi.submit("second rejected", root)
+assert(
+  vim.wait(3000, function()
+    local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+    return text:find("first accepted", 1, true) ~= nil
+  end, 20),
+  "an accepted prompt was removed by another request's failure"
+)
+transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+assert(not transcript:find("second rejected", 1, true), "a rejected prompt replaced the accepted prompt display")
 
 local status = table.concat(vim.api.nvim_buf_get_lines(status_buf, 0, -1, false), "\n")
 assert(status:find("fixture · high", 1, true), "model state is missing from the footer")

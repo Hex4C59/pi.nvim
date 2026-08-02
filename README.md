@@ -70,13 +70,14 @@ padding, semantic highlights, and responsive layout. Every transcript begins
 with a full-width Pi welcome card showing the model, thinking level, project,
 and security mode. Its segmented Pi mark rotates through colors derived from
 the active colorscheme, while each field keeps a stable semantic color. It
-remains in scrollback as the
-conversation grows. Assistant answers stay on
-the plain canvas. While Pi is working, thinking and tool calls remain visible in
-a compact execution timeline with status markers and indented output. As soon as
-the turn settles, that process collapses into one quiet summary containing its
-elapsed time and action counts, while the public answer remains fully visible.
-`Ctrl-O` or a click on the disclosure marker restores the complete process.
+remains in scrollback as the conversation grows. Assistant answers stay on the
+plain canvas. Each completed work stage renders its public update first,
+followed by a quiet disclosure row such as `Thought for 4s, read 6 files`.
+Earlier stages can therefore collapse while Pi is still working, while only the
+current stage keeps its thinking and tool calls visible in the execution
+timeline. Summaries retain elapsed time plus read, search, command, edit, and
+failure counts. `Ctrl-O` or a click on any disclosure row toggles the complete
+process; wide layouts also show the shortcut inline.
 
 Assistant Markdown is reduced to terminal-native presentation: headings,
 emphasis, inline code, links, lists, quotes, and fenced code keep their semantic
@@ -157,7 +158,7 @@ require("pi").setup({
     mode = "confirm", -- "read-only", "confirm", or "full"
   },
   context = {
-    max_chars = 100000,
+    max_bytes = 100000, -- UTF-8-safe byte limit; max_chars remains a compatibility alias
     include_diagnostics = true,
   },
   chat = {

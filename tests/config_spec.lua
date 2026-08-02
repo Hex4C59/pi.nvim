@@ -30,6 +30,11 @@ assert(
   "extension path is wrong"
 )
 
+config.setup({ context = { max_chars = 321 } })
+assert(config.get().context.max_bytes == 321, "legacy context.max_chars was not migrated")
+config.setup({ context = { max_chars = 321, max_bytes = 654 } })
+assert(config.get().context.max_bytes == 654, "context.max_bytes must take precedence over the legacy alias")
+
 config.setup({ security = { mode = "read-only" } })
 local read_only = table.concat(config.command(root), "\n")
 assert(read_only:find("--tools\nread,grep,find,ls", 1, true), "read-only tools are missing")
