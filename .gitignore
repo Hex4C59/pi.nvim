@@ -1,0 +1,4 @@
+*.log
+*.tmp
+.luarc.json
+.DS_Store
