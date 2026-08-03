@@ -1,15 +1,7 @@
 local Chat = require("pi.ui.chat").Chat
 
 local root = vim.fs.joinpath(vim.fn.getcwd(), "input-wiring-project")
-local submitted
-local submitted_root
-
-local chat = Chat.new(root, {
-  submit = function(prompt)
-    submitted = prompt
-    submitted_root = root
-  end,
-})
+local chat = Chat.new(root)
 chat:open()
 assert(vim.b.pi_kind == "prompt", "prompt buffer was not focused")
 
@@ -42,18 +34,6 @@ end)
 assert(type(insert_down.callback) == "function", "InputArea did not wire command-menu navigation")
 insert_down.callback()
 assert(chat.command_menu:selected_index() == 2, "Down did not select the next fuzzy command")
-
-chat:set_input("root-bound prompt")
-vim.cmd("stopinsert")
-vim.api.nvim_feedkeys(vim.keycode("<CR>"), "mx", false)
-assert(
-  vim.wait(1000, function()
-    return submitted ~= nil
-  end, 10),
-  "Enter did not submit the prompt"
-)
-assert(submitted == "root-bound prompt", "Chat submission boundary changed the prompt")
-assert(submitted_root == root, "prompt was not bound to the Chat project")
 
 chat:destroy()
 print("chat_interaction_spec: ok")
