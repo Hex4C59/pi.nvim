@@ -226,6 +226,15 @@ function dependencyViolation(source, dependency) {
   ) {
     return "transcript and renderer modules must use the stable image facade";
   }
+  if (
+    ["pi.ui.transcript.projection", "pi.ui.transcript.retention", "pi.ui.transcript.history"].includes(source) &&
+    (dependency === "pi.ui.transcript" || dependency === "pi.ui.transcript.view" || dependency === "pi.ui.transcript_view")
+  ) {
+    return "transcript helpers must not depend on the stateful model or view";
+  }
+  if (source === "pi.ui.transcript.view" && hasPrefix(dependency, "pi.ui.transcript")) {
+    return "transcript view must receive model state through injected providers";
+  }
   if (hasPrefix(source, "pi.protocol") && ["pi.client", "pi.runtime", "pi.commands", "pi.ui"].some((prefix) => hasPrefix(dependency, prefix))) {
     return "protocol must remain a transport-independent leaf";
   }

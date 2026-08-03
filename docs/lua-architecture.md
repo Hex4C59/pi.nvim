@@ -23,7 +23,8 @@ pi.commands.*
 pi.ui.chat
   -> pi.ui.chat.registry / pi.ui.chat.shell
   -> pi.ui.transcript
-  -> pi.ui.transcript_view -> pi.ui.render
+     -> pi.ui.transcript.projection / retention / history
+  -> pi.ui.transcript.view -> pi.ui.render
   -> pi.ui.image.window / pi.ui.image.backend
   -> pi.ui.input / command_menu / permission / widget
 
@@ -39,8 +40,9 @@ comments and strings. Its policy test rejects forbidden layer edges, UI modules
 that load the top-level `pi` facade for action dispatch, literal-require cycles,
 direct access to private Chat component fields, and Runtime-owned state placed
 on Client objects. It also prevents Transcript and renderer modules from
-bypassing the stable image facade. There are no reviewed cycle or facade-leak
-exceptions.
+bypassing the stable image facade, pure Transcript helpers from depending back
+on the model or View, and TranscriptView from importing model state. There are
+no reviewed cycle or facade-leak exceptions.
 
 Frontend actions flow from `pi.init` into Runtime, which binds them to a project
 root and passes them to the Chat composition root. Chat then supplies named
@@ -54,8 +56,11 @@ through a late top-level require.
 | RPC process, framing, pending requests | `pi.client` / `pi.protocol` |
 | Per-project clients and RPC event projection | `pi.runtime` |
 | Display correlation queue, discovered-command map, refresh flags, direct-RPC Bash request | `pi.runtime` |
-| Bounded display items, tool correlation, retention counters | `pi.ui.transcript` |
-| Transcript buffer, render cache/timer, semantic ranges, image placements | `pi.ui.transcript_view` |
+| Bounded display items, item IDs, tool correlation, retention counters | `pi.ui.transcript` |
+| Bounded content copies and summaries | `pi.ui.transcript.projection` |
+| Release candidate ordering and retained-byte total calculation | `pi.ui.transcript.retention` |
+| Persisted-message to display-event ordering | `pi.ui.transcript.history` |
+| Transcript buffer, render cache/timer, semantic ranges, image placements | `pi.ui.transcript.view` |
 | UI namespace, Chat registry, global UI autocmds, shared welcome timer | `pi.ui.chat.registry` |
 | Layout choice, top-level chat window, responsive geometry | `pi.ui.chat.shell` |
 | Component composition, display mirrors, activity state, frontend delegation | `pi.ui.chat` |
@@ -72,6 +77,13 @@ through a late top-level require.
 
 `Transcript` is a bounded Neovim display projection, not session storage.
 Releasing or clearing local bodies does not alter Pi's authoritative session.
+Streaming and persisted history both pass through
+`pi.ui.transcript.projection`; those pure transformations copy and bound caller
+tables. `pi.ui.transcript.retention` only orders release candidates and totals
+owned byte categories. The Transcript model alone applies releases, assigns
+item IDs, correlates tool calls, owns counters, and emits change notifications.
+`pi.ui.transcript.history` emits ordered display events but never creates model
+identity or state.
 Runtime normally calls the `Chat` facade, whose mutation methods delegate to the
 transcript model. Runtime and command modules use facade methods for permission
 activity, projection reset, layout, process detail, and display-state reads.
@@ -113,7 +125,10 @@ providers from Chat; it does not own component behavior.
 Renderer modules produce values and do not create or mutate Neovim buffers or
 windows. `TranscriptView` applies their output and retains stable-prefix render
 caching, bounded projection accounting, coalesced redraws, scroll following,
-Extmarks, and terminal image synchronization.
+Extmarks, and terminal image synchronization. It receives items, state, byte
+counts, actions, and lifecycle callbacks through injected providers and does
+not import the Transcript model. `pi.ui.transcript_view` is a stateless
+compatibility alias for `pi.ui.transcript.view`.
 
 `pi.ui.image` is the stable facade used by Transcript, TranscriptView, and
 renderers. It is the only module that attaches or clears `_pi_image` on a
@@ -144,8 +159,9 @@ continue to return a blocking response.
 | --- | --- |
 | Shared message/format/catalog helpers | `tests/lua/shared_owners_spec.lua` |
 | Renderer facade and focused renderers | `tests/lua/ui/render_spec.lua`, image/Markdown specs |
+| Transcript projection, retention, and history helpers | `tests/lua/ui/transcript/` |
 | Transcript model | `tests/lua/ui/transcript_spec.lua`, `regression/output_budget_spec.lua` |
-| Transcript view and render cache | `regression/performance_spec.lua`, Chat interaction specs |
+| Transcript view and render cache | `tests/lua/ui/transcript_view_spec.lua`, `regression/performance_spec.lua` |
 | Image preview/backend lifecycle | image Chat/backend lifecycle specs |
 | Image source, preview, scheduler, backend, and window owners | `tests/lua/ui/image/` |
 | Chat registry/global lifecycle | `tests/lua/ui/chat/registry_spec.lua` |

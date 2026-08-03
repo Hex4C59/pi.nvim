@@ -425,8 +425,10 @@ lua/pi/commands/catalog.lua   Native slash-command metadata and merging
 lua/pi/ui/chat.lua            Chat facade, composition, event delegation
 lua/pi/ui/chat/registry.lua   Global UI autocmds, instances, welcome animation
 lua/pi/ui/chat/shell.lua      Top-level window lifecycle and responsive layout
-lua/pi/ui/transcript.lua      Bounded transcript display model
-lua/pi/ui/transcript_view.lua Transcript buffer, render cache, ranges, images
+lua/pi/ui/transcript.lua      Bounded transcript model, IDs, tools, counters
+lua/pi/ui/transcript/         Projection, retention, history, and buffer view
+lua/pi/ui/transcript/view.lua Transcript buffer, render cache, ranges, images
+lua/pi/ui/transcript_view.lua Stateless compatibility path for transcript view
 lua/pi/ui/image.lua           Stable image state and preparation facade
 lua/pi/ui/image/source.lua    MIME, decoding, dimensions, cache, validation
 lua/pi/ui/image/preview.lua   RGBA block previews and dynamic highlights

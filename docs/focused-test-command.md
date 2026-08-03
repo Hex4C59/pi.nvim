@@ -285,7 +285,7 @@ Initial candidates are:
 
 This split must follow the ownership and test map in
 `docs/lua-architecture.md`. A behavior assigned to `pi.ui.transcript`,
-`pi.ui.transcript_view`, or a renderer module belongs with that owner rather
+`pi.ui.transcript.view`, or a renderer module belongs with that owner rather
 than in a generic Chat test.
 
 Each resulting spec must remain independently runnable in a fresh Neovim

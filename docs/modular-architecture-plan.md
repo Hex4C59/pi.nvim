@@ -1,7 +1,7 @@
 # Modular Architecture Improvement Plan
 
-> Status: In progress. Tasks 01 through 04 were completed on 2026-08-04; Tasks
-> 05 through 08 remain proposed.
+> Status: In progress. Tasks 01 through 05 were completed on 2026-08-04; Tasks
+> 06 through 08 remain proposed.
 >
 > Scope: internal Lua frontend boundaries, bundled Extension policy modules,
 > test ownership, dependency enforcement, and durable architecture
@@ -250,7 +250,7 @@ transformation.
 | 02 | Completed | Seal Chat and Runtime ownership boundaries | 01 |
 | 03 | Completed | Decouple and split the Chat shell | 02 |
 | 04 | Completed | Organize the image subsystem | 02 |
-| 05 | Proposed | Organize Transcript projection, retention, history, and view | 02, 04 |
+| 05 | Completed | Organize Transcript projection, retention, history, and view | 02, 04 |
 | 06 | Proposed | Split bundled security policy owners | 01 |
 | 07 | Proposed | Align test structure and focused execution | 03, 04, 05, 06 |
 | 08 | Proposed | Consolidate durable documentation and close the plan | 07 |
@@ -559,6 +559,34 @@ memory ceiling and `integration/rpc_ui_spec.lua` for event ordering.
 - Transcript remains the only owner of item IDs, tool correlation, and retained
   byte counters.
 - TranscriptView owns buffers, render caches, ranges, and placements only.
+
+### Implementation Record
+
+Completed on 2026-08-04 against Task 04 commit `c563bd8`.
+
+- Kept `pi.ui.transcript` as the sole bounded model owner for item IDs, tool
+  correlation, live Bash materialization, retained-byte counters, release
+  application, and change notifications.
+- Extracted caller-preserving bounded transformations to
+  `pi.ui.transcript.projection`, deterministic release ordering and byte totals
+  to `pi.ui.transcript.retention`, and persisted-message event ordering to
+  `pi.ui.transcript.history`. Streaming and history paths now share the same
+  projection functions.
+- Moved buffer rendering, stable-prefix caching, Extmarks, semantic ranges,
+  scroll behavior, render scheduling, and image placement to
+  `pi.ui.transcript.view`. The old `pi.ui.transcript_view` path remains a
+  stateless compatibility alias.
+- Made Transcript register localized image ownership before the first render,
+  so model clear/destroy releases images deterministically. Added View
+  generation guards so invalidated or destroyed image-preview callbacks cannot
+  schedule stale work.
+- Added direct projection, retention, history, Transcript model, and
+  TranscriptView specs while retaining output-budget, performance, image, and
+  RPC integration regressions.
+- Extended the Lua dependency policy with failing fixtures for helper-to-model
+  and View-to-model/helper edges.
+- `make test`, `make format-check`, `make smoke`, and `make ci-policy-check`
+  passed after implementation against installed Pi 0.83.0 without a model call.
 
 ## 12. Task 06: Split Security Policy Owners
 
