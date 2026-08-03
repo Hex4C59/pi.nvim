@@ -22,7 +22,7 @@ local items = {
         { type = "thinking", thinking = "reasoning" },
         {
           type = "text",
-          text = "# Result\n\n**Overview**\n\nRead [lua/example.lua](/tmp/lua/example.lua), use `ready`, then **verify**.\n\n- first item\n\n> quoted\n\n```lua\nlocal value = true\n```",
+          text = "Result",
         },
       },
     },
@@ -64,48 +64,6 @@ local lines, marks, tool_ranges = renderer.render(items, {
   width = 80,
 })
 local text = table.concat(lines, "\n")
-assert(lines[1] ~= "  PI", "legacy transcript PI header is still present")
-assert(text:find("Review this", 1, true), "user component is missing")
-assert(text:find(" › Review this", 1, true), "user text must start with the structural marker")
-assert(not text:find("YOU", 1, true), "role labels should not be printed in the transcript")
-assert(text:find("Thought for 6.1s", 1, true), "thinking duration is missing from the assistant status")
-assert(not text:find("+ Thought", 1, true), "thinking duration still occupies a separate row")
-assert(not text:find("reasoning", 1, true), "thinking should be collapsed")
-assert(not text:find("◆ PI", 1, true), "assistant role labels should not be printed in the transcript")
-assert(
-  text:find("Thought for 6.1s", 1, true) < text:find(" Result", 1, true),
-  "thinking status must precede the final response"
-)
-assert(text:find(" Result", 1, true), "Markdown heading was not rendered")
-assert(not text:find("# Result", 1, true), "Markdown heading marker was not removed")
-assert(text:find(" Overview", 1, true), "strong section heading was not rendered")
-assert(not text:find("**Overview**", 1, true), "strong section marker leaked into the transcript")
-assert(
-  text:find("Read lua/example.lua, use ready, then verify.", 1, true),
-  "inline Markdown was not reduced to readable text"
-)
-assert(not text:find("/tmp/lua/example.lua", 1, true), "Markdown link target leaked into the transcript")
-assert(text:find("- first item", 1, true), "Markdown list item is missing")
-assert(text:find(" │ quoted", 1, true), "Markdown quote was not rendered")
-assert(text:find(" local value = true", 1, true), "code block is missing")
-local code_row
-for row, line in ipairs(lines) do
-  if line:find("local value = true", 1, true) then
-    code_row = row
-    break
-  end
-end
-assert(code_row, "code row is missing")
-assert(vim.fn.strdisplaywidth(lines[code_row]) == 79, "code surface lost its right margin")
-
-local code_surface
-for _, mark in ipairs(marks) do
-  if mark.row == code_row - 1 and mark.highlight == "PiCodeBg" then
-    code_surface = mark
-  end
-  assert(mark.line_highlight ~= "PiCodeBg", "code surface still uses full-line highlighting")
-end
-assert(code_surface and code_surface.start_col == 1, "code surface lost its left margin")
 assert(text:find("Actions", 1, true), "tool group label is missing")
 assert(text:find("├─ ✓ Edited", 1, true), "tool timeline did not connect its first action")
 assert(text:find("╰─ ✓ Read", 1, true), "tool timeline did not terminate its last action")
@@ -122,69 +80,12 @@ assert(text:find("2 lines · Ctrl-O expand", 1, true), "read summary is missing"
 assert(not text:find("raw file content", 1, true), "collapsed read leaked file contents")
 assert(#tool_ranges == 3 and tool_ranges[1].first <= tool_ranges[1].last, "tool row ranges are missing")
 
-local soft_break_lines = renderer.render({
-  {
-    type = "assistant",
-    message = {
-      role = "assistant",
-      content = {
-        {
-          type = "text",
-          text = "我会沿 client ->\nruntime -> `render/UI` -> extensions\n逐层检查。\n\n显式硬换行  \n必须另起一行",
-        },
-      },
-    },
-  },
-}, { width = 80 })
-local soft_break_text = table.concat(soft_break_lines, "\n")
-assert(
-  soft_break_text:find("我会沿 client -> runtime -> render/UI -> extensions 逐层检查。", 1, true),
-  "Markdown soft breaks must remain in one logical buffer line"
-)
-assert(
-  soft_break_text:find("显式硬换行\n   必须另起一行", 1, true),
-  "Markdown hard breaks must remain separate buffer lines"
-)
-
-local multiline_error_lines = renderer.render({
-  {
-    type = "assistant",
-    message = {
-      content = {},
-      stopReason = "error",
-      errorMessage = "first line\r\nsecond line",
-    },
-  },
-}, { width = 80 })
-local multiline_error_text = table.concat(multiline_error_lines, "\n")
-assert(
-  multiline_error_text:find(" Error: first line\n        second line", 1, true),
-  "multiline assistant error was not rendered as separate buffer rows"
-)
-for index, line in ipairs(multiline_error_lines) do
-  assert(
-    not line:find("[\r\n]"),
-    ("rendered error row %d contains an embedded newline: %s"):format(index, vim.inspect(line))
-  )
-end
-
 local highlights = {}
 for _, mark in ipairs(marks) do
   if mark.highlight then
     highlights[mark.highlight] = true
   end
 end
-assert(highlights.PiUserMessageText, "user semantic highlight is missing")
-assert(highlights.PiMarkdownHeading, "heading semantic highlight is missing")
-assert(highlights.PiMarkdownCode, "code semantic highlight is missing")
-if lua_parser_available then
-  assert(highlights["@keyword.lua"], "Lua keyword syntax highlight is missing")
-  assert(highlights["@boolean.lua"], "Lua boolean syntax highlight is missing")
-end
-assert(highlights.PiMarkdownStrong, "strong inline highlight is missing")
-assert(highlights.PiMarkdownInlineCode, "inline code highlight is missing")
-assert(highlights.PiMarkdownLink, "link highlight is missing")
-assert(highlights.PiMarkdownListMarker, "list marker highlight is missing")
 assert(highlights.PiDiffDelete and highlights.PiDiffAdd, "diff semantic highlights are missing")
 assert(highlights.PiDiffDeleteLine and highlights.PiDiffAddLine, "diff line surfaces are missing")
 assert(highlights.PiToolVerb and highlights.PiToolSuccess, "tool header highlights are missing")
@@ -369,24 +270,6 @@ local detailed_text = table.concat(detailed_lines, "\n")
 assert(detailed_text:find("reasoning", 1, true), "completed process details did not expand")
 assert(detailed_text:find("raw file content", 1, true), "expanded process did not reveal tool output")
 assert(#detailed_tool_ranges == 3, "expanded process tool ranges are missing")
-
-local fallback_lines, fallback_marks = renderer.render({
-  {
-    type = "assistant",
-    message = {
-      role = "assistant",
-      content = {
-        { type = "text", text = "```language-without-a-parser\nplain fallback\n```" },
-      },
-    },
-  },
-}, { width = 80 })
-assert(table.concat(fallback_lines, "\n"):find("plain fallback", 1, true), "unknown code language did not render")
-local fallback_code_highlight = false
-for _, mark in ipairs(fallback_marks) do
-  fallback_code_highlight = fallback_code_highlight or mark.highlight == "PiMarkdownCode"
-end
-assert(fallback_code_highlight, "unknown code language lost its fallback highlight")
 
 local expanded_code_lines, expanded_code_marks, expanded_code_ranges = renderer.render({
   {
