@@ -1,237 +1,315 @@
-# Issue Remediation Record
+# Current Security Risks
 
-This document records the defects found during the initial pi.nvim review and
-the changes made to resolve them. All seven runtime issues are resolved in the
-current working tree.
+This document tracks unresolved security risks in pi.nvim. Historical issues
+PI-001 through PI-007 were resolved and have been removed from this file so that
+it represents the current risk register rather than a remediation archive.
+
+## Review Scope
 
 Review environment:
 
-- Neovim 0.10.4 and 0.12.4
+- Neovim 0.12.4
 - Pi Coding Agent 0.83.0
-- `make test`: passing on both Neovim versions (10 test files)
-- `make smoke`: passing on both Neovim versions against the installed Pi
-  executable
-- `make format-check`: passing
-- GitHub Actions matrix: Neovim 0.10.4 and current stable
+- Static review of the Lua client, RPC protocol, UI, configuration, and bundled
+  permission extension
+- Behavioral comparison with the installed Pi RPC, extension, security, and
+  session documentation
+- `make test`: passing (10 test files)
 
-## Resolution Summary
+Pi and its extensions run with the permissions of the user that started
+Neovim. The security modes in pi.nvim are guardrails, not an operating-system
+sandbox. The findings below evaluate whether those guardrails match their
+names, documentation, and likely user expectations.
 
-| ID | Priority | Area | Status | Resolution |
+## Risk Summary
+
+| ID | Severity | Area | Status | Summary |
 | --- | --- | --- | --- | --- |
-| PI-001 | High | Compatibility | Resolved | Added a Neovim 0.10-compatible relative-path fallback |
-| PI-002 | High | Extension UI | Resolved | `set_editor_text` now prefills or clears the prompt without submitting |
-| PI-003 | Medium | Transcript | Resolved | Extension commands no longer leave stale display entries |
-| PI-004 | Medium | Protocol | Resolved | Every complete and trailing RPC frame now observes the byte limit |
-| PI-005 | Medium | Bash | Resolved | Streamed output and final truncation metadata are preserved |
-| PI-006 | Medium-Low | Buffers | Resolved | Project membership now requires a path boundary |
-| PI-007 | Low | Context | Resolved | Context truncation is UTF-8-safe and documented as a byte limit |
+| SEC-001 | High | Command permissions | Open | The default confirmation gate is bypassable and does not confirm file mutations |
+| SEC-002 | High | Read-only mode | Open | Read-only tools can access files outside the project root |
+| SEC-003 | Medium | Session resume | Open | Cross-project resume leaves the UI bound to the old project root |
+| SEC-004 | Medium | Resource limits | Open | Direct Bash streaming can consume unbounded Neovim memory |
+| SEC-005 | Low | CI supply chain | Open | GitHub Actions are referenced by mutable version tags |
 
-## PI-001: Neovim 0.10 Compatibility Failure
+## SEC-001: Default Confirmation Gate Is Bypassable
 
-**Status:** Resolved
+**Severity:** High
 
-**Implementation:** `lua/pi/context.lua`, `.github/workflows/ci.yml`
+**Status:** Open
 
-### Problem
-
-The README declares Neovim 0.10 as the minimum supported version, but context
-path handling called `vim.fs.relpath()`, which is unavailable on Neovim 0.10.
-This broke context-producing commands such as `:PiVisual` and `:PiBuffer`.
-
-### Resolution
-
-Relative-path handling now uses `vim.fs.relpath()` when available and otherwise
-uses a normalized, project-boundary-aware fallback. Paths inside the project
-remain relative; paths outside it remain absolute and unambiguous. CI now runs
-the complete test suite on Neovim 0.10.4 and current stable.
-
-### Verification
-
-- `tests/context_spec.lua` temporarily removes `vim.fs.relpath` and verifies the
-  fallback for project files, the project root, and outside paths.
-- `.github/workflows/ci.yml` defines the supported-version matrix.
-
-## PI-002: `set_editor_text` Sent an Unrequested Prompt
-
-**Status:** Resolved
-
-**Implementation:** `lua/pi/init.lua`, `lua/pi/ui/dialog.lua`
-
-### Problem
-
-Pi RPC defines `set_editor_text` as a fire-and-forget request that updates the
-input editor. The old handler routed it through `pi.ask()`, immediately sending
-the text to the model. It also ignored an empty string, so extensions could not
-clear the editor.
-
-### Resolution
-
-The extension UI handler now receives a prompt-setter callback owned by the
-requesting chat. It opens the appropriate chat, calls `Chat:set_input()`, and
-focuses the prompt. Both non-empty and empty values are handled, and no `prompt`
-RPC request is generated until the user explicitly submits.
-
-### Verification
-
-- `tests/dialog_spec.lua` covers non-empty and empty editor updates as well as
-  the other extension dialog cancellation/submission paths.
-- `tests/rpc_ui_spec.lua` verifies prefill, clear, focus-path integration, and
-  the absence of an unrequested transcript message.
-
-## PI-003: Extension Commands Desynchronized `display_queue`
-
-**Status:** Resolved
-
-**Implementation:** `lua/pi/init.lua`
-
-### Problem
-
-Outgoing display text was stored in a FIFO that assumed every accepted prompt
-would emit a user `message_start`. Extension commands can complete without that
-event, leaving stale text for the next normal prompt. A failed request also
-removed the first FIFO entry rather than its own entry.
-
-### Resolution
-
-The client now caches command metadata returned by `get_commands`. Known
-extension commands are not added to the display queue because they do not
-produce user messages. Entries that are queued are identity-bearing tables, so
-an out-of-order failure removes only the entry belonging to that request.
-Prompt templates, skills, `:PiVisual`, and `:PiBuffer` retain their concise
-display text.
-
-For an unknown slash command, the renderer falls back to the actual user event
-instead of retaining speculative queue state.
-
-### Verification
-
-`tests/rpc_ui_spec.lua` covers:
-
-- an extension no-op followed by a normal prompt;
-- prompt-template expansion with concise display text;
-- two requests settling out of order, with one rejected.
-
-## PI-004: Oversized Complete RPC Frames Bypassed the Limit
-
-**Status:** Resolved
-
-**Implementation:** `lua/pi/protocol.lua`
-
-### Problem
-
-The parser checked only the unfinished buffer after extracting complete lines.
-An oversized newline-terminated frame, or an oversized final frame at EOF,
-could therefore reach JSON decoding despite `max_frame_bytes`.
-
-### Resolution
-
-All extracted frames now pass through a shared `_consume()` method. It removes a
-trailing carriage return, checks the byte limit, reports and drops oversized
-frames, and only then decodes JSON. `Parser:finish()` uses the same path, while a
-valid frame after a rejected complete frame remains parseable.
-
-### Verification
-
-`tests/protocol_spec.lua` covers oversized incomplete, newline-terminated, and
-EOF frames, plus recovery to a following valid frame.
-
-## PI-005: Complete Bash Output Was Replaced by a Truncated Response
-
-**Status:** Resolved
-
-**Implementation:** `lua/pi/init.lua`, `lua/pi/ui/chat.lua`,
+**Implementation:** `extensions/permission-gate.ts`, `lua/pi/config.lua`,
 `lua/pi/ui/render.lua`
 
 ### Problem
 
-`bash_execution_update` events accumulated complete output, but the final Bash
-response replaced it with `data.output`, which Pi may truncate. Synchronous
-request-send failures could also occur before `request_id` was assigned and were
-silently discarded.
+The default `security.mode = "confirm"` loads a permission extension that uses
+regular-expression deny-list matching. A Bash tool call is allowed without a
+prompt whenever none of the patterns match.
 
-### Resolution
+This cannot provide a reliable command security boundary. Equivalent commands
+can be expressed by reordering options, using alternate tools, invoking an
+interpreter, or composing shell operations. The gate also handles only the
+`bash` tool; built-in `edit` and `write` calls are not confirmed.
 
-`Chat:end_bash()` now prefers accumulated streamed output and falls back to the
-final response only when no stream output exists. Final metadata is retained in
-`result.details`; when Pi reports truncation, the expanded tool view displays
-`fullOutputPath` when available. A synchronous send failure now produces an
-error notification.
+The welcome UI labels this mode `confirm changes`, which overstates the actual
+behavior. The implementation only asks about a small set of recognizable shell
+command strings.
 
-### Verification
+### Reproduction
 
-- `tests/ui_spec.lua` covers streamed/truncated output, non-streamed output,
-  metadata retention, and the full-output-path indicator.
-- `tests/init_spec.lua` covers a synchronous Bash request failure.
+The current matcher produces the following results:
 
-## PI-006: Project Prefix Matching Refreshed Unrelated Buffers
+```text
+BLOCK rm -rf /tmp/demo
+ALLOW rm -f -r /tmp/demo
+ALLOW git -C . reset --hard
+ALLOW chmod --recursive 000 .
+ALLOW find . -delete
+ALLOW python3 -c "import shutil; shutil.rmtree('src')"
+```
 
-**Status:** Resolved
+No model, authentication, or command execution is required to reproduce the
+matcher bypass.
 
-**Implementation:** `lua/pi/context.lua`, `lua/pi/init.lua`
+### Impact
+
+A prompt injection in repository content, context files, command output, or
+model output can produce a destructive command variant that runs without the
+confirmation implied by the selected mode. The command runs with the same
+filesystem, process, environment, credential, and network access as the Pi
+process.
+
+The default configuration increases the relevance of this path because
+`load_context_files = true` loads `AGENTS.md` and `CLAUDE.md` even when
+`project_trust = "never"` prevents protected project resources from loading.
+
+### Required Remediation
+
+- Make `confirm` fail closed for every model-initiated built-in `bash`, `edit`,
+  and `write` call.
+- Block calls when confirmation UI is unavailable.
+- Do not treat an expanded regular-expression deny list as a complete fix;
+  arbitrary shell interpreters cannot be classified safely this way.
+- Rename the current behavior if it is retained, for example to
+  `warn-common-shell`, and replace `confirm changes` with an exact description.
+- Recommend an OS-level sandbox for untrusted or unattended work.
+
+### Required Verification
+
+Add automated extension tests that cover:
+
+- reordered short and long options;
+- Git global options such as `git -C`;
+- alternate destructive tools and interpreters;
+- `edit` and `write` confirmation;
+- cancellation, timeout, and unavailable-UI behavior.
+
+## SEC-002: Read-Only Mode Is Not Workspace-Confined
+
+**Severity:** High
+
+**Status:** Open
+
+**Implementation:** `lua/pi/config.lua`, `README.md`
 
 ### Problem
 
-A plain string-prefix check treated paths such as `/tmp/pi-root-other.lua` as
-members of the `/tmp/pi-root` project and could refresh unrelated buffers.
+Read-only mode is implemented by passing:
 
-### Resolution
+```text
+--tools read,grep,find,ls
+```
 
-The shared `context.is_within_root()` helper normalizes both paths and requires
-exact equality or a slash/backslash boundary. Both `refresh_unmodified()` and
-`track_buffer()` now use the same membership rule.
+This removes built-in mutation and Bash tools, but it does not constrain paths
+to the project root. In Pi 0.83 these tools resolve absolute paths, `..`
+segments, and home-directory paths without a project-boundary check.
 
-### Verification
+Consequently, read-only mode means "no built-in writes or shell execution"; it
+does not mean "only read this workspace." The README currently recommends
+read-only mode as one option for untrusted repositories without making this
+confidentiality limitation prominent.
 
-`tests/context_spec.lua` covers root equality, descendants, sibling-prefix paths,
-trailing separators, and normalized paths.
+### Impact
 
-## PI-007: Context Truncation Could Produce Invalid UTF-8
+Malicious repository instructions can induce the model to read files such as:
 
-**Status:** Resolved
+```text
+~/.ssh/id_ed25519
+~/.aws/credentials
+~/.config/*
+../other-project/.env
+```
 
-**Implementation:** `lua/pi/context.lua`, `lua/pi/config.lua`, `README.md`
+Any successfully read content becomes model context and can be sent to the
+configured provider. This creates a confidentiality risk outside the workspace
+even though project writes and Bash are disabled.
+
+### Required Remediation
+
+- Introduce a workspace-confined read-only profile using tool overrides.
+- Canonicalize both the project root and requested path with `realpath`.
+- Reject paths outside the canonical root, including symlinks that resolve
+  outside it.
+- Disable project context files in the untrusted-project profile.
+- Consider filtering inherited environment variables and credentials.
+- Document the existing read-only mode as host-wide read access until the path
+  boundary is implemented.
+
+### Required Verification
+
+Add tests for:
+
+- absolute paths outside the root;
+- `../` traversal;
+- symlinks from the workspace to outside files and directories;
+- root-prefix siblings such as `/work/project-other`;
+- valid files and symlinks that remain inside the root;
+- context-file behavior in the untrusted-project profile.
+
+## SEC-003: Cross-Project Resume Keeps a Stale Client Root
+
+**Severity:** Medium
+
+**Status:** Open
+
+**Implementation:** `lua/pi/init.lua`, `lua/pi/client.lua`, `lua/pi/ui/chat.lua`
 
 ### Problem
 
-The `max_chars` setting used Lua byte slicing. A cutoff inside a multibyte UTF-8
-code point produced invalid text, and the option name incorrectly implied a
-character limit.
+`/resume` accepts an arbitrary session JSONL path and sends it to Pi through the
+`switch_session` RPC command. Pi 0.83 reads the session header and rebuilds its
+runtime using the session's stored working directory.
 
-### Resolution
+The pi.nvim client keeps the original `client.root`, and the chat instance is
+still keyed by that old root. Session reload refreshes messages and state but
+does not update the client root, chat root, welcome card, buffer tracking, or
+automatic buffer refresh scope.
 
-The public setting is now `context.max_bytes`. Truncation moves a byte cutoff
-back to a UTF-8 code-point boundary before appending the truncation notice. The
-legacy `max_chars` key remains a compatibility alias and is migrated during
-configuration; an explicit `max_bytes` value takes precedence.
+### Impact
 
-### Verification
+After resuming a session from another project, the interface can show project A
+while tools execute in project B. Editor context may then be wrapped relative
+to project A while model tools operate relative to project B. This can cause
+commands or file changes in a directory different from the one the user thinks
+is active.
 
-- `tests/context_spec.lua` covers ASCII, two-byte text, Chinese, emoji, and a
-  combining character with cutoffs inside code points.
-- `tests/config_spec.lua` covers legacy migration and precedence.
+A manually supplied or untrusted session file can also choose any existing
+working directory in its session header.
 
-## Test and Maintenance Coverage
+### Required Remediation
 
-The maintenance gaps identified during review are also closed:
+Choose and enforce one of these policies:
 
-- `.github/workflows/ci.yml` runs `make test` on Neovim 0.10.4 and stable and
-  runs StyLua as a separate job.
-- `tests/dialog_spec.lua` and `tests/rpc_ui_spec.lua` cover extension UI events,
-  cancellation, multiline editor submission, and display-queue behavior.
-- `tests/protocol_spec.lua` covers every frame-size boundary path.
-- `make smoke` keeps real-client validation explicit and separate from the
-  deterministic default suite.
-- `make format-check` checks `lua`, `plugin`, and `tests`; the current tree is
-  formatted and passes the check.
+- reject sessions whose canonical working directory differs from the active
+  client root;
+- require an explicit cross-project confirmation and then stop/recreate the
+  client under the resumed root; or
+- fully re-key the existing client and chat while updating every root-dependent
+  UI and buffer operation.
 
-## Verification Commands
+The active canonical runtime directory must be visible after a successful
+resume.
+
+### Required Verification
+
+Add an RPC integration test with two temporary project roots and session files.
+Verify that either cross-project resume is rejected or all client/UI/tool state
+moves consistently to the second root.
+
+## SEC-004: Bash Stream Output Is Unbounded
+
+**Severity:** Medium
+
+**Status:** Open
+
+**Implementation:** `lua/pi/ui/chat.lua`, `lua/pi/protocol.lua`, `lua/pi/init.lua`
+
+### Problem
+
+Direct RPC Bash output is appended using repeated immutable string
+concatenation:
+
+```lua
+item.bash_output = (item.bash_output or "") .. (delta or "")
+```
+
+There is no cumulative byte or line limit. The protocol's 10MB frame limit
+constrains each JSON frame only; it does not constrain the total of many
+`bash_execution_update` events.
+
+Repeated concatenation also copies the accumulated string for each update,
+which can approach quadratic time and allocation behavior for a long stream.
+
+### Impact
+
+A command with accidental or intentional high-volume output, such as `!yes`,
+can freeze Neovim or cause it to be terminated for excessive memory use. The
+final Pi response may be truncated, but pi.nvim has already retained the full
+stream in memory.
+
+### Required Remediation
+
+- Keep a bounded tail buffer, using limits such as 2,000 lines or 50KB.
+- Track omitted byte and line counts separately.
+- Use Pi's final `fullOutputPath` metadata to reference complete output.
+- Avoid rebuilding and re-rendering the complete transcript for every stream
+  update.
+- Apply an aggregate event/transcript budget in addition to the per-frame RPC
+  limit.
+
+### Required Verification
+
+Add tests that stream output beyond both limits and verify bounded memory state,
+a truncation notice, retained tail output, and preservation of
+`fullOutputPath`.
+
+## SEC-005: CI Actions Use Mutable Tags
+
+**Severity:** Low
+
+**Status:** Open
+
+**Implementation:** `.github/workflows/ci.yml`
+
+### Problem
+
+The workflow references GitHub Actions by mutable major-version tags:
+
+```yaml
+actions/checkout@v7
+thinca/action-setup-vim@v3
+JohnnyMorganz/stylua-action@v5
+```
+
+A moved or compromised upstream tag changes the code executed in CI without a
+change in this repository.
+
+### Impact
+
+The workflow currently grants only `contents: read`, which reduces impact, but
+a compromised action can still access the checked-out source, job environment,
+and read-scoped GitHub token. Future workflow permissions or secrets could
+increase the impact without revisiting these references.
+
+### Required Remediation
+
+Pin every action to a reviewed full commit SHA and use an automated dependency
+update process to propose SHA updates.
+
+### Required Verification
+
+Add a policy check that rejects `uses:` entries not pinned to a 40-character
+commit SHA.
+
+## Current Verification Status
+
+The deterministic functional suite currently passes:
 
 ```sh
 make test
-make smoke
-make format-check
-git diff --check
 ```
 
-All four commands pass in the review environment listed above. The same Neovim
-0.10.4 and stable test matrix is also configured in GitHub Actions.
+The suite does not yet test the five risks above. Security remediation should
+add focused tests before any item is marked resolved. Once fixed, move the
+resolution details to release notes or commit history rather than leaving
+resolved items in this current-risk document.
