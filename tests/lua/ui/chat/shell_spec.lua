@@ -49,7 +49,56 @@ end
 
 local function assert_window_in_editor(win, label)
   assert(win and vim.api.nvim_win_is_valid(win), label .. " window is invalid")
-  local position = vim.fn.win_screenpos(win)
+  local window_config = vim.api.nvim_win_get_config(win)
+  local has_border = false
+  if type(window_config.border) == "string" then
+    has_border = window_config.border ~= "" and window_config.border ~= "none"
+  else
+    for _, border in ipairs(window_config.border or {}) do
+      local character = type(border) == "table" and border[1] or border
+      if character and character ~= "" then
+        has_border = true
+        break
+      end
+    end
+  end
+  local border_width = has_border and 2 or 0
+  local border_height = has_border and 2 or 0
+  if window_config.relative == "win" then
+    local parent = window_config.win
+    assert(parent and vim.api.nvim_win_is_valid(parent), label .. " parent window is invalid")
+    assert(window_config.row >= 0 and window_config.col >= 0, label .. " starts outside its parent canvas")
+    assert(
+      window_config.row + window_config.height + border_height <= vim.api.nvim_win_get_height(parent),
+      ("%s crosses its parent bottom edge (row=%d height=%d border=%d parent=%d value=%s)"):format(
+        label,
+        window_config.row,
+        window_config.height,
+        border_height,
+        vim.api.nvim_win_get_height(parent),
+        vim.inspect(window_config.border)
+      )
+    )
+    assert(
+      window_config.col + window_config.width + border_width <= vim.api.nvim_win_get_width(parent),
+      label .. " crosses its parent right edge"
+    )
+    return
+  elseif window_config.relative == "editor" then
+    assert(window_config.row >= 0 and window_config.col >= 0, label .. " starts outside the editor")
+    assert(
+      window_config.row + window_config.height + border_height <= vim.o.lines,
+      label .. " crosses the editor bottom edge"
+    )
+    assert(
+      window_config.col + window_config.width + border_width <= vim.o.columns,
+      label .. " crosses the editor right edge"
+    )
+    return
+  end
+
+  local grid_position = vim.api.nvim_win_get_position(win)
+  local position = { grid_position[1] + 1, grid_position[2] + 1 }
   assert(position[1] >= 1 and position[2] >= 1, label .. " starts outside the editor")
   assert(
     position[1] + vim.api.nvim_win_get_height(win) - 1 <= vim.o.lines,
@@ -60,7 +109,15 @@ local function assert_window_in_editor(win, label)
       vim.o.lines
     )
   )
-  assert(position[2] + vim.api.nvim_win_get_width(win) - 1 <= vim.o.columns, label .. " crosses the editor right edge")
+  assert(
+    position[2] + vim.api.nvim_win_get_width(win) - 1 <= vim.o.columns,
+    ("%s crosses the editor right edge (col=%d width=%d columns=%d)"):format(
+      label,
+      position[2],
+      vim.api.nvim_win_get_width(win),
+      vim.o.columns
+    )
+  )
 end
 
 local function assert_horizontal_alignment(chat, label)
@@ -305,11 +362,20 @@ local function run()
     end
   end
   assert(permission_row, "inline permission question is missing from the Chat buffer")
-  local permission_position = vim.fn.screenpos(chat.win, permission_row, 1)
-  local chat_position = vim.fn.win_screenpos(chat.win)
-  assert(permission_position.row > 0, "permission content is outside the visible canvas")
+  local permission_lines = chat.permission_area:transcript_content(vim.api.nvim_win_get_width(chat.win))
+  for index, line in ipairs(permission_lines) do
+    assert(
+      vim.api.nvim_strwidth(line) <= vim.api.nvim_win_get_width(chat.win),
+      ("permission line %d exceeds the canvas width"):format(index)
+    )
+  end
+  local transcript_last_line = vim.api.nvim_buf_line_count(transcript_buffer)
   assert(
-    permission_position.row - chat_position[1] < input_config.row,
+    vim.api.nvim_win_get_cursor(chat.win)[1] == transcript_last_line,
+    "permission focus did not anchor the transcript at its rendered tail"
+  )
+  assert(
+    transcript_last_line - permission_row < input_config.row,
     "permission content overlaps the reserved prompt area"
   )
   assert(input_config.height == 3, "permission surface did not collapse the inactive prompt")

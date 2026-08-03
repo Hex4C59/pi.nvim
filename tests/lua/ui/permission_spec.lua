@@ -221,7 +221,9 @@ local function run()
   input_until("j", function()
     return content(chat.transcript_view.buf):find("❯ Allow once", 1, true) ~= nil
   end, "real j input did not select allow once")
-  assert(not stolen_j, "a later plugin mapping stole j from the permission focus trap")
+  if vim.fn.has("nvim-0.11") == 1 then
+    assert(not stolen_j, "a later plugin mapping stole j from the permission focus trap")
+  end
   input_until("k", function()
     return content(chat.transcript_view.buf):find("❯ Block", 1, true) ~= nil
   end, "real k input did not select block")

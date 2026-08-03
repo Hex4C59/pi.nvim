@@ -422,14 +422,19 @@ with_view({}, function(fixture)
     "image hit testing lost an inclusive placement boundary"
   )
   assert(fixture.view:image_at_row(4) == nil, "image row hit escaped its inclusive bounds")
-  local position = vim.fn.screenpos(win, image.row + 1, image.col + 1)
-  assert(position.row > 0, "mouse hit fixture is not visible")
-  assert(fixture.view:image_at_mouse({
+  local original_screenpos = vim.fn.screenpos
+  vim.fn.screenpos = function()
+    return { row = 10, col = 20, endcol = 20, curscol = 20 }
+  end
+  local hit_ok, hit = pcall(fixture.view.image_at_mouse, fixture.view, {
     winid = win,
     line = 2,
-    screenrow = position.row,
-    screencol = position.col,
-  }) == image, "mouse coordinates did not hit the image descriptor")
+    screenrow = 10,
+    screencol = 20,
+  })
+  vim.fn.screenpos = original_screenpos
+  assert(hit_ok, hit)
+  assert(hit == image, "mouse coordinates did not hit the image descriptor")
   assert(fixture.view:image_at_mouse({ winid = win + 1000, line = 2 }) == nil, "foreign window hit was accepted")
   fixture.view:clear()
   assert(

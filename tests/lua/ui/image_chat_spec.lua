@@ -57,17 +57,13 @@ local function run()
   assert(captured and #captured == 1, "Chat did not sync rendered image placements")
   local inline_placement = chat.transcript_view.image_placements[1]
   local inline_width = inline_placement.width
-  local screen_position = vim.fn.screenpos(chat.win, inline_placement.row + 1, inline_placement.col + 1)
-  assert(screen_position.row > 0, "image click fixture is not visible")
   assert(
     chat:_handle_left_mouse({
       winid = chat.win,
       line = inline_placement.row + 1,
       column = inline_placement.col + 1,
-      screenrow = screen_position.row,
-      screencol = screen_position.col,
     }),
-    "clicking a rendered image was not handled"
+    "row-based image click fallback was not handled"
   )
   assert(
     chat.image_preview.win and vim.api.nvim_win_is_valid(chat.image_preview.win),

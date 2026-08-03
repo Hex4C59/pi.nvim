@@ -292,8 +292,8 @@ function PermissionPanel:_install_key_capture()
       return
     end
     self:_handle_key(typed)
-    -- The permission panel is a focus trap. Unrecognized typed keys are ignored
-    -- instead of leaking into Normal mode or another plugin.
+    -- Neovim 0.11+ consumes this key; 0.10 still observes the original typed
+    -- key so permission navigation remains authoritative over the selection.
     return ""
   end, self.key_namespace)
 end
