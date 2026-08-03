@@ -221,7 +221,7 @@ function ImagePreview:set_backend(backend)
 end
 
 function ImagePreview:owns_buffer(bufnr)
-  return bufnr ~= nil and self.buf == bufnr
+  return type(bufnr) == "number" and vim.api.nvim_buf_is_valid(bufnr) and self.buf == bufnr
 end
 
 function ImagePreview:destroy()

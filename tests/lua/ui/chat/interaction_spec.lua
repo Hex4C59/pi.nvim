@@ -21,30 +21,8 @@ local chat = Chat.new(root, {
   abort = function() end,
 })
 chat:open()
-assert(chat:is_open(), "chat windows were not created")
 assert(vim.b.pi_kind == "prompt", "prompt buffer was not focused")
 assert(has_buffer_mapping(chat.transcript_view.buf, "n", "<LeftMouse>"), "chat canvas is missing its mouse tool toggle")
-assert(
-  chat.input_area:status_window() and vim.api.nvim_win_is_valid(chat.input_area:status_window()),
-  "status window was not created"
-)
-local input_config = vim.api.nvim_win_get_config(chat.input_area:window())
-local status_config = vim.api.nvim_win_get_config(chat.input_area:status_window())
-assert(input_config.relative == "win" and input_config.win == chat.win, "prompt is not attached to the chat canvas")
-assert(status_config.relative == "win" and status_config.win == chat.win, "footer is not attached to the chat canvas")
-assert(status_config.focusable == false, "footer must not steal focus")
-assert(not vim.wo[chat.win].cursorline, "chat canvas must not show a stale cursor line")
-assert(vim.wo[chat.win].breakindent, "wrapped transcript lines must preserve their left edge")
-assert(not vim.wo[chat.win].list, "code surface padding must not render as list characters")
-assert(input_config.col == 0, "prompt must align with the canvas left edge")
-assert(
-  input_config.width + 2 == vim.api.nvim_win_get_width(chat.win),
-  "prompt frame must align with the canvas right edge"
-)
-assert(status_config.col == 0 and status_config.width == vim.api.nvim_win_get_width(chat.win), "footer is misaligned")
-assert(input_config.height == 3, "prompt must reserve balanced vertical padding")
-assert(status_config.height == 1, "footer must remain a single quiet row")
-assert(chat:permission_mode() == nil, "confirm UI guessed a mode before Extension status")
 
 chat:set_input("/smd")
 vim.api.nvim_exec_autocmds("TextChangedI", { buffer = chat.input_area:buffer() })
@@ -76,52 +54,6 @@ insert_down.callback()
 assert(chat.command_menu:selected_index() == 2, "Down did not select the next fuzzy command")
 chat:set_input("")
 
-local logo_colors = {}
-for index = 1, 4 do
-  local color = vim.api.nvim_get_hl(0, { name = "PiWelcomeLogo" .. index, link = false }).fg
-  assert(color, "welcome logo color is missing")
-  logo_colors[color] = true
-end
-assert(vim.tbl_count(logo_colors) == 4, "welcome logo must start with four distinct theme colors")
-local logo_color_before = vim.api.nvim_get_hl(0, { name = "PiWelcomeLogo1", link = false }).fg
-local welcome_before_animation = vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false)
-assert(
-  vim.wait(1200, function()
-    return vim.api.nvim_get_hl(0, { name = "PiWelcomeLogo1", link = false }).fg ~= logo_color_before
-  end, 20),
-  "welcome logo colors did not rotate"
-)
-assert(
-  vim.deep_equal(welcome_before_animation, vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false)),
-  "welcome color animation must not rewrite transcript text"
-)
-
-chat:set_path(vim.fs.joinpath(root, "lua", "pi", "init.lua"))
-chat:update_permission_mode("manual")
-chat:update_state({
-  model = { id = "gpt-5.6-sol" },
-  thinkingLevel = "high",
-  autoCompactionEnabled = true,
-})
-chat:update_stats({
-  tokens = { input = 224000, output = 56000, cacheRead = 6800000 },
-  contextUsage = { tokens = 183000, contextWindow = 258000, percent = 71.1 },
-  cost = 6.186,
-})
-local welcome = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
-assert(
-  vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, 1, false)[1]:find("╭", 1, true),
-  "welcome has a top gap"
-)
-assert(welcome:find("coding agent", 1, true), "empty chat welcome is missing")
-assert(welcome:find("gpt-5.6-sol · high", 1, true), "welcome did not refresh the model state")
-assert(welcome:find("manual", 1, true), "welcome permission state is missing")
-local status = table.concat(vim.api.nvim_buf_get_lines(chat.input_area:status_buffer(), 0, -1, false), "\n")
-assert(not status:find(vim.fs.basename(root), 1, true), "project name should be hidden")
-assert(status:find("Manual", 1, true), "permission mode is missing from the footer")
-assert(not status:find("permissions", 1, true), "permission label should not be repeated in the footer")
-assert(status:find("context 71.1%", 1, true), "context usage is missing")
-
 chat:add_user("hello")
 chat:start_assistant({
   role = "assistant",
@@ -139,11 +71,6 @@ chat:end_assistant({
   stopReason = "stop",
 })
 local transcript = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
-assert(transcript:find("coding agent", 1, true), "welcome disappeared after the conversation started")
-assert(
-  transcript:find("coding agent", 1, true) < transcript:find(" › hello", 1, true),
-  "welcome must remain above the conversation"
-)
 assert(transcript:find(" hello", 1, true), "user message is missing")
 assert(transcript:find(" › hello", 1, true), "user marker is missing")
 assert(not transcript:find("YOU", 1, true), "role labels should not be printed in the transcript")

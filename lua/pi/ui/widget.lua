@@ -452,7 +452,7 @@ function WidgetArea:_render(slot, width, height, row)
 end
 
 function WidgetArea:owns_buffer(buf)
-  if buf == nil then
+  if type(buf) ~= "number" or not vim.api.nvim_buf_is_valid(buf) then
     return false
   end
   for _, slot in pairs(self.slots) do

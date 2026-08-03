@@ -622,7 +622,9 @@ function InputArea:close_windows()
 end
 
 function InputArea:owns_buffer(bufnr)
-  return bufnr ~= nil and (self.input_buf == bufnr or self.status_buf == bufnr)
+  return type(bufnr) == "number"
+    and vim.api.nvim_buf_is_valid(bufnr)
+    and (self.input_buf == bufnr or self.status_buf == bufnr)
 end
 
 function InputArea:destroy()
