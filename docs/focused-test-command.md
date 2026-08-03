@@ -4,7 +4,9 @@
 > Phase 2 is underway: Chat ownership specs and direct Transcript model,
 > projection, retention, history, TranscriptView, renderer text, welcome,
 > message, Markdown, tool, process, and facade specs are complete; remaining
-> UI-owner work is tracked by `docs/modular-architecture-plan.md`.
+> UI-owner work is tracked by `docs/modular-architecture-plan.md`. Direct
+> InputArea buffer, frame, footer, action, sizing, and lifecycle coverage is
+> complete.
 >
 > Scope: local test invocation, test-infrastructure regression coverage, test
 > failure granularity, and coverage visibility in pi.nvim. This proposal does

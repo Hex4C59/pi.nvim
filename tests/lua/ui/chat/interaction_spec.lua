@@ -1,32 +1,8 @@
 local Chat = require("pi.ui.chat").Chat
-local pi = require("pi")
 
 local root = vim.fn.getcwd()
 local submitted = nil
 local submitted_root = nil
-local function styled_text(chunks)
-  local parts = {}
-  for _, chunk in ipairs(chunks or {}) do
-    table.insert(parts, chunk[1])
-  end
-  return table.concat(parts)
-end
-
-local function has_highlight(chunks, highlight)
-  for _, chunk in ipairs(chunks or {}) do
-    if chunk[2] == highlight then
-      return true
-    end
-  end
-  return false
-end
-
-local function assert_input_border(config, edge_highlight, corner_highlight, message)
-  for index, segment in ipairs(config.border) do
-    local expected = index % 2 == 1 and corner_highlight or edge_highlight
-    assert(segment[2] == expected, message)
-  end
-end
 
 local function has_buffer_mapping(buf, mode, lhs)
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
@@ -35,14 +11,6 @@ local function has_buffer_mapping(buf, mode, lhs)
     end
   end
   return false
-end
-
-local function get_buffer_mapping(buf, mode, lhs)
-  for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, mode)) do
-    if mapping.lhs == lhs then
-      return mapping
-    end
-  end
 end
 
 local function has_extmark_highlight(buf, highlight)
@@ -54,50 +22,17 @@ local function has_extmark_highlight(buf, highlight)
   return false
 end
 
-pi.submit = function(prompt, prompt_root)
-  submitted = prompt
-  submitted_root = prompt_root
-end
-pi.abort = function() end
-
 local chat = Chat.new(root, {
-  submit = function(prompt, behavior, images)
-    return pi.submit(prompt, root, behavior, images)
+  submit = function(prompt)
+    submitted = prompt
+    submitted_root = root
   end,
-  abort = function()
-    return pi.abort(root)
-  end,
+  abort = function() end,
 })
 chat:open()
 assert(chat:is_open(), "chat windows were not created")
 assert(vim.b.pi_kind == "prompt", "prompt buffer was not focused")
-assert(vim.bo.modifiable, "prompt buffer must be editable")
-assert(
-  vim.api.nvim_buf_get_lines(chat.input_area:buffer(), 0, -1, false)[1] == "",
-  "prompt must start without placeholder text"
-)
-assert(vim.bo[chat.input_area:buffer()].filetype == "pi_prompt", "prompt must use an isolated filetype")
-assert(vim.b[chat.input_area:buffer()].completion == false, "external completion must be disabled in the prompt")
-assert(vim.bo[chat.input_area:buffer()].complete == "", "native keyword completion must be disabled in the prompt")
-assert(
-  vim.bo[chat.input_area:buffer()].completefunc == "",
-  "slash commands must not use the theme-dependent native popup menu"
-)
-assert(vim.bo[chat.input_area:buffer()].omnifunc == "", "LSP omnifunc completion must be disabled in the prompt")
-assert(vim.bo[chat.input_area:buffer()].tagfunc == "", "tag completion must be disabled in the prompt")
-local insert_enter =
-  assert(get_buffer_mapping(chat.input_area:buffer(), "i", "<CR>"), "prompt is missing its Insert Enter mapping")
-assert(insert_enter.expr == 0, "Insert Enter must not mutate the prompt from an expression mapping")
-local insert_down =
-  assert(get_buffer_mapping(chat.input_area:buffer(), "i", "<Down>"), "command menu is missing Down navigation")
-assert(insert_down.expr == 0, "command navigation must be able to redraw outside expression-map textlock")
-assert(has_buffer_mapping(chat.input_area:buffer(), "i", "<Up>"), "command menu is missing Up navigation")
-assert(has_buffer_mapping(chat.input_area:buffer(), "i", "<M-p>"), "prompt is missing permission mode shortcut")
 assert(has_buffer_mapping(chat.transcript_view.buf, "n", "<LeftMouse>"), "chat canvas is missing its mouse tool toggle")
-assert(
-  has_buffer_mapping(chat.input_area:buffer(), "i", "<LeftMouse>"),
-  "prompt cannot dispatch mouse clicks to the chat"
-)
 assert(
   chat.input_area:status_window() and vim.api.nvim_win_is_valid(chat.input_area:status_window()),
   "status window was not created"
@@ -116,62 +51,9 @@ assert(
   "prompt frame must align with the canvas right edge"
 )
 assert(status_config.col == 0 and status_config.width == vim.api.nvim_win_get_width(chat.win), "footer is misaligned")
-assert(
-  input_config.border[1][1] == "┌"
-    and input_config.border[3][1] == "┐"
-    and input_config.border[5][1] == "┘"
-    and input_config.border[7][1] == "└",
-  "prompt border must use square corners"
-)
-assert(
-  input_config.border[2][1] == "─" and input_config.border[6][1] == "─",
-  "prompt surface must meet its horizontal edges"
-)
-assert(
-  input_config.border[4][1] == "│" and input_config.border[8][1] == "│",
-  "prompt must use vertical side borders"
-)
 assert(input_config.height == 3, "prompt must reserve balanced vertical padding")
-assert(vim.wo[chat.input_area:window()].winbar == " ", "prompt must keep its top padding row")
-assert(
-  vim.wo[chat.input_area:window()].winhighlight:find("WinBar:PiInputNormal", 1, true),
-  "prompt top padding must use the input surface color"
-)
-assert(
-  vim.wo[chat.input_area:window()].winhighlight:find("Cursor:PiInputCursor", 1, true)
-    and vim.wo[chat.input_area:window()].winhighlight:find("CursorIM:PiInputCursor", 1, true)
-    and vim.wo[chat.input_area:window()].winhighlight:find("lCursor:PiInputCursor", 1, true),
-  "prompt cursor and IME preedit text must use the high-contrast input cursor"
-)
-assert_input_border(input_config, "PiInputBorder", "PiInputCorner", "prompt border surface is inconsistent")
-local input_surface = vim.api.nvim_get_hl(0, { name = "PiInputNormal", link = false })
-local input_cursor = vim.api.nvim_get_hl(0, { name = "PiInputCursor", link = false })
-local input_border = vim.api.nvim_get_hl(0, { name = "PiInputBorder", link = false })
-local input_corner = vim.api.nvim_get_hl(0, { name = "PiInputCorner", link = false })
-local canvas_surface = vim.api.nvim_get_hl(0, { name = "PiCanvasNormal", link = false })
-assert(input_border.bg == input_surface.bg, "gray input surface must fill the straight edge cells")
-assert(not input_surface.bold, "prompt text should use normal weight for CJK readability")
-assert(
-  input_cursor.fg == 0x000000 and input_cursor.bg == 0x000000,
-  "IME preedit text must remain black regardless of which cursor color the terminal uses"
-)
-assert(input_cursor.bold and input_cursor.nocombine, "IME cursor contrast must not inherit a weaker text style")
-assert(input_corner.bg == input_surface.bg, "square corner cells must be part of the input surface")
-assert(
-  vim.api.nvim_strwidth(styled_text(input_config.title)) == input_config.width,
-  "prompt top border must span the full frame"
-)
-assert(
-  vim.api.nvim_strwidth(styled_text(input_config.footer)) == input_config.width,
-  "prompt bottom border must span the full frame"
-)
 assert(status_config.height == 1, "footer must remain a single quiet row")
-assert(
-  vim.wo[chat.input_area:status_window()].winhighlight:find("Normal:PiStatusNormal", 1, true),
-  "footer surface is missing"
-)
 assert(chat:permission_mode() == nil, "confirm UI guessed a mode before Extension status")
-assert(chat:_status_text(80)[1]:find("--", 1, true), "unsynchronized permission mode is not visible")
 
 chat:set_input("/smd")
 local command_start, command_matches = chat:_command_completion_context()
@@ -207,6 +89,7 @@ assert(
 )
 local command_surface = vim.api.nvim_get_hl(0, { name = "PiCommandMenu", link = false })
 local command_selection = vim.api.nvim_get_hl(0, { name = "PiCommandSelected", link = false })
+local canvas_surface = vim.api.nvim_get_hl(0, { name = "PiCanvasNormal", link = false })
 assert(command_surface.bg == canvas_surface.bg, "command menu must blend into the transcript canvas")
 assert(command_selection.bg ~= canvas_surface.bg, "selected command needs a distinct but local surface")
 local command_lines = vim.api.nvim_buf_get_lines(chat.command_menu:buffer(), 0, -1, false)
@@ -241,7 +124,7 @@ assert(
   end, 10),
   "ranked fuzzy menu did not reopen"
 )
-insert_down.callback()
+assert(chat:_select_command(1), "command menu did not accept downward selection")
 assert(chat.command_menu:selected_index() == 2, "Down did not select the next fuzzy command")
 chat:set_input("")
 
@@ -289,35 +172,7 @@ local status = table.concat(vim.api.nvim_buf_get_lines(chat.input_area:status_bu
 assert(not status:find(vim.fs.basename(root), 1, true), "project name should be hidden")
 assert(status:find("Manual", 1, true), "permission mode is missing from the footer")
 assert(not status:find("permissions", 1, true), "permission label should not be repeated in the footer")
-local permission_status_groups = {
-  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionManual", link = false }),
-  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionAcceptEdits", link = false }),
-  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionAuto", link = false }),
-  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionPlan", link = false }),
-}
-local permission_status_colors = {}
-for _, group in ipairs(permission_status_groups) do
-  permission_status_colors[group.fg] = true
-end
-assert(vim.tbl_count(permission_status_colors) == 4, "permission modes must use distinct footer colors")
-assert(not status:find("idle", 1, true), "idle state should be hidden")
 assert(status:find("context 71.1%", 1, true), "context usage is missing")
-assert(not status:find("$6.186", 1, true), "session cost should not crowd the persistent footer")
-assert(not status:find("cache", 1, true), "cache details should not crowd the persistent footer")
-local wide_lines = chat:_status_text(120)
-local wide_status = table.concat(wide_lines, "\n")
-assert(wide_status:find("context 71.1%", 1, true), "wide status is missing context usage")
-assert(wide_status:find("Manual", 1, true), "wide status is missing permission mode")
-assert(not wide_status:find("permissions", 1, true), "wide status should not repeat the permission label")
-assert(#wide_lines == 1, "wide status must remain a single-line layout")
-assert(wide_lines[1]:find("gpt-5.6-sol · high", 1, true) == 3, "model state must align with the composer text")
-local narrow_lines = chat:_status_text(50)
-assert(#narrow_lines == 1, "narrow status must remain a single-line layout")
-assert(narrow_lines[1]:find("Manual", 1, true) == 3, "narrow permission mode must align with the composer text")
-for _, line in ipairs(narrow_lines) do
-  local display_width = vim.api.nvim_strwidth(line)
-  assert(display_width <= 50, ("narrow footer overflowed its window (%d): %s"):format(display_width, vim.inspect(line)))
-end
 
 chat:add_user("hello")
 chat:start_assistant({
@@ -464,11 +319,7 @@ if overscrolled_view.topline > bottom_view.topline then
 end
 
 chat:_focus_input()
-
-assert(vim.api.nvim_win_get_height(chat.input_area:window()) == 3, "empty prompt should retain vertical padding")
-vim.api.nvim_buf_set_lines(0, 0, -1, false, { "first line", "second line" })
-chat.input_area:resize()
-assert(vim.api.nvim_win_get_height(chat.input_area:window()) == 4, "multiline prompt did not grow with its padding")
+chat:set_input("root-bound prompt")
 vim.cmd("stopinsert")
 vim.api.nvim_feedkeys(vim.keycode("<CR>"), "mx", false)
 assert(
@@ -477,9 +328,8 @@ assert(
   end, 10),
   "Enter did not submit the prompt"
 )
-assert(submitted == "first line\nsecond line", "submitted prompt did not preserve lines")
+assert(submitted == "root-bound prompt", "Chat submission boundary changed the prompt")
 assert(submitted_root == root, "prompt was not bound to the chat project")
-assert(vim.api.nvim_buf_get_lines(chat.input_area:buffer(), 0, -1, false)[1] == "", "prompt was not cleared")
 
 chat:destroy()
 print("chat_interaction_spec: ok")

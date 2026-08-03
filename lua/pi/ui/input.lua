@@ -128,7 +128,7 @@ function InputArea.new(deps)
     state_provider = deps.state,
     main_window = deps.main_window,
     actions = deps.actions,
-    input_line_count = nil,
+    input_height = nil,
     input_buf = nil,
     input_win = nil,
     status_buf = nil,
@@ -340,18 +340,27 @@ end
 function InputArea:desired_input_height()
   local config = require("pi.config")
   local maximum = math.max(3, config.get().chat.max_input_height or 8)
-  return math.max(3, math.min(vim.api.nvim_buf_line_count(self.input_buf) + 2, maximum))
+  local width = self.input_win
+      and vim.api.nvim_win_is_valid(self.input_win)
+      and vim.api.nvim_win_get_width(self.input_win)
+    or nil
+  local display_lines = 0
+  for _, line in ipairs(vim.api.nvim_buf_get_lines(self.input_buf, 0, -1, false)) do
+    local line_width = vim.api.nvim_strwidth(line)
+    display_lines = display_lines + (width and math.max(1, math.ceil(line_width / math.max(1, width))) or 1)
+  end
+  return math.max(3, math.min(display_lines + 2, maximum))
 end
 
 function InputArea:resize()
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
     return
   end
-  local line_count = vim.api.nvim_buf_line_count(self.input_buf)
-  if self.input_line_count == line_count then
+  local desired_height = self:desired_input_height()
+  if self.input_height == desired_height then
     return
   end
-  self.input_line_count = line_count
+  self.input_height = desired_height
   self.actions.layout()
 end
 
