@@ -1,7 +1,7 @@
 # Modular Architecture Improvement Plan
 
-> Status: In progress. Tasks 01 through 06 were completed on 2026-08-04; Tasks
-> 07 and 08 remain proposed.
+> Status: In progress. Tasks 01 through 06 were completed on 2026-08-04; Task 07
+> is in progress and Task 08 remains proposed.
 >
 > Scope: internal Lua frontend boundaries, bundled Extension policy modules,
 > test ownership, dependency enforcement, and durable architecture
@@ -255,7 +255,7 @@ transformation.
 | 04 | Completed | Organize the image subsystem | 02 |
 | 05 | Completed | Organize Transcript projection, retention, history, and view | 02, 04 |
 | 06 | Completed | Split bundled security policy owners | 01 |
-| 07 | Proposed | Align test structure and focused execution | 03, 04, 05, 06 |
+| 07 | In progress | Align test structure and focused execution | 03, 04, 05, 06 |
 | 08 | Proposed | Consolidate durable documentation and close the plan | 07 |
 
 Tasks 03, 04, and 06 may be delivered independently after their prerequisites.

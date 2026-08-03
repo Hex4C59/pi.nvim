@@ -166,7 +166,7 @@ focused shared helpers. No aggregate security index or policy state remains.
 | Owner | Primary tests |
 | --- | --- |
 | Shared message/format/catalog helpers | `tests/lua/shared_owners_spec.lua` |
-| Renderer facade and focused renderers | `tests/lua/ui/render_spec.lua`, image/Markdown specs |
+| Renderer facade and focused renderers | `tests/lua/ui/render_spec.lua`, `tests/lua/ui/render/`, image/Markdown specs |
 | Transcript projection, retention, and history helpers | `tests/lua/ui/transcript/` |
 | Transcript model | `tests/lua/ui/transcript_spec.lua`, `regression/output_budget_spec.lua` |
 | Transcript view and render cache | `tests/lua/ui/transcript_view_spec.lua`, `regression/performance_spec.lua` |

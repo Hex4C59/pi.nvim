@@ -1,84 +1,10 @@
 local renderer = require("pi.ui.render")
 
-assert(renderer.format_elapsed(3.7) == "3.7s", "live sub-minute duration lost its precision")
-assert(renderer.format_elapsed(357) == "5m 57s", "live duration must switch to minutes")
-assert(renderer.format_elapsed(3723) == "1h 2m 3s", "live duration must switch to hours")
-assert(renderer.format_duration(357000) == "5m 57s", "recorded duration must switch to minutes")
-assert(renderer.format_duration(3723000) == "1h 2m 3s", "recorded duration must switch to hours")
-
 local lua_parser_available = pcall(function()
   local parser = vim.treesitter.get_string_parser("local value = true", "lua")
   assert(parser:parse()[1])
   assert(vim.treesitter.query.get("lua", "highlights"))
 end)
-
-local welcome_lines, welcome_marks = renderer.render_welcome({
-  width = 80,
-  model = "gpt-5.6-sol",
-  thinking = "high",
-  root = "/tmp/pi.nvim",
-  permission = "confirm",
-})
-local welcome_text = table.concat(welcome_lines, "\n")
-assert(welcome_lines[1]:find("╭", 1, true), "welcome card must start on the first transcript row")
-assert(welcome_lines[1]:find("PI · coding agent", 1, true), "welcome title must be integrated into the border")
-assert(welcome_lines[1]:find("┬", 1, true), "wide welcome must expose the two-column structure")
-assert(welcome_text:find("████████████", 1, true), "Pi welcome logo is missing")
-assert(welcome_text:find("coding agent", 1, true), "Pi introduction is missing")
-assert(welcome_text:find("Session", 1, true), "welcome session section is missing")
-assert(welcome_text:find("Workspace", 1, true), "welcome workspace section is missing")
-assert(welcome_text:find("gpt-5.6-sol · high", 1, true), "welcome model state is missing")
-assert(welcome_text:find("/tmp/pi.nvim", 1, true), "welcome project is missing")
-assert(welcome_text:find("manual", 1, true), "welcome permission mode is missing")
-local read_only_text = table.concat(
-  renderer.render_welcome({
-    width = 80,
-    model = "fixture",
-    thinking = "off",
-    root = "/tmp/pi.nvim",
-    permission = "read-only",
-  }),
-  "\n"
-)
-assert(read_only_text:find("workspace read only", 1, true), "read-only welcome label is inaccurate")
-assert(not welcome_text:find("Enter send", 1, true), "welcome send hint should be removed")
-assert(not welcome_text:find("Ctrl-J", 1, true), "welcome newline hint should be removed")
-assert(not welcome_text:find("/hotkeys", 1, true), "welcome keybinding hint should be removed")
-assert(not welcome_text:find("/commands", 1, true), "welcome should not advertise the redundant command browser")
-for _, line in ipairs(welcome_lines) do
-  assert(vim.fn.strdisplaywidth(line) == 80, "welcome card must fill the transcript width")
-end
-
-local welcome_highlights = {}
-for _, mark in ipairs(welcome_marks) do
-  if mark.highlight then
-    welcome_highlights[mark.highlight] = true
-  end
-end
-for index = 1, 4 do
-  assert(welcome_highlights["PiWelcomeLogo" .. index], "welcome logo color segment is missing")
-end
-assert(welcome_highlights.PiWelcomeTitle, "welcome brand highlight is missing")
-assert(welcome_highlights.PiWelcomeAgent, "welcome agent highlight is missing")
-assert(welcome_highlights.PiWelcomeNeovim, "welcome Neovim highlight is missing")
-assert(welcome_highlights.PiWelcomeSection, "welcome section highlight is missing")
-assert(welcome_highlights.PiWelcomeModelValue, "welcome model highlight is missing")
-assert(welcome_highlights.PiWelcomeThinkingValue, "welcome thinking highlight is missing")
-assert(welcome_highlights.PiWelcomeProjectValue, "welcome project highlight is missing")
-assert(welcome_highlights.PiWelcomePermissionValue, "welcome permission highlight is missing")
-assert(not welcome_highlights.PiWelcomeKey, "removed welcome shortcut highlight is still present")
-
-local narrow_welcome = renderer.render_welcome({
-  width = 42,
-  model = "a-model-with-a-deliberately-long-name",
-  thinking = "high",
-  root = "/tmp/a/deliberately/long/project/path/pi.nvim",
-  permission = "full",
-})
-assert(not narrow_welcome[1]:find("┬", 1, true), "narrow welcome must fall back to one column")
-for _, line in ipairs(narrow_welcome) do
-  assert(vim.fn.strdisplaywidth(line) == 42, "narrow welcome card must fill without overflowing the window")
-end
 
 local bash_lines = {}
 for index = 1, 12 do
