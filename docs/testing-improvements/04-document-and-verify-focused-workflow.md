@@ -1,6 +1,6 @@
 # Task 04: Document and Verify the Focused Workflow
 
-> Status: Proposed. This task has not been implemented.
+> Status: Completed on 2026-08-04.
 >
 > Parent plan: `docs/focused-test-command.md`
 >
@@ -164,22 +164,31 @@ The phase is successful when:
 
 ## 7. Completion Checklist
 
-- [ ] README documents the shipped focused command.
-- [ ] README includes Lua and Extension examples.
-- [ ] README explicitly retains `make test` as the complete gate.
-- [ ] Parent plan records Phase 1 only as implemented.
-- [ ] Tasks 01 through 03 contain truthful implementation records.
-- [ ] Real top-level, nested, and Extension focused checks pass.
-- [ ] The automated contract test passes.
-- [ ] `make test`, `make format-check`, and `make ci-policy-check` pass or match
+- [x] README documents the shipped focused command.
+- [x] README includes Lua and Extension examples.
+- [x] README explicitly retains `make test` as the complete gate.
+- [x] Parent plan records Phase 1 only as implemented.
+- [x] Tasks 01 through 03 contain truthful implementation records.
+- [x] Real top-level, nested, and Extension focused checks pass.
+- [x] The automated contract test passes.
+- [x] `make test`, `make format-check`, and `make ci-policy-check` pass or match
       the recorded baseline.
-- [ ] `make smoke` passes against the installed supported Pi version without a
+- [x] `make smoke` passes against the installed supported Pi version without a
       model call, or a precise compatibility blocker is recorded.
-- [ ] CI continues to run the full deterministic suite on both Neovim entries.
+- [x] CI continues to run the full deterministic suite on both Neovim entries.
 
-## 8. Handoff to Task 05
+## 8. Handoff
 
-Record the measured full-suite and focused-test durations from this phase. Task
-05 begins moving renderer assertions into smaller owner-aligned specs; it must
-use the shipped `test-file` target during every move and the full suite after
-each independently reviewable batch.
+Record the measured full-suite and focused-test durations from this phase. The
+next delivery is Task 02 in `docs/modular-architecture-plan.md`; the older Tasks
+05 through 21 remain design input for that plan's Task 07 and must not be
+executed as a separate competing sequence.
+
+## 9. Implementation Record
+
+README now documents the focused Lua and Extension forms next to the complete
+`make test` gate. Real focused checks passed for `protocol_spec.lua`, nested
+`image_rpc_spec.lua`, and `todo-list.test.mjs`. After all Phase 1 and architecture
+policy changes, `make test` passed in approximately 2.85 seconds; formatting,
+CI pinning policy, and Pi 0.83.0 smoke also passed without a model call. The CI
+workflow remains on `make test` for Neovim 0.10.4 and stable.

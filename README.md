@@ -378,6 +378,18 @@ thinking, tool execution, queue updates, and agent settlement end to end:
 make test
 ```
 
+For fast feedback while working on one known test owner, run exactly one Lua or
+bundled Extension test file:
+
+```bash
+make test-file TEST=tests/lua/ui/render_spec.lua
+make test-file TEST=tests/extensions/permission-gate.test.mjs
+```
+
+`test-file` accepts one existing repository-relative test path. It does not infer
+affected tests from Git changes, so `make test` remains the complete
+deterministic gate before finishing a change.
+
 The RPC parser deliberately buffers arbitrary stdout chunks and splits only on
 LF. It does not use generic line readers because U+2028 and U+2029 are valid
 inside JSON strings.

@@ -1,6 +1,6 @@
 # Task 01: Record the Test Baseline and Delivery Guardrails
 
-> Status: Proposed. This task has not been implemented.
+> Status: Completed on 2026-08-04.
 >
 > Parent plan: `docs/focused-test-command.md`
 >
@@ -234,17 +234,47 @@ from the implementation record:
 
 ## 10. Completion Checklist
 
-- [ ] Working-tree state was inspected and preserved.
-- [ ] Tool versions were recorded.
-- [ ] Test discovery counts were recorded.
-- [ ] `make test` result and duration were recorded.
-- [ ] `make format-check` result and duration were recorded.
-- [ ] `make ci-policy-check` result was recorded.
-- [ ] `make smoke` result and installed Pi version were recorded, or a precise
+- [x] Working-tree state was inspected and preserved.
+- [x] Tool versions were recorded.
+- [x] Test discovery counts were recorded.
+- [x] `make test` result and duration were recorded.
+- [x] `make format-check` result and duration were recorded.
+- [x] `make ci-policy-check` result was recorded.
+- [x] `make smoke` result and installed Pi version were recorded, or a precise
       non-model blocker was documented.
-- [ ] No source, test, Makefile, CI, or installed Pi artifact was changed.
-- [ ] No model was called.
+- [x] No source, test, Makefile, CI, or installed Pi artifact was changed before
+      the baseline was recorded.
+- [x] No model was called.
 
 ## 11. Implementation Record
 
-> Not executed yet. Fill this section when Task 01 is performed.
+Executed on 2026-08-04 against `7b4e626`. The working tree contained only the
+new untracked proposal `docs/modular-architecture-plan.md`; it was preserved.
+
+Toolchain:
+
+- Neovim 0.12.4 with LuaJIT 2.1.1767980792;
+- Node 22.23.1;
+- GNU Make 4.4.1;
+- StyLua 2.5.2; and
+- Pi 0.83.0 at `/home/hex4c59/.local/bin/pi`, resolving to
+  `/home/hex4c59/.local/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js`.
+
+Inventory before infrastructure edits:
+
+- 31 recursively discovered Lua specs;
+- 4 top-level Extension test files;
+- 2 policy tests; and
+- 2 smoke files.
+
+Results before infrastructure edits:
+
+| Command | Result | Approximate wall time |
+| --- | --- | ---: |
+| `make test` | Passed | 2.46s |
+| `make format-check` | Passed | 0.04s |
+| `make ci-policy-check` | Passed | <0.01s |
+| `make smoke` | Passed | 2.51s |
+
+There were no known baseline failures. Smoke used the installed Pi 0.83.0
+process and did not call a model.

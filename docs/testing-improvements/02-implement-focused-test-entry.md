@@ -1,6 +1,6 @@
 # Task 02: Implement the Focused Test Entry
 
-> Status: Proposed. This task has not been implemented.
+> Status: Completed on 2026-08-04.
 >
 > Parent plan: `docs/focused-test-command.md`
 >
@@ -50,7 +50,7 @@ Supported selections are:
 | Selection | Runner command |
 | --- | --- |
 | `tests/lua/**/*_spec.lua` | `nvim --headless -u tests/minimal_init.lua -l "$TEST"` |
-| `tests/extensions/*.test.mjs` | `node --test "$TEST"` |
+| `tests/extensions/**/*.test.mjs` | `node --test "$TEST"` |
 
 The target accepts exactly one existing regular file. It rejects:
 
@@ -84,7 +84,9 @@ Required constraints:
 - Validate before invoking either runner.
 - Print a concise error and usage form to stderr on invalid input.
 - Return non-zero on validation or runner failure.
-- Return the runner's exit status without falling back to the other runner.
+- Preserve runner failure as a non-zero Make result without falling back to the
+  other runner. GNU Make maps failed recipes to its own non-zero exit status, so
+  the top-level `make` process cannot return an arbitrary child status unchanged.
 
 Because Make expands its own variables before the shell runs, avoid inserting
 an untrusted `$(TEST)` value directly into executable shell syntax. Keep the
@@ -122,8 +124,8 @@ The recipe must perform validation in this order:
    select Node.
 8. Reject every other path with the accepted command form.
 9. Print `nvim: <path>` or `node: <path>`.
-10. Replace the recipe shell with the selected runner, or otherwise preserve its
-    exact exit status.
+10. Replace the recipe shell with the selected runner, preserve failure as
+    non-zero, and never fall back to the other runner.
 
 Use POSIX shell constructs already compatible with the current Makefile. Do not
 add Bash-only arrays or regular-expression syntax.
@@ -217,17 +219,19 @@ Successful behavior:
 
 ## 9. Completion Checklist
 
-- [ ] `test-file` is phony.
-- [ ] Exactly one supported test file is required.
-- [ ] Lua tests use the existing minimal-init Neovim command.
-- [ ] Extension tests use Node's existing test runner.
-- [ ] Paths are validated before runner startup.
-- [ ] The path is passed as one quoted runner argument.
-- [ ] Runner exit status is preserved.
-- [ ] Existing full-suite targets ignore `TEST`.
-- [ ] Manual valid and invalid checks pass.
-- [ ] `make test` still passes or matches the Task 01 baseline.
-- [ ] No README, CI, runtime, or test file was changed.
+- [x] `test-file` is phony.
+- [x] Exactly one supported test file is required.
+- [x] Lua tests use the existing minimal-init Neovim command.
+- [x] Extension tests use Node's existing test runner.
+- [x] Paths are validated before runner startup.
+- [x] The path is passed as one quoted runner argument.
+- [x] Runner success remains zero and runner failure remains non-zero without a
+      fallback runner.
+- [x] Existing full-suite targets ignore `TEST`.
+- [x] Manual valid and invalid checks pass.
+- [x] `make test` still passes or matches the Task 01 baseline.
+- [x] Runner implementation changed only `Makefile`; Tasks 03 and 04 added their
+      own test and documentation changes in the same delivery batch.
 
 ## 10. Handoff to Task 03
 
@@ -235,3 +239,14 @@ Record the chosen validation method and any platform assumptions. Task 03 must
 turn every public contract branch into a deterministic automated regression and
 must specifically test the boundary between Make expansion and shell execution.
 
+## 11. Implementation Record
+
+The Makefile stores raw `TEST` data in the simply-expanded exported
+`TEST_FILE_SELECTION` variable, then reads it only through a quoted shell
+variable. The POSIX recipe rejects whitespace, non-path characters, absolute or
+parent-relative paths, non-files, unsupported roots, and unsupported suffixes
+before selecting one runner. It supports nested Lua and Extension test paths.
+
+GNU Make returns its own non-zero status for failed recipes, so the implemented
+contract preserves failure and selected-runner identity rather than claiming to
+return an arbitrary child exit code unchanged.

@@ -30,8 +30,25 @@ pi.ui.render
   -> pi.ui.render.*
 ```
 
-Files below `lua/pi/commands/` must not require `pi.ui.*`. The policy test in
-`tests/policy/lua_dependency_policy_test.sh` enforces this direction.
+`scripts/check-lua-architecture.mjs` tokenizes executable Lua while ignoring
+comments and strings. Its policy test rejects forbidden layer edges, unapproved
+literal-require cycles, and new direct access to private Chat component fields.
+The two existing late `require("pi")` UI action edges and the existing Chat
+facade leaks are explicit, count-bounded migration exceptions; Tasks 02 and 03
+in `docs/modular-architecture-plan.md` remove them rather than allowing the debt
+to grow.
+
+The temporary exception budget is:
+
+| Exception | Current budget | Removal task |
+| --- | ---: | --- |
+| `pi.ui.input -> pi` late action dispatch | 1 edge | Task 03 |
+| `pi.ui.transcript_view -> pi` late action dispatch | 1 edge | Task 03 |
+| Runtime/command access to private Chat state | 4 accesses | Task 02 |
+| CommandMenu/PermissionPanel access to sibling Chat components | 6 accesses | Task 03 |
+
+The checker requires the exact current count. Adding a matching access fails, and
+removing one requires shrinking the reviewed budget in the same change.
 
 ## State Ownership
 
@@ -39,6 +56,7 @@ Files below `lua/pi/commands/` must not require `pi.ui.*`. The policy test in
 | --- | --- |
 | RPC process, framing, pending requests | `pi.client` / `pi.protocol` |
 | Per-project clients and RPC event projection | `pi.runtime` |
+| Display correlation queue, discovered-command map, refresh flags, direct-RPC Bash request | `pi.runtime` |
 | Bounded display items, tool correlation, retention counters | `pi.ui.transcript` |
 | Transcript buffer, render cache/timer, semantic ranges, image placements | `pi.ui.transcript_view` |
 | Layout choice, top-level chat window, display mirrors, coordination | `pi.ui.chat` |
@@ -51,9 +69,11 @@ Files below `lua/pi/commands/` must not require `pi.ui.*`. The policy test in
 
 `Transcript` is a bounded Neovim display projection, not session storage.
 Releasing or clearing local bodies does not alter Pi's authoritative session.
-Runtime continues to call the `Chat` facade, whose mutation methods delegate to
-the transcript model. `Chat:owns_buffer()` asks each component whether it owns a
-buffer; runtime does not know component field names.
+Runtime normally calls the `Chat` facade, whose mutation methods delegate to the
+transcript model. The remaining direct component accesses are documented policy
+exceptions with fixed occurrence budgets, not supported APIs. Runtime-owned
+orchestration values that are temporarily stored on Client records remain
+Runtime state and are migrated in the next architecture task.
 
 ## Rendering
 
@@ -106,6 +126,7 @@ continue to return a blocking response.
 | RPC-to-UI integration | `tests/lua/integration/rpc_ui_spec.lua` |
 | Permission authority | Lua permission spec plus Extension policy tests |
 
-Run `make test` for deterministic Lua, Extension, and repository policy tests;
-`make format-check` for formatting; and `make smoke` for installed Pi RPC and
-Extension loading without a model call.
+Run `make test-file TEST=<path>` for one known Lua or Extension test owner. Run
+`make test` for the complete deterministic Lua, Extension, and repository policy
+suite; `make format-check` for formatting; and `make smoke` for installed Pi RPC
+and Extension loading without a model call.

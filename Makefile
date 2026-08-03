@@ -1,4 +1,10 @@
-.PHONY: test test-lua test-extensions test-ci-policy smoke format-check ci-policy-check
+.PHONY: test test-lua test-file test-extensions test-ci-policy smoke format-check ci-policy-check
+
+# Preserve the command-line value as data. $(value ...) prevents Make from
+# expanding function syntax embedded in TEST before the fixed recipe validates it.
+unexport TEST
+override TEST_FILE_SELECTION := $(value TEST)
+export TEST_FILE_SELECTION
 
 test: test-lua test-extensions test-ci-policy
 
@@ -9,6 +15,32 @@ test-lua:
 		printf '%s\n' "nvim: $$test_file"; \
 		nvim --headless -u tests/minimal_init.lua -l "$$test_file"; \
 	done
+
+test-file:
+	@set -eu; \
+	test_file=$${TEST_FILE_SELECTION-}; \
+	usage='Usage: make test-file TEST=<path>'; \
+	fail() { printf '%s\n%s\n' "test-file: $$1" "$$usage" >&2; exit 2; }; \
+	case "$$test_file" in \
+		'') fail 'TEST is required' ;; \
+		*[[:space:]]*) fail 'exactly one test file is accepted' ;; \
+		*[!A-Za-z0-9_./-]*) fail 'invalid characters in test path' ;; \
+	esac; \
+	case "$$test_file" in \
+		/*|..|../*|*/..|*/../*) fail 'a repository-relative test path is required' ;; \
+	esac; \
+	[ -f "$$test_file" ] || fail 'test file does not exist or is not regular'; \
+	case "$$test_file" in \
+		tests/lua/*_spec.lua) \
+			printf '%s\n' "nvim: $$test_file"; \
+			exec nvim --headless -u tests/minimal_init.lua -l "$$test_file" \
+			;; \
+		tests/extensions/*.test.mjs) \
+			printf '%s\n' "node: $$test_file"; \
+			exec node --test "$$test_file" \
+			;; \
+		*) fail 'unsupported test path' ;; \
+	esac
 
 test-extensions:
 	node --test tests/extensions/*.test.mjs

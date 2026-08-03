@@ -1,6 +1,8 @@
 # Focused Test Command and Test Quality Plan
 
-> Status: Proposed. The work described in this document is not implemented.
+> Status: In progress. Phase 1 was implemented and verified on 2026-08-04;
+> Phases 2 through 4 remain proposed and are coordinated by
+> `docs/modular-architecture-plan.md`.
 >
 > Scope: local test invocation, test-infrastructure regression coverage, test
 > failure granularity, and coverage visibility in pi.nvim. This proposal does
@@ -9,7 +11,7 @@
 
 ## 1. Summary
 
-Add one explicit Make target for running exactly one test file:
+Phase 1 provides one explicit Make target for running exactly one test file:
 
 ```bash
 make test-file TEST=tests/lua/ui/render_spec.lua
@@ -38,6 +40,7 @@ The current Make targets have deliberately broad meanings:
 | --- | --- |
 | `make test` | Runs every Lua spec, every bundled Extension test, and the repository test policy |
 | `make test-lua` | Recursively discovers and runs every `tests/lua/**/*_spec.lua` file |
+| `make test-file TEST=<path>` | Validates and runs exactly one Lua or bundled Extension test file |
 | `make test-extensions` | Runs every `tests/extensions/*.test.mjs` file |
 | `make smoke` | Checks the installed Pi RPC process and bundled Extension loading without calling a model |
 | `make format-check` | Checks formatting under `lua/`, `plugin/`, and `tests/` |
@@ -46,8 +49,9 @@ Each Lua spec starts its own headless Neovim process. This isolation is useful,
 but repeatedly running the full Lua suite slows down the local feedback loop
 when a developer is working on one focused behavior.
 
-There is currently no Make entry point for one test file. Developers must
-remember and type the underlying Neovim or Node command themselves.
+`make test-file TEST=<path>` is protected by
+`tests/policy/test_file_target_test.sh`. It is a focused feedback command only;
+the complete gate still discovers every supported test independently.
 
 The existing suite has several important strengths:
 
@@ -61,8 +65,6 @@ The existing suite has several important strengths:
 
 The known quality gaps are:
 
-- Test-infrastructure behavior is not itself covered by an automated regression
-  test.
 - Broad files such as `tests/lua/ui/chat_spec.lua` and
   `tests/lua/ui/render_spec.lua` contain several independently owned behaviors,
   so file-level focused execution is still coarse.
@@ -77,7 +79,8 @@ The known quality gaps are:
 - Preserve the existing meaning of `make test`, `make test-lua`, and
   `make test-extensions`.
 - Validate the requested path before starting a test runner.
-- Propagate the selected test runner's exit status unchanged.
+- Preserve a selected runner failure as a non-zero Make result without trying a
+  fallback runner. GNU Make maps a failed recipe to its own non-zero status.
 - Cover the focused command's routing, validation, quoting, and exit behavior
   with a deterministic automated test.
 - Keep the command deterministic and free of model calls or authentication.
@@ -113,7 +116,7 @@ unit, regression, and integration specs whose files were not modified.
 
 ### 5.1 Interface
 
-The proposed public interface is:
+The implemented public interface is:
 
 ```text
 make test-file TEST=<repository-relative-test-path>
@@ -127,7 +130,7 @@ Supported path forms are:
 | Path pattern | Runner |
 | --- | --- |
 | `tests/lua/**/*_spec.lua` | `nvim --headless -u tests/minimal_init.lua -l <path>` |
-| `tests/extensions/*.test.mjs` | `node --test <path>` |
+| `tests/extensions/**/*.test.mjs` | `node --test <path>` |
 
 Examples:
 
@@ -238,6 +241,21 @@ interface. The shell file in this phase is a test, not a second implementation
 of the runner. If future requirements add multiple-file selection or
 affected-test discovery, that work should receive a separate design rather than
 growing opaque Make shell logic.
+
+Phase 1 implementation record, 2026-08-04:
+
+- `test-file` is a phony Make target with fixed shell syntax. The raw `TEST`
+  value is transported through a simply-expanded exported variable so Make
+  function syntax is not evaluated before validation.
+- `tests/policy/test_file_target_test.sh` verifies exact fake-runner arguments,
+  top-level and nested Lua routing, Extension routing, invalid paths,
+  metacharacter handling, and non-zero failure without runner fallback.
+- GNU Make maps a failed recipe to its own documented non-zero exit status; the
+  contract therefore cannot return an arbitrary child status such as 23
+  unchanged. It verifies zero versus non-zero and selected-runner identity.
+- Real focused Lua, nested Lua, and Extension tests passed. The complete suite,
+  formatting, CI policy, and installed Pi 0.83.0 smoke gates also passed without
+  a model call.
 
 ### 8.2 Phase 2: split broad Lua specs by ownership
 

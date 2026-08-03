@@ -1,6 +1,6 @@
 # Task 03: Add an Automated Contract Test for the Focused Entry
 
-> Status: Proposed. This task has not been implemented.
+> Status: Completed on 2026-08-04.
 >
 > Parent plan: `docs/focused-test-command.md`
 >
@@ -262,22 +262,30 @@ Successful behavior:
 
 ## 9. Completion Checklist
 
-- [ ] The contract test is a new independent policy file.
-- [ ] Temporary resources are always cleaned.
-- [ ] Fake runners never invoke real Neovim, Node, Pi, or a model.
-- [ ] Top-level and nested Lua routing are covered.
-- [ ] Extension routing is covered.
-- [ ] Exact argument boundaries are covered.
-- [ ] Missing, malformed, out-of-scope, and nonexistent paths are covered.
-- [ ] Metacharacter cases cannot create the sentinel.
-- [ ] Runner failures propagate non-zero status.
-- [ ] Existing policy discovery includes the test in `make test` exactly once
+- [x] The contract test is a new independent policy file.
+- [x] Temporary resources are always cleaned.
+- [x] Fake runners never invoke real Neovim, Node, Pi, or a model.
+- [x] Top-level and nested Lua routing are covered.
+- [x] Extension routing is covered.
+- [x] Exact argument boundaries are covered.
+- [x] Missing, malformed, out-of-scope, and nonexistent paths are covered.
+- [x] Metacharacter cases cannot create the sentinel.
+- [x] Runner failures propagate non-zero status.
+- [x] Existing policy discovery includes the test in `make test` exactly once
       without recursion.
-- [ ] Real focused Lua and Extension smoke commands pass.
-- [ ] `make test` and `make format-check` pass or match the Task 01 baseline.
+- [x] Real focused Lua and Extension smoke commands pass.
+- [x] `make test` and `make format-check` pass or match the Task 01 baseline.
 
 ## 10. Handoff to Task 04
 
 Record the final public command, stable diagnostics, Make target names, and test
 file path. Task 04 documents only behavior that actually exists and has passed
 this contract.
+
+## 11. Implementation Record
+
+`tests/policy/test_file_target_test.sh` uses task-scoped temporary fake `nvim`
+and `node` executables. It records one argument per line, checks the exact vector,
+forces independent non-zero failures, verifies stable diagnostics, and exercises
+semicolon, ampersand, pipe, backtick, Make-function, and quote inputs against a
+sentinel. The policy is discovered exactly once by `test-ci-policy`.
