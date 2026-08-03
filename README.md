@@ -390,6 +390,9 @@ make test-file TEST=tests/extensions/security/permission.test.mjs
 affected tests from Git changes, so `make test` remains the complete
 deterministic gate before finishing a change.
 
+See [`tests/README.md`](tests/README.md) for command scope, test ownership, and
+change-to-test guidance.
+
 The RPC parser deliberately buffers arbitrary stdout chunks and splits only on
 LF. It does not use generic line readers because U+2028 and U+2029 are valid
 inside JSON strings.

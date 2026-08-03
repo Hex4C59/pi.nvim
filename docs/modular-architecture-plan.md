@@ -421,8 +421,9 @@ Split broad Chat coverage by owner:
 ```text
 tests/lua/ui/chat/facade_spec.lua
 tests/lua/ui/chat/shell_spec.lua
-tests/lua/ui/chat/activity_spec.lua
+tests/lua/ui/chat/registry_spec.lua
 tests/lua/ui/chat/interaction_spec.lua
+tests/lua/ui/chat/interactions_spec.lua
 tests/lua/ui/chat/lifecycle_spec.lua
 tests/lua/ui/input_spec.lua
 tests/lua/ui/command_menu_spec.lua

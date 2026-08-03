@@ -174,8 +174,8 @@ focused shared helpers. No aggregate security index or policy state remains.
 | Image source, preview, scheduler, backend, and window owners | `tests/lua/ui/image/` |
 | Chat registry/global lifecycle | `tests/lua/ui/chat/registry_spec.lua` |
 | Chat shell and responsive layout | `tests/lua/ui/chat/shell_spec.lua` |
-| Chat activity and interaction | `tests/lua/ui/chat/activity_spec.lua`, `interaction_spec.lua` |
-| Chat/component lifecycle | `tests/lua/ui/chat/lifecycle_spec.lua` |
+| Chat transcript and input interactions | `tests/lua/ui/chat/interaction_spec.lua`, `interactions_spec.lua` |
+| Chat activity and component lifecycle | `tests/lua/ui/chat/lifecycle_spec.lua` |
 | Input and command-menu ownership | `tests/lua/ui/input_spec.lua`, `command_menu_spec.lua` |
 | Widget and permission ownership | `tests/lua/ui/widget_spec.lua`, `permission_spec.lua` |
 | Chat facade contract | `tests/lua/ui/chat/facade_spec.lua` |
