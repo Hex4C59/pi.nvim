@@ -49,6 +49,10 @@ local function action(actions, name)
   return type(actions) == "table" and type(actions[name]) == "function" and actions[name] or function() end
 end
 
+local function boundary(actions, name, fallback)
+  return type(actions) == "table" and type(actions[name]) == "function" and actions[name] or fallback
+end
+
 function Chat.new(root, frontend_actions)
   registry:prepare()
   local chat = setmetatable({
@@ -73,6 +77,10 @@ function Chat.new(root, frontend_actions)
       contextUsage = {},
       cost = 0,
     },
+    copy_to_clipboard = boundary(frontend_actions, "copy_to_clipboard", function(text)
+      return vim.fn.setreg("+", text)
+    end),
+    notify = boundary(frontend_actions, "notify", vim.notify),
   }, Chat)
   chat.command_menu = command_menu.CommandMenu.new({
     root = root,
@@ -799,7 +807,11 @@ end
 
 function Chat:_open_image_preview(descriptor)
   self.image_preview:set_backend(self.image_backend)
-  return self.image_preview:open(descriptor)
+  local opened = self.image_preview:open(descriptor)
+  if not opened then
+    self.notify("Image preview is unavailable", vim.log.levels.WARN, { title = "Pi" })
+  end
+  return opened
 end
 
 function Chat:set_position(position)
@@ -930,29 +942,29 @@ function Chat:_handle_left_mouse(mouse)
   if not self.win or not vim.api.nvim_win_is_valid(self.win) or mouse.winid ~= self.win then
     return false
   end
-  local image = self:_image_at_mouse(mouse)
-  if image then
-    pcall(vim.api.nvim_win_set_cursor, self.win, { image.row + 1, image.col })
-    return self:_open_image_preview(image)
-  end
   local item = self:_tool_at_row(mouse.line)
   local process = not item and self:_process_at_row(mouse.line) or nil
-  if not item and not process then
-    return false
+  if item or process then
+    local buf = self.transcript_view:buffer()
+    local row = math.max(1, math.min(tonumber(mouse.line) or 1, vim.api.nvim_buf_line_count(buf)))
+    local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+    local column = math.max(0, math.min((tonumber(mouse.column) or 1) - 1, #line))
+    pcall(vim.api.nvim_win_set_cursor, self.win, { row, column })
+    if item then
+      self:_toggle_tool(item)
+      self:_render_transcript()
+    else
+      self:toggle_process()
+    end
+    return true
   end
 
-  local buf = self.transcript_view:buffer()
-  local row = math.max(1, math.min(tonumber(mouse.line) or 1, vim.api.nvim_buf_line_count(buf)))
-  local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
-  local column = math.max(0, math.min((tonumber(mouse.column) or 1) - 1, #line))
-  pcall(vim.api.nvim_win_set_cursor, self.win, { row, column })
-  if item then
-    self:_toggle_tool(item)
-    self:_render_transcript()
-  else
-    self:toggle_process()
+  local image = self:_image_at_mouse(mouse)
+  if not image then
+    return false
   end
-  return true
+  pcall(vim.api.nvim_win_set_cursor, self.win, { image.row + 1, image.col })
+  return self:_open_image_preview(image)
 end
 
 function Chat:toggle_process()
@@ -988,12 +1000,22 @@ function Chat:copy_last_assistant()
     if item.type == "assistant" then
       local text = text_content(item.message.content)
       if text ~= "" then
-        vim.fn.setreg("+", text)
-        vim.notify("Copied the last Pi response", vim.log.levels.INFO, { title = "Pi" })
-        return
+        local ok, copied, copy_err = pcall(self.copy_to_clipboard, text)
+        if not ok or copied == false then
+          local detail = ok and copy_err or copied
+          self.notify(
+            "Could not copy the last Pi response: " .. tostring(detail or "unknown error"),
+            vim.log.levels.ERROR,
+            { title = "Pi" }
+          )
+          return false
+        end
+        self.notify("Copied the last Pi response", vim.log.levels.INFO, { title = "Pi" })
+        return true
       end
     end
   end
+  return false
 end
 
 function Chat:render_history(messages)
