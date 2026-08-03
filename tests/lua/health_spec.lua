@@ -10,16 +10,23 @@ local original = {
   warn = vim.health.warn,
   error = vim.health.error,
 }
-for _, level in ipairs({ "start", "ok", "info", "warn", "error" }) do
-  vim.health[level] = function(message)
-    table.insert(messages, level .. ": " .. message)
+
+local function run()
+  for _, level in ipairs({ "start", "ok", "info", "warn", "error" }) do
+    vim.health[level] = function(message)
+      table.insert(messages, level .. ": " .. message)
+    end
   end
+
+  health.check()
 end
 
-health.check()
-
+local ok, err = xpcall(run, debug.traceback)
 for level, handler in pairs(original) do
   vim.health[level] = handler
+end
+if not ok then
+  error(err)
 end
 
 local report = table.concat(messages, "\n")

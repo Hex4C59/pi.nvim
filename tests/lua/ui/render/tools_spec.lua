@@ -415,8 +415,8 @@ assert_ranges(metadata_lines, metadata_ranges, metadata_tools)
 
 local lua_parser_available = pcall(function()
   local parser = vim.treesitter.get_string_parser("local value = true", "lua")
-  assert(parser:parse()[1])
-  assert(vim.treesitter.query.get("lua", "highlights"))
+  assert(parser:parse()[1], "tool renderer Lua parser probe returned no syntax tree")
+  assert(vim.treesitter.query.get("lua", "highlights"), "tool renderer Lua highlight probe returned no query")
 end)
 local code_lines, code_marks, code_ranges = render_tools({
   {

@@ -6,7 +6,10 @@ assert(head == "a" and head_omitted == 4, "UTF-8 head split a multibyte characte
 local tail, tail_omitted = projection.utf8_tail(utf8, 2)
 assert(tail == "b" and tail_omitted == 4, "UTF-8 tail split a multibyte character")
 
-assert(projection.extract_reasoning_header("prefix **  Plan   carefully  ** suffix") == "Plan carefully")
+assert(
+  projection.extract_reasoning_header("prefix **  Plan   carefully  ** suffix") == "Plan carefully",
+  "reasoning header projection did not normalize internal spacing"
+)
 assert(projection.extract_reasoning_header("**incomplete") == nil, "incomplete reasoning header was accepted")
 
 local args = {

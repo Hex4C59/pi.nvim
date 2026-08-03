@@ -11,8 +11,11 @@ vim.api.nvim_set_hl = function(namespace, name, value)
   end
   return original_set_hl(namespace, name, value)
 end
-local failed_preview, highlight_err = preview.from_rgba(string.rep(string.char(17, 34, 51, 255), 2), 1, 1)
+local patch_ok, failed_preview, highlight_err = xpcall(function()
+  return preview.from_rgba(string.rep(string.char(17, 34, 51, 255), 2), 1, 1)
+end, debug.traceback)
 vim.api.nvim_set_hl = original_set_hl
+assert(patch_ok, failed_preview)
 assert(not failed_preview, "highlight creation failure unexpectedly produced a preview")
 assert(
   highlight_err and highlight_err:find("simulated highlight exhaustion", 1, true),
@@ -25,9 +28,9 @@ local rgba = table.concat({
   string.char(0, 0, 255, 255),
   string.char(255, 255, 0, 255),
 })
-local block_preview = assert(preview.from_rgba(rgba, 2, 1))
+local block_preview = assert(preview.from_rgba(rgba, 2, 1), "valid RGBA fixture did not produce a block preview")
 local image = { type = "image", mimeType = "image/png", data = png_base64 }
-local prepared = assert(image_data.prepare(image, 2))
+local prepared = assert(image_data.prepare(image, 2), "valid image fixture was not prepared for block preview")
 prepared.preview = block_preview
 local lines, marks, _, _, placements = renderer.render({
   { type = "assistant", _pi_id = "assistant:block-preview", message = { content = { image } } },

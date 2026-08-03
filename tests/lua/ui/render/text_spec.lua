@@ -34,10 +34,13 @@ local result = {
   },
 }
 local authoritative = vim.deepcopy(result)
-assert(text.result_text(nil) == "")
-assert(text.result_text({ content = {} }) == "")
-assert(text.result_text({ content = { { type = "image" } } }) == "")
-assert(text.result_text(result) == "first\nsecond\n[Image omitted: payload exceeded the client tool output limit]")
+assert(text.result_text(nil) == "", "nil tool result projected non-empty text")
+assert(text.result_text({ content = {} }) == "", "empty tool content projected non-empty text")
+assert(text.result_text({ content = { { type = "image" } } }) == "", "image-only tool result projected text")
+assert(
+  text.result_text(result) == "first\nsecond\n[Image omitted: payload exceeded the client tool output limit]",
+  "mixed tool result text or image omission marker changed"
+)
 assert(vim.deep_equal(result, authoritative), "result_text mutated structured result content")
 
 local durations = {

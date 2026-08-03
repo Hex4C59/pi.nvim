@@ -92,15 +92,24 @@ assert(assistant.reasoning_header == nil and assistant.reasoning_buffer == "", "
 local ending_message = { role = "assistant", content = {}, stopReason = "error", errorMessage = "failed" }
 assistant:end_assistant(ending_message)
 assert(assistant.streaming_assistant == nil, "assistant streaming state survived end")
-assert(assistant_item.message.stopReason == "error" and assistant_item.message.errorMessage == "failed")
+assert(
+  assistant_item.message.stopReason == "error" and assistant_item.message.errorMessage == "failed",
+  "assistant error completion lost its stop reason or message"
+)
 assert(assistant_item.duration_ms >= 1, "assistant duration was not finalized")
 assert(vim.deep_equal(starting_message, authoritative_message), "assistant lifecycle mutated an input message")
 assert(assistant_observed.input_changes >= 3, "assistant reasoning/input notifications are missing")
-assert(assistant_observed.changes[1].immediate and assistant_observed.changes[#assistant_observed.changes].immediate)
+assert(
+  assistant_observed.changes[1].immediate and assistant_observed.changes[#assistant_observed.changes].immediate,
+  "assistant lifecycle endpoints were not reported as immediate changes"
+)
 
 local empty_assistant = new_transcript()
 empty_assistant:end_assistant({ role = "assistant", content = {}, stopReason = "stop" })
-assert(#empty_assistant.items == 1 and empty_assistant.items[1].message.stopReason == "stop")
+assert(
+  #empty_assistant.items == 1 and empty_assistant.items[1].message.stopReason == "stop",
+  "empty assistant completion did not retain one stopped message"
+)
 
 local transcript = new_transcript()
 local huge = string.rep("a", 4096) .. "TAIL"
@@ -179,7 +188,10 @@ bash_metadata:start_tool("streamed", "bash", { command = "printf chunks" })
 bash_metadata:append_bash_delta("streamed", "first-")
 bash_metadata:append_bash_delta("streamed", "second")
 bash_metadata:materialize_pending_bash()
-assert(text_content(bash_metadata:find_tool("streamed").result.content) == "first-second")
+assert(
+  text_content(bash_metadata:find_tool("streamed").result.content) == "first-second",
+  "streamed Bash chunks did not compose in arrival order"
+)
 assert(not bash_metadata:find_tool("streamed").bash_dirty, "pending Bash output was not materialized")
 bash_metadata:end_bash("streamed", {
   output = "duplicated final echo",

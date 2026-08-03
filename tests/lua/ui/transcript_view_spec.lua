@@ -167,8 +167,14 @@ with_view({}, function(fixture)
   assert(view:has_buffer() and view:owns_buffer(buf), "TranscriptView did not claim its own buffer")
   assert(vim.api.nvim_buf_get_name(buf):find("Pi Chat", 1, true), "transcript buffer name is missing")
   assert(vim.b[buf].pi_kind == "chat" and vim.b[buf].pi_root == view.root, "buffer metadata is incomplete")
-  assert(vim.bo[buf].buftype == "nofile" and vim.bo[buf].bufhidden == "hide")
-  assert(vim.bo[buf].swapfile == false and vim.bo[buf].filetype == "markdown")
+  assert(
+    vim.bo[buf].buftype == "nofile" and vim.bo[buf].bufhidden == "hide",
+    "TranscriptView buffer did not retain nofile/hidden lifecycle options"
+  )
+  assert(
+    vim.bo[buf].swapfile == false and vim.bo[buf].filetype == "markdown",
+    "TranscriptView buffer enabled swap or lost its Markdown filetype"
+  )
   assert(vim.bo[buf].modifiable == false, "transcript buffer remained modifiable")
   local mappings = {}
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
@@ -338,9 +344,7 @@ with_view({}, function(fixture)
   end
   fixture.view:schedule_render()
   fixture.view:destroy()
-  vim.wait(100, function()
-    return false
-  end, 10)
+  assert(fixture.view.render_timer == nil, "destroyed view retained its scheduled render timer")
   fixture.view:schedule_render()
   assert(renders == 0 and not fixture.view.render_pending, "destroyed view executed or accepted scheduled work")
 end)
@@ -405,9 +409,18 @@ with_view({}, function(fixture)
   fixture.view.tool_ranges = { { first = 2, last = 4, item = tool } }
   fixture.view.process_ranges = { process }
   fixture.view.image_placements = { image }
-  assert(fixture.view:tool_at_row(2) == tool and fixture.view:tool_at_row(4) == tool)
-  assert(fixture.view:tool_at_row(1) == nil and fixture.view:process_at_row(5) == process)
-  assert(fixture.view:image_at_row(2) == image and fixture.view:image_at_row(3) == image)
+  assert(
+    fixture.view:tool_at_row(2) == tool and fixture.view:tool_at_row(4) == tool,
+    "tool hit testing lost an inclusive range boundary"
+  )
+  assert(
+    fixture.view:tool_at_row(1) == nil and fixture.view:process_at_row(5) == process,
+    "tool/process hit testing crossed structured range boundaries"
+  )
+  assert(
+    fixture.view:image_at_row(2) == image and fixture.view:image_at_row(3) == image,
+    "image hit testing lost an inclusive placement boundary"
+  )
   assert(fixture.view:image_at_row(4) == nil, "image row hit escaped its inclusive bounds")
   local position = vim.fn.screenpos(win, image.row + 1, image.col + 1)
   assert(position.row > 0, "mouse hit fixture is not visible")
@@ -419,7 +432,10 @@ with_view({}, function(fixture)
   }) == image, "mouse coordinates did not hit the image descriptor")
   assert(fixture.view:image_at_mouse({ winid = win + 1000, line = 2 }) == nil, "foreign window hit was accepted")
   fixture.view:clear()
-  assert(not fixture.view:tool_at_row(2) and not fixture.view:process_at_row(5) and not fixture.view:image_at_row(2))
+  assert(
+    not fixture.view:tool_at_row(2) and not fixture.view:process_at_row(5) and not fixture.view:image_at_row(2),
+    "TranscriptView clear retained structured hit ranges"
+  )
 end)
 
 with_view({}, function(fixture)
@@ -512,10 +528,16 @@ with_view({
   fixture.view:render()
   local sync = fixture.backend.sync_calls[#fixture.backend.sync_calls]
   assert(sync and #sync.placements == 2, "terminal image descriptors were not sent to the backend")
-  assert(sync.placements[1].block == first_terminal_image and sync.placements[2].block == second_terminal_image)
+  assert(
+    sync.placements[1].block == first_terminal_image and sync.placements[2].block == second_terminal_image,
+    "terminal image placement order diverged from structured content order"
+  )
   assert(sync.placements[1].row < sync.placements[2].row, "terminal image descriptors lost visible order")
   assert(sync.placements[1].width > 0 and sync.placements[1].width <= 42, "terminal image width escaped layout bounds")
-  assert(fixture.view:image_at_row(sync.placements[1].row + 1) == sync.placements[1])
+  assert(
+    fixture.view:image_at_row(sync.placements[1].row + 1) == sync.placements[1],
+    "rendered terminal placement was not available to image hit testing"
+  )
 end)
 
 with_view(

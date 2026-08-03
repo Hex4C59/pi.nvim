@@ -23,8 +23,8 @@ end
 
 local lua_parser_available = pcall(function()
   local parser = vim.treesitter.get_string_parser("local value = true", "lua")
-  assert(parser:parse()[1])
-  assert(vim.treesitter.query.get("lua", "highlights"))
+  assert(parser:parse()[1], "Markdown renderer Lua parser probe returned no syntax tree")
+  assert(vim.treesitter.query.get("lua", "highlights"), "Markdown renderer Lua highlight probe returned no query")
 end)
 
 local markdown_source =

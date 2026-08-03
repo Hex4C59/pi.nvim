@@ -281,7 +281,8 @@ local function run()
   assert(buffer_text(chat):find("replacement history", 1, true), "session reset did not permit history reload")
 
   chat:set_widget("destroy.widget", { "Destroy widget" }, "aboveEditor")
-  local destroy_widget_buffer = assert(chat.widget_area:buffer("aboveEditor"))
+  local destroy_widget_buffer =
+    assert(chat.widget_area:buffer("aboveEditor"), "destroy fixture widget buffer was not created")
   chat:_focus_input()
   chat:set_input("/mo")
   assert(chat:_update_command_menu(), "destroy fixture command menu did not open")

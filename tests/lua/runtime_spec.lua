@@ -172,144 +172,172 @@ local function respond(request, success, data, err)
   end
 end
 
-local generation = 0
-package.loaded["pi.ui.chat"] = { Chat = FakeChat }
-package.loaded["pi.ui.dialog"] = {
-  handle = function() end,
-  discard = function() end,
+local previous_modules = {
+  chat = package.loaded["pi.ui.chat"],
+  dialog = package.loaded["pi.ui.dialog"],
+  client = package.loaded["pi.client"],
+  runtime = package.loaded["pi.runtime"],
 }
-package.loaded["pi.client"] = {
-  Client = {
-    new = function(client_root)
-      generation = generation + 1
-      return make_client("client" .. generation, client_root)
-    end,
-  },
-}
-package.loaded["pi.runtime"] = nil
-local runtime = require("pi.runtime")
-
-local notifications = {}
 local original_notify = vim.notify
-vim.notify = function(message, level)
-  table.insert(notifications, { message = message, level = level })
+local runtime
+
+local function run()
+  local generation = 0
+  package.loaded["pi.ui.chat"] = { Chat = FakeChat }
+  package.loaded["pi.ui.dialog"] = {
+    handle = function() end,
+    discard = function() end,
+  }
+  package.loaded["pi.client"] = {
+    Client = {
+      new = function(client_root)
+        generation = generation + 1
+        return make_client("client" .. generation, client_root)
+      end,
+    },
+  }
+  package.loaded["pi.runtime"] = nil
+  runtime = require("pi.runtime")
+
+  local notifications = {}
+  vim.notify = function(message, level)
+    table.insert(notifications, { message = message, level = level })
+  end
+
+  local client = runtime.get_client(root)
+  local chat = runtime.chat_for(root)
+  runtime.reload_session(client)
+  assert(chat.reset_count == 1, "session reload bypassed the Chat projection facade")
+  assert(#requests_for(client, "get_state") == 1, "session reload did not refresh state exactly once")
+  assert(#requests_for(client, "get_session_stats") == 1, "session reload did not refresh stats exactly once")
+  assert(#requests_for(client, "get_messages") == 1, "session reload did not request history exactly once")
+
+  runtime.refresh_stats(client)
+  runtime.refresh_stats(client)
+  assert(#requests_for(client, "get_session_stats") == 1, "concurrent stats refreshes were not de-duplicated")
+  respond(latest_request(client, "get_state"), true, { model = { id = "fixture" } })
+  respond(latest_request(client, "get_session_stats"), true, { cost = 1 })
+  respond(latest_request(client, "get_messages"), true, { messages = { { role = "user", content = {} } } })
+  assert(client.session.model.id == "fixture", "session reload did not update the declared Client session mirror")
+  assert(#chat.stats == 1 and chat.stats[1].cost == 1, "stats refresh did not reach Chat")
+  assert(#chat.histories == 1, "session history did not reach Chat")
+
+  runtime.refresh_stats(client)
+  runtime.refresh_stats(client)
+  assert(#requests_for(client, "get_session_stats") == 2, "settled stats refresh did not admit one new request")
+  respond(latest_request(client, "get_session_stats"), false, nil, "stats unavailable")
+  runtime.refresh_stats(client)
+  assert(#requests_for(client, "get_session_stats") == 3, "failed stats refresh left the de-duplication flag stuck")
+  respond(latest_request(client, "get_session_stats"), true, { cost = 2 })
+
+  runtime.refresh_commands(client)
+  respond(latest_request(client, "get_commands"), true, {
+    commands = {
+      { name = "builtin", source = "builtin" },
+      { name = "extension", source = "extension" },
+    },
+  })
+  assert(#chat.commands == 2, "discovered commands did not reach Chat")
+
+  runtime.send_prompt("/builtin", nil, root)
+  local builtin_prompt = latest_request(client, "prompt")
+  respond(builtin_prompt, true, {})
+  client:emit({
+    type = "message_start",
+    message = { role = "user", content = { { type = "text", text = "expanded builtin" } } },
+  })
+  assert(chat.users[#chat.users].text == "/builtin", "builtin command display correlation was lost")
+
+  runtime.send_prompt("/extension", nil, root)
+  local extension_prompt = latest_request(client, "prompt")
+  respond(extension_prompt, true, {})
+  client:emit({
+    type = "message_start",
+    message = { role = "user", content = { { type = "text", text = "expanded extension" } } },
+  })
+  assert(
+    chat.users[#chat.users].text == "expanded extension",
+    "Extension output was replaced by a local command display"
+  )
+
+  runtime.send_prompt("accepted", "accepted display", root)
+  local accepted_prompt = latest_request(client, "prompt")
+  local image = { type = "image", mimeType = "image/png", data = "fixture" }
+  runtime.send_prompt("rejected", "rejected display", root, nil, { image })
+  local rejected_prompt = latest_request(client, "prompt")
+  respond(rejected_prompt, false, nil, "fixture rejection")
+  assert(#chat.restored_images == 1 and chat.restored_images[1][1] == image, "failed prompt did not restore images")
+  assert(notifications[#notifications].message == "fixture rejection", "failed prompt did not report its RPC error")
+  client:emit({
+    type = "message_start",
+    message = { role = "user", content = { { type = "text", text = "wire display" } } },
+  })
+  assert(chat.users[#chat.users].text == "accepted display", "a failed prompt displaced an earlier display entry")
+  respond(accepted_prompt, true, {})
+
+  runtime.run_bash("first", root)
+  local first_bash = latest_request(client, "bash")
+  runtime.run_bash("second", root)
+  local second_bash = latest_request(client, "bash")
+  respond(first_bash, true, { output = "first", exitCode = 0 })
+  runtime.abort(root)
+  local abort_bash = latest_request(client, "abort_bash")
+  respond(abort_bash, true, {})
+  assert(abort_bash.payload and next(abort_bash.payload) == nil, "direct Bash abort payload changed")
+  respond(second_bash, true, { output = "second", exitCode = 0 })
+  runtime.abort(root)
+  local abort_agent = latest_request(client, "abort")
+  assert(abort_agent.payload and next(abort_agent.payload) == nil, "agent abort payload changed")
+  assert(#chat.started_tools == 2 and #chat.ended_bash == 2, "direct Bash lifecycle did not reach Chat")
+
+  for _, field in ipairs({ "commands_by_name", "stats_pending", "display_queue", "runtime_unsubscribe", "bash_running" }) do
+    assert(client[field] == nil, "Runtime dynamically attached Client field " .. field)
+  end
+
+  runtime.send_prompt("late prompt", "late display", root)
+  local late_prompt = latest_request(client, "prompt")
+  runtime.run_bash("late bash", root)
+  local late_bash = latest_request(client, "bash")
+  local late_listener = client.last_listener
+  local notification_count = #notifications
+  runtime.stop(root)
+  assert(
+    client.stop_count == 1 and client.unsubscribe_count == 1,
+    "Runtime did not stop and unsubscribe the old Client"
+  )
+  assert(chat.destroy_count == 1, "Runtime did not destroy the old Chat")
+
+  local replacement = runtime.get_client(root)
+  local replacement_chat = runtime.chat_for(root)
+  late_listener({
+    type = "message_start",
+    message = { role = "user", content = { { type = "text", text = "late event" } } },
+  })
+  respond(late_prompt, false, nil, "late failure")
+  respond(late_bash, true, { output = "late", exitCode = 0 })
+  assert(#replacement_chat.users == 0, "a replaced Client projected a late event into the new Chat")
+  assert(#replacement_chat.ended_bash == 0, "a replaced Client completed Bash in the new Chat")
+  assert(#notifications == notification_count, "a replaced Client surfaced a stale callback error")
+  runtime.abort(root)
+  assert(latest_request(replacement, "abort").command == "abort", "replacement inherited the old direct Bash request")
+
+  for _, field in ipairs({ "commands_by_name", "stats_pending", "display_queue", "runtime_unsubscribe", "bash_running" }) do
+    assert(replacement[field] == nil, "replacement Client received Runtime field " .. field)
+  end
+
+  runtime.stop(root)
 end
 
-local client = runtime.get_client(root)
-local chat = runtime.chat_for(root)
-runtime.reload_session(client)
-assert(chat.reset_count == 1, "session reload bypassed the Chat projection facade")
-assert(#requests_for(client, "get_state") == 1, "session reload did not refresh state exactly once")
-assert(#requests_for(client, "get_session_stats") == 1, "session reload did not refresh stats exactly once")
-assert(#requests_for(client, "get_messages") == 1, "session reload did not request history exactly once")
-
-runtime.refresh_stats(client)
-runtime.refresh_stats(client)
-assert(#requests_for(client, "get_session_stats") == 1, "concurrent stats refreshes were not de-duplicated")
-respond(latest_request(client, "get_state"), true, { model = { id = "fixture" } })
-respond(latest_request(client, "get_session_stats"), true, { cost = 1 })
-respond(latest_request(client, "get_messages"), true, { messages = { { role = "user", content = {} } } })
-assert(client.session.model.id == "fixture", "session reload did not update the declared Client session mirror")
-assert(#chat.stats == 1 and chat.stats[1].cost == 1, "stats refresh did not reach Chat")
-assert(#chat.histories == 1, "session history did not reach Chat")
-
-runtime.refresh_stats(client)
-runtime.refresh_stats(client)
-assert(#requests_for(client, "get_session_stats") == 2, "settled stats refresh did not admit one new request")
-respond(latest_request(client, "get_session_stats"), false, nil, "stats unavailable")
-runtime.refresh_stats(client)
-assert(#requests_for(client, "get_session_stats") == 3, "failed stats refresh left the de-duplication flag stuck")
-respond(latest_request(client, "get_session_stats"), true, { cost = 2 })
-
-runtime.refresh_commands(client)
-respond(latest_request(client, "get_commands"), true, {
-  commands = {
-    { name = "builtin", source = "builtin" },
-    { name = "extension", source = "extension" },
-  },
-})
-assert(#chat.commands == 2, "discovered commands did not reach Chat")
-
-runtime.send_prompt("/builtin", nil, root)
-local builtin_prompt = latest_request(client, "prompt")
-respond(builtin_prompt, true, {})
-client:emit({
-  type = "message_start",
-  message = { role = "user", content = { { type = "text", text = "expanded builtin" } } },
-})
-assert(chat.users[#chat.users].text == "/builtin", "builtin command display correlation was lost")
-
-runtime.send_prompt("/extension", nil, root)
-local extension_prompt = latest_request(client, "prompt")
-respond(extension_prompt, true, {})
-client:emit({
-  type = "message_start",
-  message = { role = "user", content = { { type = "text", text = "expanded extension" } } },
-})
-assert(chat.users[#chat.users].text == "expanded extension", "Extension output was replaced by a local command display")
-
-runtime.send_prompt("accepted", "accepted display", root)
-local accepted_prompt = latest_request(client, "prompt")
-local image = { type = "image", mimeType = "image/png", data = "fixture" }
-runtime.send_prompt("rejected", "rejected display", root, nil, { image })
-local rejected_prompt = latest_request(client, "prompt")
-respond(rejected_prompt, false, nil, "fixture rejection")
-assert(#chat.restored_images == 1 and chat.restored_images[1][1] == image, "failed prompt did not restore images")
-assert(notifications[#notifications].message == "fixture rejection", "failed prompt did not report its RPC error")
-client:emit({
-  type = "message_start",
-  message = { role = "user", content = { { type = "text", text = "wire display" } } },
-})
-assert(chat.users[#chat.users].text == "accepted display", "a failed prompt displaced an earlier display entry")
-respond(accepted_prompt, true, {})
-
-runtime.run_bash("first", root)
-local first_bash = latest_request(client, "bash")
-runtime.run_bash("second", root)
-local second_bash = latest_request(client, "bash")
-respond(first_bash, true, { output = "first", exitCode = 0 })
-runtime.abort(root)
-local abort_bash = latest_request(client, "abort_bash")
-respond(abort_bash, true, {})
-assert(abort_bash.payload and next(abort_bash.payload) == nil, "direct Bash abort payload changed")
-respond(second_bash, true, { output = "second", exitCode = 0 })
-runtime.abort(root)
-local abort_agent = latest_request(client, "abort")
-assert(abort_agent.payload and next(abort_agent.payload) == nil, "agent abort payload changed")
-assert(#chat.started_tools == 2 and #chat.ended_bash == 2, "direct Bash lifecycle did not reach Chat")
-
-for _, field in ipairs({ "commands_by_name", "stats_pending", "display_queue", "runtime_unsubscribe", "bash_running" }) do
-  assert(client[field] == nil, "Runtime dynamically attached Client field " .. field)
+local ok, err = xpcall(run, debug.traceback)
+if runtime then
+  pcall(runtime.stop, root)
 end
-
-runtime.send_prompt("late prompt", "late display", root)
-local late_prompt = latest_request(client, "prompt")
-runtime.run_bash("late bash", root)
-local late_bash = latest_request(client, "bash")
-local late_listener = client.last_listener
-local notification_count = #notifications
-runtime.stop(root)
-assert(client.stop_count == 1 and client.unsubscribe_count == 1, "Runtime did not stop and unsubscribe the old Client")
-assert(chat.destroy_count == 1, "Runtime did not destroy the old Chat")
-
-local replacement = runtime.get_client(root)
-local replacement_chat = runtime.chat_for(root)
-late_listener({
-  type = "message_start",
-  message = { role = "user", content = { { type = "text", text = "late event" } } },
-})
-respond(late_prompt, false, nil, "late failure")
-respond(late_bash, true, { output = "late", exitCode = 0 })
-assert(#replacement_chat.users == 0, "a replaced Client projected a late event into the new Chat")
-assert(#replacement_chat.ended_bash == 0, "a replaced Client completed Bash in the new Chat")
-assert(#notifications == notification_count, "a replaced Client surfaced a stale callback error")
-runtime.abort(root)
-assert(latest_request(replacement, "abort").command == "abort", "replacement inherited the old direct Bash request")
-
-for _, field in ipairs({ "commands_by_name", "stats_pending", "display_queue", "runtime_unsubscribe", "bash_running" }) do
-  assert(replacement[field] == nil, "replacement Client received Runtime field " .. field)
-end
-
-runtime.stop(root)
 vim.notify = original_notify
+package.loaded["pi.ui.chat"] = previous_modules.chat
+package.loaded["pi.ui.dialog"] = previous_modules.dialog
+package.loaded["pi.client"] = previous_modules.client
+package.loaded["pi.runtime"] = previous_modules.runtime
+if not ok then
+  error(err)
+end
 print("runtime_spec: ok")
