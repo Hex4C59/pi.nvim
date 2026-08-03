@@ -39,6 +39,8 @@ function TranscriptView.new(deps)
     tool_ranges = {},
     process_ranges = {},
     image_placements = {},
+    image_generation = 0,
+    destroyed = false,
   }, TranscriptView)
   return self
 end
@@ -189,6 +191,9 @@ local function dynamic_projection_bytes(lines, marks_by_row)
 end
 
 function TranscriptView:_ensure_buffer()
+  if self.destroyed then
+    return nil
+  end
   if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
     return self.buf
   end
@@ -260,6 +265,9 @@ end
 
 function TranscriptView:_with_modifiable(callback)
   local buf = self:_ensure_buffer()
+  if not buf then
+    return
+  end
   vim.bo[buf].modifiable = true
   callback(buf)
   vim.bo[buf].modifiable = false
@@ -297,6 +305,9 @@ function TranscriptView:_clamp_transcript_view()
 end
 
 function TranscriptView:_render_transcript()
+  if self.destroyed then
+    return
+  end
   self.materialize()
   local follow_output = true
   local previous_row = 1
@@ -537,6 +548,10 @@ function TranscriptView:_render_transcript()
 end
 
 function TranscriptView:_prepare_images(width, start_index, prepare_preview)
+  if self.destroyed then
+    return
+  end
+  local generation = self.image_generation
   local seen = {}
   local function prepare(content, include_markdown, item)
     if type(content) ~= "table" then
@@ -550,8 +565,11 @@ function TranscriptView:_prepare_images(width, start_index, prepare_preview)
         local retained = self.refresh_image_accounting(item, block)
         if prepared and prepare_preview and retained then
           image_data.prepare_preview(block, function()
+            if self.destroyed or generation ~= self.image_generation then
+              return
+            end
             self.refresh_image_accounting(item, block)
-            self:invalidate()
+            self:_invalidate_cache()
             self:schedule_render()
           end)
         end
@@ -579,7 +597,7 @@ function TranscriptView:_prepare_images(width, start_index, prepare_preview)
 end
 
 function TranscriptView:_schedule_render()
-  if self.render_pending then
+  if self.destroyed or self.render_pending then
     return
   end
   self.render_pending = true
@@ -657,10 +675,15 @@ function TranscriptView:_image_at_mouse(mouse)
   return self:_image_at_row(mouse.line)
 end
 
-function TranscriptView:invalidate()
+function TranscriptView:_invalidate_cache()
   self.render_cache = nil
   self.render_cache_bytes = 0
   self.projection_retained_bytes = self.render_frame_bytes or 0
+end
+
+function TranscriptView:invalidate()
+  self.image_generation = self.image_generation + 1
+  self:_invalidate_cache()
 end
 
 function TranscriptView:invalidate_item(item)
@@ -670,6 +693,7 @@ function TranscriptView:invalidate_item(item)
 end
 
 function TranscriptView:clear()
+  self.image_generation = self.image_generation + 1
   self.render_cache = nil
   self.render_frame = nil
   self.render_cache_bytes = 0
@@ -761,6 +785,10 @@ function TranscriptView:image_at_mouse(mouse)
 end
 
 function TranscriptView:destroy()
+  if self.destroyed then
+    return
+  end
+  self.destroyed = true
   if self.render_timer then
     self.render_timer:stop()
     self.render_timer:close()
