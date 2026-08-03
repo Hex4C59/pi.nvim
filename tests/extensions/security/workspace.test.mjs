@@ -3,12 +3,7 @@ import { mkdtemp, mkdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import {
-  createPermissionHandler,
-  createWorkspaceGuard,
-  isWithinCanonicalRoot,
-  resolveLikePi,
-} from "../../extensions/lib/security-policy.mjs";
+import { createWorkspaceGuard, workspaceReadOnlyGuidance } from "../../../extensions/lib/security/workspace.mjs";
 
 function event(toolName, input = {}) {
   return { type: "tool_call", toolCallId: Math.random().toString(36), toolName, input };
@@ -39,6 +34,8 @@ test("workspace guard confines all read tools using canonical paths", async () =
   await symlink(path.join(sibling, "secret.txt"), path.join(root, "outside-link"));
   const guard = createWorkspaceGuard();
   try {
+    assert.equal(await guard(event("custom_read", {}), context(root)), undefined);
+    assert.equal((await guard(event("read", {}), context(root))).block, true);
     for (const toolName of ["read", "grep", "find", "ls"]) {
       const rootEvent = event(toolName, toolName === "read" ? { path: "." } : {});
       assert.equal(await guard(rootEvent, context(root)), undefined);
@@ -70,56 +67,9 @@ test("workspace guard confines all read tools using canonical paths", async () =
   }
 });
 
-test("Pi-compatible path normalization covers prefixes, URLs, Unicode spaces, and read variants", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "pi-policy-paths-"));
-  const root = path.join(base, "root");
-  await mkdir(root);
-  const spaced = path.join(root, "space name");
-  const nfd = path.join(root, "cafe\u0301.txt");
-  const curly = path.join(root, "capture d\u2019ecran.txt");
-  const ampm = path.join(root, "capture\u202fPM.png");
-  await writeFile(spaced, "x");
-  await writeFile(nfd, "x");
-  await writeFile(curly, "x");
-  await writeFile(ampm, "x");
-  const guard = createWorkspaceGuard();
-  try {
-    assert.equal(resolveLikePi("@space\u00a0name", root), spaced);
-    assert.equal(resolveLikePi(`file://${spaced}`, root), spaced);
-    assert.equal(resolveLikePi("~/file", root, { homedir: () => base }), path.join(base, "file"));
-    for (const requested of ["space\u00a0name", "caf\u00e9.txt", "capture d'ecran.txt", "capture PM.png"]) {
-      const call = event("read", { path: requested });
-      assert.equal(await guard(call, context(root)), undefined, requested);
-    }
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
-});
-
-test("root containment rejects prefix siblings", () => {
-  assert.equal(isWithinCanonicalRoot("/work/app", "/work/app/file"), true);
-  assert.equal(isWithinCanonicalRoot("/work/app", "/work/app-other/file"), false);
-});
-
-test("confirm mode allows inside reads and confirms outside reads", async () => {
-  const base = await mkdtemp(path.join(tmpdir(), "pi-policy-reads-"));
-  const root = path.join(base, "root");
-  const outside = path.join(base, "outside");
-  await mkdir(root);
-  await mkdir(outside);
-  let confirmations = 0;
-  const handler = createPermissionHandler({ select: async () => (++confirmations, "Allow once") });
-  try {
-    const inside = event("read", { path: "." });
-    assert.equal(await handler(inside, context(root)), undefined);
-    assert.equal(confirmations, 0);
-    const external = event("ls", { path: outside });
-    assert.equal(await handler(external, context(root)), undefined);
-    assert.equal(confirmations, 1);
-    assert.equal(external.input.path, outside);
-  } finally {
-    await rm(base, { recursive: true, force: true });
-  }
+test("workspace guidance states both tool and canonical-root restrictions", () => {
+  assert.match(workspaceReadOnlyGuidance(), /read-only planning mode/);
+  assert.match(workspaceReadOnlyGuidance(), /restricted to the canonical current workspace/);
 });
 
 test("workspace root cache is keyed by ctx.cwd", async () => {

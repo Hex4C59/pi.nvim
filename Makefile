@@ -43,7 +43,12 @@ test-file:
 	esac
 
 test-extensions:
-	node --test tests/extensions/*.test.mjs
+	@set -eu; \
+	find tests/extensions -type f -name '*.test.mjs' -print | LC_ALL=C sort | \
+	while IFS= read -r test_file; do \
+		printf '%s\n' "node: $$test_file"; \
+		node --test "$$test_file"; \
+	done
 
 test-ci-policy:
 	@set -eu; \

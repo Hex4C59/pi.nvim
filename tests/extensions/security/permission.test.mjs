@@ -8,7 +8,7 @@ import {
   createPermissionHandler,
   createPermissionToolModeController,
   permissionModeGuidance,
-} from "../../extensions/lib/security-policy.mjs";
+} from "../../../extensions/lib/security/permission.mjs";
 
 function event(toolName, input = {}) {
   return { type: "tool_call", toolCallId: Math.random().toString(36), toolName, input };
@@ -311,4 +311,25 @@ test("session lifecycle and permission command publish authoritative mode", asyn
   assert.equal(notifications.at(-1)[1], "error");
   await controller.onSessionStart({ reason: "new" }, ctx);
   assert.equal(controller.getMode(), "manual");
+});
+
+test("confirm mode allows inside reads and confirms outside reads", async () => {
+  const base = await mkdtemp(path.join(tmpdir(), "pi-policy-reads-"));
+  const root = path.join(base, "root");
+  const outside = path.join(base, "outside");
+  await mkdir(root);
+  await mkdir(outside);
+  let confirmations = 0;
+  const handler = createPermissionHandler({ select: async () => (++confirmations, "Allow once") });
+  try {
+    const inside = event("read", { path: "." });
+    assert.equal(await handler(inside, context(root)), undefined);
+    assert.equal(confirmations, 0);
+    const external = event("ls", { path: outside });
+    assert.equal(await handler(external, context(root)), undefined);
+    assert.equal(confirmations, 1);
+    assert.equal(external.input.path, outside);
+  } finally {
+    await rm(base, { recursive: true, force: true });
+  }
 });

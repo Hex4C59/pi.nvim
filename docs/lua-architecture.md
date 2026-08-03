@@ -153,6 +153,14 @@ permission panel only displays structured requests, validates interaction,
 captures focus, and returns a response. Missing UI, cancellation, and teardown
 continue to return a blocking response.
 
+Bundled security Extensions keep event registration in the three TypeScript
+entries. `extensions/lib/security/permission.mjs` owns modes, approvals,
+prompting, tool-set transitions, and fail-closed permission evaluation;
+`workspace.mjs` owns read-only canonical-root enforcement; and
+`session-root.mjs` owns session-header validation and the final same-root switch
+guard. `paths.mjs`, `tool-call.mjs`, `guidance.mjs`, and `file-header.mjs` are
+focused shared helpers. No aggregate security index or policy state remains.
+
 ## Test Ownership
 
 | Owner | Primary tests |
@@ -173,7 +181,7 @@ continue to return a blocking response.
 | Chat facade contract | `tests/lua/ui/chat/facade_spec.lua` |
 | Runtime per-project orchestration | `tests/lua/runtime_spec.lua` |
 | RPC-to-UI integration | `tests/lua/integration/rpc_ui_spec.lua` |
-| Permission authority | Lua permission spec plus Extension policy tests |
+| Permission, path, workspace, session-root authority | `tests/extensions/security/` plus Lua permission presentation spec |
 
 Run `make test-file TEST=<path>` for one known Lua or Extension test owner. Run
 `make test` for the complete deterministic Lua, Extension, and repository policy

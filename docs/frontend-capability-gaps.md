@@ -249,7 +249,7 @@ Relevant frontend files:
 - `lua/pi/commands/session.lua`
 - `lua/pi/session_file.lua`
 - `extensions/session-root-guard.ts`
-- `extensions/lib/security-policy.mjs`
+- `extensions/lib/security/session-root.mjs`
 
 ### Why Lua must not implement a filesystem session index
 

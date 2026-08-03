@@ -383,7 +383,7 @@ bundled Extension test file:
 
 ```bash
 make test-file TEST=tests/lua/ui/render_spec.lua
-make test-file TEST=tests/extensions/permission-gate.test.mjs
+make test-file TEST=tests/extensions/security/permission.test.mjs
 ```
 
 `test-file` accepts one existing repository-relative test path. It does not infer

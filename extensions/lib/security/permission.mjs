@@ -1,17 +1,15 @@
-import { open, realpath as fsRealpath } from "node:fs/promises";
-import { homedir as osHomedir } from "node:os";
+import { realpath as fsRealpath } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { PLAN_MODE_GUIDANCE } from "./guidance.mjs";
+import { canonicalRoot, canonicalTarget, isWithinCanonicalRoot, resolveLikePi } from "./paths.mjs";
+import { blockToolCall, isReadTool, readPathInput } from "./tool-call.mjs";
 
-const READ_TOOLS = new Set(["read", "grep", "find", "ls"]);
 const CONFIRM_TOOLS = new Set(["bash", "edit", "write"]);
 const PLAN_TOOLS = new Set(["read", "grep", "find", "ls", "todo"]);
 const PERMISSION_MODES = new Set(["manual", "acceptEdits", "auto", "plan"]);
 const PERMISSION_CHOICES = ["Block", "Allow once", "Allow for session"];
 const PERMISSION_MODE_STATUS = "pi.permission_mode";
-const UNICODE_SPACES = /[\u00a0\u2000-\u200a\u202f\u205f\u3000]/g;
 const DEFAULT_PREVIEW_BYTES = 4 * 1024;
-const DEFAULT_HEADER_BYTES = 64 * 1024;
 
 function preview(value, maximum = DEFAULT_PREVIEW_BYTES) {
   const text = String(value ?? "");
@@ -19,66 +17,6 @@ function preview(value, maximum = DEFAULT_PREVIEW_BYTES) {
   let end = maximum;
   while (end > 0 && Buffer.byteLength(text.slice(0, end)) > maximum) end -= 1;
   return `${text.slice(0, end)}\n[preview truncated]`;
-}
-
-function block(reason) {
-  return { block: true, reason };
-}
-
-function pathInput(event) {
-  const value = event.input?.path ?? event.input?.file_path;
-  if (value == null && event.toolName !== "read") return ".";
-  return typeof value === "string" && value.length > 0 ? value : undefined;
-}
-
-export function resolveLikePi(input, cwd, options = {}) {
-  if (typeof input !== "string") throw new TypeError("path must be a string");
-  let normalized = input.replace(UNICODE_SPACES, " ");
-  if (normalized.startsWith("@")) normalized = normalized.slice(1);
-  const home = typeof options.homedir === "function" ? options.homedir() : (options.homedir ?? osHomedir());
-  const platform = options.platform ?? process.platform;
-  if (normalized === "~") normalized = home;
-  else if (normalized.startsWith("~/") || (platform === "win32" && normalized.startsWith("~\\"))) {
-    normalized = path.join(home, normalized.slice(2));
-  }
-  if (/^file:\/\//.test(normalized)) normalized = fileURLToPath(normalized);
-  return path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(cwd, normalized);
-}
-
-function readVariants(candidate) {
-  const nfd = candidate.normalize("NFD");
-  const curly = candidate.replace(/'/g, "\u2019");
-  return [candidate, candidate.replace(/ (AM|PM)\./gi, "\u202f$1."), nfd, curly, nfd.replace(/'/g, "\u2019")].filter(
-    (value, index, values) => values.indexOf(value) === index,
-  );
-}
-
-export async function canonicalTarget(input, cwd, options = {}) {
-  const realpath = options.realpath ?? fsRealpath;
-  const candidate = resolveLikePi(input, cwd, options);
-  const candidates = options.readVariants === false ? [candidate] : readVariants(candidate);
-  let lastError;
-  for (const value of candidates) {
-    try {
-      return await realpath(value);
-    } catch (error) {
-      lastError = error;
-    }
-  }
-  throw lastError ?? new Error("unable to canonicalize path");
-}
-
-export function isWithinCanonicalRoot(root, target) {
-  const relative = path.relative(root, target);
-  return relative === "" || (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative));
-}
-
-async function canonicalRoot(ctx, options, cache) {
-  if (typeof ctx?.cwd !== "string" || ctx.cwd.length === 0) throw new Error("working directory is unavailable");
-  if (cache.has(ctx.cwd)) return cache.get(ctx.cwd);
-  const canonical = await (options.realpath ?? fsRealpath)(ctx.cwd);
-  cache.set(ctx.cwd, canonical);
-  return canonical;
 }
 
 async function selectWithTimeout(ctx, title, choices, options) {
@@ -138,7 +76,7 @@ async function mutationRequest(event, ctx, options, root) {
   }
   const edits = event.input?.edits;
   if (!Array.isArray(edits)) throw new Error("edit operations are missing");
-  const summary = Array.isArray(edits) ? `${edits.length} edit${edits.length === 1 ? "" : "s"}` : "file edit";
+  const summary = `${edits.length} edit${edits.length === 1 ? "" : "s"}`;
   return {
     approvalKey: `edit\0${canonical}`,
     canonical,
@@ -170,12 +108,7 @@ export function permissionModeGuidance(mode) {
 - Structurally valid built-in tool calls proceed without confirmation, including Bash and outside-workspace access.
 - Extension tools remain governed by their owning Extensions.
 - Do not claim an operation succeeded until its tool result confirms it.`,
-    plan: `[PLAN MODE ACTIVE]
-You are in read-only planning mode.
-- Use only read, grep, find, ls, and todo for exploration and plan tracking.
-- Do not run Bash commands, edit or write files, or call other tools.
-- Analyze the request, ask any necessary questions in text, and produce a concrete implementation plan.
-- Do not make changes or claim that changes were made.`,
+    plan: PLAN_MODE_GUIDANCE,
   };
   return guidance[mode] ?? guidance.manual;
 }
@@ -244,14 +177,14 @@ export function createPermissionController(options = {}) {
       approvals.set(request.approvalKey, true);
       return undefined;
     }
-    if (choice === "Block" || choice == null) return block("Blocked by the user");
-    return block("Blocked because the permission response was invalid");
+    if (choice === "Block" || choice == null) return blockToolCall("Blocked by the user");
+    return blockToolCall("Blocked because the permission response was invalid");
   };
 
   const evaluateToolCall = async (event, ctx) => {
     try {
       if (mode === "plan" && !PLAN_TOOLS.has(event.toolName)) {
-        return block("Plan mode allows read-only exploration tools only");
+        return blockToolCall("Plan mode allows read-only exploration tools only");
       }
       if (CONFIRM_TOOLS.has(event.toolName)) {
         const root = await canonicalRoot(ctx, options, rootCache);
@@ -266,9 +199,9 @@ export function createPermissionController(options = {}) {
         }
         return await ask(ctx, request);
       }
-      if (!READ_TOOLS.has(event.toolName)) return undefined;
-      const requested = pathInput(event);
-      if (!requested) return block("Blocked because the tool path is missing");
+      if (!isReadTool(event.toolName)) return undefined;
+      const requested = readPathInput(event);
+      if (!requested) return blockToolCall("Blocked because the tool path is missing");
       const root = await canonicalRoot(ctx, options, rootCache);
       const target = await canonicalTarget(requested, ctx.cwd, options);
       if (mode !== "auto" && !isWithinCanonicalRoot(root, target)) {
@@ -281,7 +214,7 @@ export function createPermissionController(options = {}) {
       event.input.path = target;
       return undefined;
     } catch (error) {
-      return block(`Blocked: ${error instanceof Error ? error.message : String(error)}`);
+      return blockToolCall(`Blocked: ${error instanceof Error ? error.message : String(error)}`);
     }
   };
 
@@ -310,7 +243,10 @@ export function createPermissionController(options = {}) {
       try {
         await publishStatus(ctx);
       } catch (error) {
-        ctx.ui?.notify?.(`Permission mode changed, but status sync failed: ${error instanceof Error ? error.message : String(error)}`, "warning");
+        ctx.ui?.notify?.(
+          `Permission mode changed, but status sync failed: ${error instanceof Error ? error.message : String(error)}`,
+          "warning",
+        );
       }
     }
     return true;
@@ -357,7 +293,10 @@ export function createPermissionController(options = {}) {
       try {
         requested = await selectWithTimeout(ctx, "Permission mode", [...PERMISSION_MODES], options);
       } catch (error) {
-        ctx.ui?.notify?.(`Permission mode unchanged: ${error instanceof Error ? error.message : String(error)}`, "error");
+        ctx.ui?.notify?.(
+          `Permission mode unchanged: ${error instanceof Error ? error.message : String(error)}`,
+          "error",
+        );
         return;
       }
     }
@@ -366,7 +305,10 @@ export function createPermissionController(options = {}) {
         ctx.ui?.notify?.(`Unknown permission mode: ${requested}`, "error");
       }
     } catch (error) {
-      ctx.ui?.notify?.(`Permission mode unchanged: ${error instanceof Error ? error.message : String(error)}`, "error");
+      ctx.ui?.notify?.(
+        `Permission mode unchanged: ${error instanceof Error ? error.message : String(error)}`,
+        "error",
+      );
     }
   };
 
@@ -385,82 +327,4 @@ export function createPermissionController(options = {}) {
 
 export function createPermissionHandler(options = {}) {
   return createPermissionController(options).onToolCall;
-}
-
-export function createWorkspaceGuard(options = {}) {
-  const rootCache = new Map();
-  return async (event, ctx) => {
-    if (!READ_TOOLS.has(event.toolName)) return undefined;
-    try {
-      const requested = pathInput(event);
-      if (!requested) return block("Blocked because the tool path is missing");
-      const root = await canonicalRoot(ctx, options, rootCache);
-      const target = await canonicalTarget(requested, ctx.cwd, options);
-      if (!isWithinCanonicalRoot(root, target)) return block("Blocked because the path is outside the workspace");
-      event.input.path = target;
-      return undefined;
-    } catch (error) {
-      return block(`Blocked because the path could not be verified: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  };
-}
-
-export function parseSessionHeader(line) {
-  let header;
-  try {
-    header = JSON.parse(String(line).replace(/\r$/, ""));
-  } catch {
-    throw new Error("invalid session header JSON");
-  }
-  if (!header || header.type !== "session") throw new Error("first record is not a session header");
-  if (!Number.isInteger(header.version) || header.version < 1 || header.version > 3) {
-    throw new Error("unsupported session version");
-  }
-  if (typeof header.cwd !== "string" || header.cwd.trim() === "") throw new Error("session cwd is missing");
-  return header;
-}
-
-async function defaultReadFirstLine(file, maximum = DEFAULT_HEADER_BYTES) {
-  const handle = await open(file, "r");
-  try {
-    const buffer = Buffer.alloc(maximum + 1);
-    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
-    const newline = buffer.subarray(0, bytesRead).indexOf(0x0a);
-    if (newline < 0 && bytesRead > maximum) throw new Error("session header is too large");
-    if (newline < 0) throw new Error("session header must end with a newline");
-    return buffer.subarray(0, newline).toString("utf8");
-  } finally {
-    await handle.close();
-  }
-}
-
-export function createSessionRootGuard(options = {}) {
-  return async (event, ctx) => {
-    if (event.reason === "new") return undefined;
-    if (event.reason !== "resume") return { cancel: true };
-    try {
-      if (typeof event.targetSessionFile !== "string" || event.targetSessionFile.length === 0) {
-        throw new Error("target session file is missing");
-      }
-      const readFirstLine = options.readFirstLine ?? defaultReadFirstLine;
-      const line = await readFirstLine(event.targetSessionFile, options.maxHeaderBytes ?? DEFAULT_HEADER_BYTES);
-      const header = parseSessionHeader(line);
-      const realpath = options.realpath ?? fsRealpath;
-      const [root, targetRoot] = await Promise.all([realpath(ctx.cwd), realpath(header.cwd)]);
-      if (!isWithinCanonicalRoot(root, targetRoot) || !isWithinCanonicalRoot(targetRoot, root)) {
-        throw new Error("cross-project session resume is not allowed");
-      }
-      return undefined;
-    } catch (error) {
-      const reason = error instanceof Error ? error.message : String(error);
-      if (ctx?.hasUI && ctx.ui?.notify) {
-        try {
-          ctx.ui.notify(`Session switch blocked: ${reason}`, "error");
-        } catch {
-          // Notification failure must not change the deny decision.
-        }
-      }
-      return { cancel: true };
-    }
-  };
 }

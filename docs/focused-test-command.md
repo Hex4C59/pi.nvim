@@ -22,7 +22,7 @@ make test-file TEST=tests/lua/ui/render_spec.lua
 The same entry point should also run a single bundled Extension test:
 
 ```bash
-make test-file TEST=tests/extensions/permission-gate.test.mjs
+make test-file TEST=tests/extensions/security/permission.test.mjs
 ```
 
 The target is intended for the short edit-test loop. It must not infer affected
@@ -43,7 +43,7 @@ The current Make targets have deliberately broad meanings:
 | `make test` | Runs every Lua spec, every bundled Extension test, and the repository test policy |
 | `make test-lua` | Recursively discovers and runs every `tests/lua/**/*_spec.lua` file |
 | `make test-file TEST=<path>` | Validates and runs exactly one Lua or bundled Extension test file |
-| `make test-extensions` | Runs every `tests/extensions/*.test.mjs` file |
+| `make test-extensions` | Recursively runs every `tests/extensions/**/*.test.mjs` file in lexical order |
 | `make smoke` | Checks the installed Pi RPC process and bundled Extension loading without calling a model |
 | `make format-check` | Checks formatting under `lua/`, `plugin/`, and `tests/` |
 
@@ -146,7 +146,7 @@ Examples:
 ```bash
 make test-file TEST=tests/lua/client_spec.lua
 make test-file TEST=tests/lua/integration/rpc_ui_spec.lua
-make test-file TEST=tests/extensions/workspace-guard.test.mjs
+make test-file TEST=tests/extensions/security/workspace.test.mjs
 ```
 
 ### 5.2 Validation
@@ -179,7 +179,7 @@ nvim: tests/lua/ui/render_spec.lua
 or:
 
 ```text
-node: tests/extensions/permission-gate.test.mjs
+node: tests/extensions/security/permission.test.mjs
 ```
 
 A passing test returns zero. A failing test, missing runner, invalid test path,

@@ -3,7 +3,7 @@ import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import test from "node:test";
-import { createSessionRootGuard, parseSessionHeader } from "../../extensions/lib/security-policy.mjs";
+import { createSessionRootGuard, parseSessionHeader } from "../../../extensions/lib/security/session-root.mjs";
 
 function context(cwd, overrides = {}) {
   return {
@@ -35,12 +35,25 @@ test("session header parser and guard reject invalid and cross-project sessions"
   const guard = createSessionRootGuard();
   try {
     assert.equal(await guard({ reason: "new" }, context(first)), undefined);
+    assert.deepEqual(await guard({ reason: "unknown" }, context(first)), { cancel: true });
     assert.equal(await guard({ reason: "resume", targetSessionFile: same }, context(first)), undefined);
     assert.deepEqual(await guard({ reason: "resume", targetSessionFile: other }, context(first)), { cancel: true });
     assert.deepEqual(await guard({ reason: "resume" }, context(first, { hasUI: false })), { cancel: true });
     const large = path.join(base, "large.jsonl");
     await writeFile(large, `${"x".repeat(65537)}\n`);
     assert.deepEqual(await guard({ reason: "resume", targetSessionFile: large }, context(first)), { cancel: true });
+    const thrown = createSessionRootGuard({
+      readFirstLine: async () => {
+        throw new Error("read failed");
+      },
+    });
+    assert.deepEqual(
+      await thrown(
+        { reason: "resume", targetSessionFile: same },
+        context(first, { ui: { notify: () => { throw new Error("notify failed"); } } }),
+      ),
+      { cancel: true },
+    );
   } finally {
     await rm(base, { recursive: true, force: true });
   }

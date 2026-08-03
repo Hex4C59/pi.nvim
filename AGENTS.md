@@ -443,7 +443,8 @@ lua/pi/ui/widget.lua          Widget state, buffers, windows, and projection
 lua/pi/ui/dialog.lua          Generic Extension UI protocol adapter
 lua/pi/ui/permission.lua      Native permission presentation only
 extensions/                   Bundled authoritative Pi Extensions
-extensions/lib/              Testable Extension policy helpers
+extensions/lib/security/     Permission, workspace, session, path helpers
+extensions/lib/todo-list.mjs Testable todo workflow policy
 tests/fixtures/fake_pi.js     Deterministic RPC fixture
 tests/lua/                    Headless Lua tests grouped by frontend area
 tests/extensions/             Node tests grouped by Extension owner

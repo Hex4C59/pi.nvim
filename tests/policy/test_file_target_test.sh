@@ -148,14 +148,14 @@ printf '%s\n' \
 assert_record
 
 reset_case
-run_make tests/extensions/todo-list.test.mjs 0
-[ "$status" -eq 0 ] || fail "Extension route failed"
+run_make tests/extensions/security/permission.test.mjs 0
+[ "$status" -eq 0 ] || fail "nested Extension route failed"
 printf '%s\n' \
   'runner=node' \
   'arg=--test' \
-  'arg=tests/extensions/todo-list.test.mjs' > "$expected"
+  'arg=tests/extensions/security/permission.test.mjs' > "$expected"
 assert_record
-assert_contains 'node: tests/extensions/todo-list.test.mjs'
+assert_contains 'node: tests/extensions/security/permission.test.mjs'
 
 reset_case
 run_make tests/lua/protocol_spec.lua 23

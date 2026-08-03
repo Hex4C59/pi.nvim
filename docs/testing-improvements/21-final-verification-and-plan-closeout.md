@@ -86,7 +86,7 @@ make test-file TEST=tests/lua/protocol_spec.lua
 make test-file TEST=tests/lua/ui/render/process_spec.lua
 make test-file TEST=tests/lua/ui/chat/lifecycle_spec.lua
 make test-file TEST=tests/lua/integration/rpc_ui_spec.lua
-make test-file TEST=tests/extensions/permission-gate.test.mjs
+make test-file TEST=tests/extensions/security/permission.test.mjs
 ```
 
 Confirm:

@@ -77,7 +77,7 @@ not contribute data.
 
 Implement the accepted Node design with:
 
-- every `tests/extensions/*.test.mjs` file;
+- every `tests/extensions/**/*.test.mjs` file;
 - `extensions/lib/*.mjs` included;
 - `.ts` entry-point coverage only where source mapping was proven reliable;
 - tests, Node internals, global Pi, and generated cache excluded;
@@ -218,4 +218,3 @@ Do not commit the failure.
 - [ ] Forced failure propagates non-zero status.
 - [ ] Repeated coverage runs are stable.
 - [ ] Normal test, format, smoke, and policy gates pass without a model call.
-

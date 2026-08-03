@@ -1,7 +1,7 @@
 # Modular Architecture Improvement Plan
 
-> Status: In progress. Tasks 01 through 05 were completed on 2026-08-04; Tasks
-> 06 through 08 remain proposed.
+> Status: In progress. Tasks 01 through 06 were completed on 2026-08-04; Tasks
+> 07 and 08 remain proposed.
 >
 > Scope: internal Lua frontend boundaries, bundled Extension policy modules,
 > test ownership, dependency enforcement, and durable architecture
@@ -216,7 +216,10 @@ extensions/
   session-root-guard.ts           thin Pi entry
   lib/
     security/
-      path.mjs                    canonical path and containment helpers
+      paths.mjs                   canonical path and containment helpers
+      tool-call.mjs               read-tool and block-result primitives
+      guidance.mjs                shared plan-mode guidance
+      file-header.mjs             bounded first-record reading
       permission.mjs              permission mode and approval controller
       workspace.mjs               read-only workspace policy
       session-root.mjs            session header and root-switch policy
@@ -251,7 +254,7 @@ transformation.
 | 03 | Completed | Decouple and split the Chat shell | 02 |
 | 04 | Completed | Organize the image subsystem | 02 |
 | 05 | Completed | Organize Transcript projection, retention, history, and view | 02, 04 |
-| 06 | Proposed | Split bundled security policy owners | 01 |
+| 06 | Completed | Split bundled security policy owners | 01 |
 | 07 | Proposed | Align test structure and focused execution | 03, 04, 05, 06 |
 | 08 | Proposed | Consolidate durable documentation and close the plan | 07 |
 
@@ -623,6 +626,30 @@ tests cannot replace these tests.
 - Plan-mode tool restrictions and restoration retain their exact tested
   behavior.
 - `make smoke` proves the installed Pi process loads every bundled Extension.
+
+### Implementation Record
+
+Completed on 2026-08-04 against Task 05 commit `958a904`.
+
+- Removed the aggregate `extensions/lib/security-policy.mjs`. Canonical path
+  handling, tool-call primitives, shared plan guidance, and bounded session
+  header reads now live in focused helpers below `extensions/lib/security/`.
+- Moved permission modes, approvals, serialized tool-call gating, UI timeout,
+  status publication, and plan-tool restoration to `permission.mjs`; workspace
+  read enforcement to `workspace.mjs`; and session parsing/same-root switching
+  to `session-root.mjs`.
+- Kept all three TypeScript Extension entries thin. Each imports only its own
+  policy module; shared dependencies remain below the policy layer and no
+  aggregate index was introduced.
+- Moved authoritative tests below `tests/extensions/security/` by permission,
+  paths, workspace, and session-root ownership. The recursive Extension gate
+  and focused-runner contract now cover nested tests deterministically.
+- Added an Extension dependency policy that rejects sibling policy imports and
+  the return of an aggregate security module.
+- Preserved fail-closed malformed, cancelled, missing-UI, timeout, thrown-error,
+  canonical-root, session-header, and plan-tool restoration behavior.
+- `make test`, `make format-check`, `make smoke`, and `make ci-policy-check`
+  passed after implementation against installed Pi 0.83.0 without a model call.
 
 ## 13. Task 07: Align Test Structure And Focused Execution
 

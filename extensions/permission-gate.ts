@@ -1,5 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { createPermissionController, createPermissionToolModeController } from "./lib/security-policy.mjs";
+import { createPermissionController, createPermissionToolModeController } from "./lib/security/permission.mjs";
 
 export default function (pi: ExtensionAPI) {
   const tools = createPermissionToolModeController(pi);
