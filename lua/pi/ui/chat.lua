@@ -2,6 +2,7 @@ local config = require("pi.config")
 local renderer = require("pi.ui.render")
 local highlights = require("pi.ui.highlights")
 local command_menu = require("pi.ui.command_menu")
+local input_area = require("pi.ui.input")
 
 local M = {}
 local Chat = {}
@@ -70,41 +71,6 @@ local function sync_welcome_animation()
   )
 end
 
-local function dispatch_left_mouse(chat)
-  if not chat:_handle_left_mouse() then
-    vim.api.nvim_feedkeys(vim.keycode("<LeftMouse>"), "n", false)
-  end
-end
-
-local function name_buffer(buf, kind, root)
-  local titles = { chat = "Pi Chat", commands = "Pi Commands", prompt = "Pi", status = "Pi Status" }
-  local label = ("%s · %s"):format(titles[kind] or "Pi", vim.fs.basename(root))
-  local ok = pcall(vim.api.nvim_buf_set_name, buf, label)
-  if not ok then
-    vim.api.nvim_buf_set_name(buf, label .. " · " .. vim.fn.sha256(root):sub(1, 6))
-  end
-  vim.b[buf].pi_kind = kind
-  vim.b[buf].pi_root = root
-end
-
-local function isolate_input_completion(buf)
-  vim.b[buf].completion = false
-  vim.bo[buf].complete = ""
-  vim.bo[buf].completefunc = ""
-  vim.bo[buf].omnifunc = ""
-  vim.bo[buf].tagfunc = ""
-  vim.bo[buf].dictionary = ""
-  vim.bo[buf].thesaurus = ""
-  vim.bo[buf].filetype = "pi_prompt"
-
-  local cmp = package.loaded.cmp
-  if type(cmp) == "table" and cmp.setup and cmp.setup.buffer then
-    pcall(vim.api.nvim_buf_call, buf, function()
-      cmp.setup.buffer({ enabled = false })
-    end)
-  end
-end
-
 local ui_group = vim.api.nvim_create_augroup("PiNvimUI", { clear = true })
 vim.api.nvim_create_autocmd("ColorScheme", {
   group = ui_group,
@@ -167,61 +133,6 @@ local function format_count(value)
   return ("%dM"):format(math.floor(value / 1000000 + 0.5))
 end
 
-local function truncate_display(text, width)
-  if width <= 0 then
-    return ""
-  end
-  if vim.api.nvim_strwidth(text) <= width then
-    return text
-  end
-  if width <= 3 then
-    return string.rep(".", width)
-  end
-
-  local target = width - 3
-  local chars = vim.fn.strchars(text)
-  local result = ""
-  for index = 0, chars - 1 do
-    local candidate = result .. vim.fn.strcharpart(text, index, 1)
-    if vim.api.nvim_strwidth(candidate) > target then
-      break
-    end
-    result = candidate
-  end
-  return result .. "..."
-end
-
-local function compose_line(left, right, width)
-  width = math.max(width, 1)
-  right = truncate_display(right, math.max(0, math.floor(width * 0.48)))
-  local right_width = vim.api.nvim_strwidth(right)
-  left = truncate_display(left, math.max(0, width - right_width - 1))
-  local gap = math.max(1, width - vim.api.nvim_strwidth(left) - right_width)
-  return left .. string.rep(" ", gap) .. right, #left + gap
-end
-
-local function append_chunk(chunks, text, highlight)
-  if text == "" then
-    return
-  end
-  local previous = chunks[#chunks]
-  if previous and previous[2] == highlight then
-    previous[1] = previous[1] .. text
-  else
-    table.insert(chunks, { text, highlight })
-  end
-end
-
-local function format_percent(value)
-  value = tonumber(value)
-  if not value then
-    return nil
-  end
-  return ("%.1f"):format(value):gsub("%.0$", "") .. "%"
-end
-
-local status_padding = "  "
-
 function Chat.new(root)
   highlights.setup()
   update_welcome_logo_highlights()
@@ -267,9 +178,13 @@ function Chat.new(root)
   }, Chat)
   chat.command_menu = command_menu.CommandMenu.new(chat, {
     namespace = namespace,
-    name_buffer = name_buffer,
-    truncate_display = truncate_display,
+    name_buffer = input_area.name_buffer,
+    truncate_display = input_area.truncate_display,
     instances = instances,
+  })
+  chat.input_area = input_area.InputArea.new(chat, {
+    namespace = namespace,
+    ui_group = ui_group,
   })
   instances[root] = chat
   return chat
@@ -329,88 +244,11 @@ function Chat:_activity_text()
 end
 
 function Chat:_input_frame(width)
-  width = math.max(1, math.floor(width or 1))
-  local active = self:_is_active()
-  local base_highlight = self.activity == "error" and "PiInputBorderError"
-    or active and "PiInputBorderMuted"
-    or "PiInputBorder"
-  local corner_highlight = self.activity == "error" and "PiInputCornerError"
-    or active and "PiInputCornerMuted"
-    or "PiInputCorner"
-  local cell_highlights = {}
-
-  if active and width > 1 then
-    local travel = math.max(1, math.floor((width - 1) / 2))
-    local period = travel * 2
-    local step = (self.animation_frame or 0) * 2 % period
-    local offset = step > travel and period - step or step
-    local left = 1 + offset
-    local right = width - offset
-    for index = 1, width do
-      local distance = math.min(math.abs(index - left), math.abs(index - right))
-      cell_highlights[index] = distance <= 1 and "PiInputBorderPulse"
-        or distance <= 3 and "PiInputBorderTrail"
-        or base_highlight
-    end
-  else
-    for index = 1, width do
-      cell_highlights[index] = base_highlight
-    end
-  end
-
-  local function line_chunks(first, last, character)
-    local chunks = {}
-    for index = first, last do
-      append_chunk(chunks, character, cell_highlights[index])
-    end
-    return chunks
-  end
-
-  local top = line_chunks(1, width, "▔")
-  local label = active and (" " .. self:_activity_text() .. " ") or self.activity == "error" and " Error " or nil
-  if not label then
-    return top, line_chunks(1, width, "▁"), base_highlight, corner_highlight
-  end
-
-  label = truncate_display(label, width)
-  local label_width = vim.api.nvim_strwidth(label)
-  local left_width = math.floor((width - label_width) / 2)
-  local bottom = line_chunks(1, left_width, "▁")
-  append_chunk(bottom, label, self.activity == "error" and "PiInputBorderError" or "PiInputActivity")
-  for index = left_width + label_width + 1, width do
-    append_chunk(bottom, "▁", cell_highlights[index])
-  end
-  return top, bottom, base_highlight, corner_highlight
+  return self.input_area:frame(width)
 end
-
 function Chat:_input_window_config(row, width, height)
-  local top, bottom, border_highlight, corner_highlight = self:_input_frame(width)
-  return {
-    relative = "win",
-    win = self.win,
-    row = row,
-    col = 1,
-    width = width,
-    height = height,
-    style = "minimal",
-    border = {
-      { "╱", corner_highlight },
-      { "▔", border_highlight },
-      { "╲", corner_highlight },
-      { "▕", border_highlight },
-      { "╱", corner_highlight },
-      { "▁", border_highlight },
-      { "╲", corner_highlight },
-      { "▏", border_highlight },
-    },
-    title = top,
-    title_pos = "center",
-    footer = bottom,
-    footer_pos = "center",
-    zindex = 50,
-  }
+  return self.input_area:window_config(row, width, height)
 end
-
 function Chat:_sync_animation()
   if not self:_is_active() or not self:is_open() then
     self:_stop_animation()
@@ -567,99 +405,18 @@ function Chat:_accept_command_completion()
   return self.command_menu:accept()
 end
 
-
 function Chat:_update_input_chrome()
-  if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then
-    return
-  end
-  vim.wo[self.input_win].winbar = " "
-  vim.wo[self.input_win].winhighlight = table.concat({
-    "Normal:PiInputNormal",
-    "NormalNC:PiInputNormal",
-    "EndOfBuffer:PiInputNormal",
-    "CursorLine:PiInputNormal",
-    "Cursor:PiInputCursor",
-    "CursorIM:PiInputCursor",
-    "lCursor:PiInputCursor",
-    "WinBar:PiInputNormal",
-    "WinBarNC:PiInputNormal",
-    "WinSeparator:PiPanelBorder",
-    "FloatBorder:PiInputBorder",
-  }, ",")
-  self:_layout()
+  self.input_area:update_chrome()
 end
-
 function Chat:_status_text(width)
-  local context_usage = self.stats.contextUsage or {}
-  local steering = #(self.queue.steering or {})
-  local follow_up = #(self.queue.followUp or {})
-  local right = "context " .. (format_percent(context_usage.percent) or "--")
-  if steering > 0 or follow_up > 0 then
-    local queued = {}
-    if steering > 0 then
-      table.insert(queued, ("steer %d"):format(steering))
-    end
-    if follow_up > 0 then
-      table.insert(queued, ("next %d"):format(follow_up))
-    end
-    right = table.concat(queued, " · ")
-  end
-
-  local content_width = math.max(1, width - vim.api.nvim_strwidth(status_padding) * 2)
-  local line, right_start = compose_line(self.model .. " · " .. self.thinking, right, content_width)
-  return { status_padding .. line }, { #status_padding + right_start }
+  return self.input_area:status_text(width)
 end
-
 function Chat:_render_status()
-  if not self.status_buf or not vim.api.nvim_buf_is_valid(self.status_buf) then
-    return
-  end
-  local width = self.status_win
-      and vim.api.nvim_win_is_valid(self.status_win)
-      and vim.api.nvim_win_get_width(self.status_win)
-    or 80
-  local lines, right_starts = self:_status_text(width)
-  vim.bo[self.status_buf].modifiable = true
-  vim.api.nvim_buf_set_lines(self.status_buf, 0, -1, false, lines)
-  vim.bo[self.status_buf].modifiable = false
-  vim.api.nvim_buf_clear_namespace(self.status_buf, namespace, 0, -1)
-
-  local function highlight(row, start_col, end_col, group, priority)
-    if end_col <= start_col then
-      return
-    end
-    vim.api.nvim_buf_set_extmark(self.status_buf, namespace, row, start_col, {
-      end_col = end_col,
-      hl_group = group,
-      priority = priority or 100,
-    })
-  end
-
-  highlight(0, #status_padding, math.min(right_starts[1], #lines[1]), "PiStatusModel")
-  local thinking_start = lines[1]:find(self.thinking, #status_padding + 1, true)
-  if thinking_start then
-    highlight(0, thinking_start - 1, thinking_start - 1 + #self.thinking, "PiStatusThinking", 130)
-  end
-
-  local right_highlight = "PiStatusContext"
-  if #(self.queue.steering or {}) > 0 or #(self.queue.followUp or {}) > 0 then
-    right_highlight = "PiStatusWorking"
-  else
-    local percent = tonumber((self.stats.contextUsage or {}).percent)
-    if percent and percent > 90 then
-      right_highlight = "PiStatusError"
-    elseif percent and percent > 70 then
-      right_highlight = "PiStatusWarning"
-    end
-  end
-  highlight(0, math.min(right_starts[1], #lines[1]), #lines[1], right_highlight, 140)
+  self.input_area:render_status()
 end
-
 function Chat:_desired_input_height()
-  local maximum = math.max(3, config.get().chat.max_input_height or 8)
-  return math.max(3, math.min(vim.api.nvim_buf_line_count(self.input_buf) + 2, maximum))
+  return self.input_area:desired_input_height()
 end
-
 function Chat:_layout_main()
   if self.position ~= "float" or not self.win or not vim.api.nvim_win_is_valid(self.win) then
     return
@@ -682,7 +439,6 @@ function Chat:_layout_main()
     zindex = 40,
   })
 end
-
 function Chat:_layout()
   self:_layout_main()
   if not self.win or not vim.api.nvim_win_is_valid(self.win) then
@@ -730,198 +486,28 @@ function Chat:_layout()
     self:_render_transcript()
   end
 end
-
 function Chat:_resize_input()
-  self:_layout()
+  self.input_area:resize()
 end
-
 function Chat:set_input(text)
-  self:_close_command_menu()
-  local buf = self:_ensure_input_buffer()
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(text or "", "\n", { plain = true }))
-  self:_resize_input()
-  if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
-    self:_focus_input()
-    local last = vim.api.nvim_buf_line_count(buf)
-    local line = vim.api.nvim_buf_get_lines(buf, last - 1, last, false)[1] or ""
-    vim.api.nvim_win_set_cursor(self.input_win, { last, #line })
-  end
+  self.input_area:set_input(text)
 end
-
 function Chat:_focus_input()
-  if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then
-    return
-  end
-  vim.api.nvim_set_current_win(self.input_win)
-  vim.cmd("startinsert")
+  self.input_area:focus()
 end
-
 function Chat:_ensure_input_buffer()
-  if self.input_buf and vim.api.nvim_buf_is_valid(self.input_buf) then
-    isolate_input_completion(self.input_buf)
-    return self.input_buf
-  end
-
-  self.input_buf = vim.api.nvim_create_buf(false, true)
-  name_buffer(self.input_buf, "prompt", self.root)
-  vim.bo[self.input_buf].buftype = "nofile"
-  vim.bo[self.input_buf].bufhidden = "hide"
-  vim.bo[self.input_buf].swapfile = false
-  isolate_input_completion(self.input_buf)
-  vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-    group = ui_group,
-    buffer = self.input_buf,
-    callback = function(event)
-      self:_resize_input()
-      if event.event == "TextChangedI" then
-        vim.schedule(function()
-          if self.input_buf and vim.api.nvim_buf_is_valid(self.input_buf) then
-            self:_update_command_menu()
-          end
-        end)
-      else
-        self:_close_command_menu()
-      end
-    end,
-  })
-  vim.api.nvim_create_autocmd({ "BufLeave", "InsertLeave" }, {
-    group = ui_group,
-    buffer = self.input_buf,
-    callback = function()
-      self:_close_command_menu()
-    end,
-  })
-
-  local function submit(behavior)
-    local lines = vim.api.nvim_buf_get_lines(self.input_buf, 0, -1, false)
-    local prompt = vim.trim(table.concat(lines, "\n"))
-    if prompt == "" then
-      return
-    end
-    self:_close_command_menu()
-    vim.api.nvim_buf_set_lines(self.input_buf, 0, -1, false, { "" })
-    self:_resize_input()
-    vim.api.nvim_win_set_cursor(self.input_win, { 1, 0 })
-    require("pi").submit(prompt, self.root, behavior)
-  end
-
-  local function feed(key)
-    vim.api.nvim_feedkeys(vim.keycode(key), "n", false)
-  end
-
-  vim.keymap.set("n", "<CR>", function()
-    submit(nil)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<CR>", function()
-    if self:_accept_command_completion() then
-      return
-    end
-    submit(nil)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<M-CR>", function()
-    submit("followUp")
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<C-j>", "<CR>", { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<Tab>", function()
-    if self:_command_menu_visible() then
-      self:_select_command(1)
-      return
-    end
-    local line = vim.api.nvim_get_current_line()
-    if line:match("^%s*/") and self:_update_command_menu() then
-      return
-    end
-    feed("<Tab>")
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<Down>", function()
-    if not self:_select_command(1) then
-      feed("<Down>")
-    end
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<Up>", function()
-    if not self:_select_command(-1) then
-      feed("<Up>")
-    end
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<C-n>", function()
-    if not self:_select_command(1) then
-      feed("<C-n>")
-    end
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("n", "q", function()
-    self:close()
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<Esc>", function()
-    if self:_command_menu_visible() then
-      self:_close_command_menu()
-      return
-    end
-    if self.activity ~= "idle" and self.activity ~= "starting" then
-      require("pi").abort(self.root)
-      return
-    end
-    feed("<Esc>")
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<C-c>", function()
-    require("pi").abort(self.root)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<C-l>", function()
-    require("pi").select_model(self.root)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("n", "<C-p>", function()
-    require("pi").cycle_model(self.root)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<C-p>", function()
-    if self:_select_command(-1) then
-      return
-    end
-    require("pi").cycle_model(self.root)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("n", "<S-Tab>", function()
-    require("pi").cycle_thinking_level(self.root)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set("i", "<S-Tab>", function()
-    if self:_select_command(-1) then
-      return
-    end
-    require("pi").cycle_thinking_level(self.root)
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<C-o>", function()
-    self:toggle_tools()
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<C-t>", function()
-    self:toggle_thinking()
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<C-x>", function()
-    self:copy_last_assistant()
-  end, { buffer = self.input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<LeftMouse>", function()
-    dispatch_left_mouse(self)
-  end, { buffer = self.input_buf, silent = true })
-  return self.input_buf
+  return self.input_area:ensure_input_buffer()
 end
-
 function Chat:_ensure_status_buffer()
-  if self.status_buf and vim.api.nvim_buf_is_valid(self.status_buf) then
-    return self.status_buf
-  end
-  self.status_buf = vim.api.nvim_create_buf(false, true)
-  name_buffer(self.status_buf, "status", self.root)
-  vim.bo[self.status_buf].buftype = "nofile"
-  vim.bo[self.status_buf].bufhidden = "hide"
-  vim.bo[self.status_buf].swapfile = false
-  vim.bo[self.status_buf].filetype = "pi_status"
-  vim.bo[self.status_buf].modifiable = false
-  return self.status_buf
+  return self.input_area:ensure_status_buffer()
 end
-
 function Chat:_ensure_buffer()
   if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
     return self.buf
   end
 
   self.buf = vim.api.nvim_create_buf(false, true)
-  name_buffer(self.buf, "chat", self.root)
+  input_area.name_buffer(self.buf, "chat", self.root)
   vim.bo[self.buf].buftype = "nofile"
   vim.bo[self.buf].bufhidden = "hide"
   vim.bo[self.buf].swapfile = false
@@ -958,7 +544,7 @@ function Chat:_ensure_buffer()
     self:copy_last_assistant()
   end, { buffer = self.buf, silent = true })
   vim.keymap.set("n", "<LeftMouse>", function()
-    dispatch_left_mouse(self)
+    input_area.dispatch_left_mouse(self)
   end, { buffer = self.buf, silent = true })
   return self.buf
 end
