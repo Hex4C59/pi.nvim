@@ -62,6 +62,20 @@ local function result_text(result)
   return table.concat(parts, "\n")
 end
 
+local function format_hms(total_seconds)
+  total_seconds = math.max(0, math.floor(total_seconds))
+  local hours = math.floor(total_seconds / 3600)
+  local minutes = math.floor((total_seconds % 3600) / 60)
+  local seconds = total_seconds % 60
+
+  if hours > 0 then
+    return ("%dh %dm %ds"):format(hours, minutes, seconds)
+  elseif minutes > 0 then
+    return ("%dm %ds"):format(minutes, seconds)
+  end
+  return ("%ds"):format(seconds)
+end
+
 local function format_duration(milliseconds)
   if not milliseconds then
     return nil
@@ -70,9 +84,15 @@ local function format_duration(milliseconds)
   elseif milliseconds < 60000 then
     return ("%.1fs"):format(milliseconds / 1000)
   end
-  local minutes = math.floor(milliseconds / 60000)
-  local seconds = math.floor((milliseconds % 60000) / 1000)
-  return ("%dm %ds"):format(minutes, seconds)
+  return format_hms(milliseconds / 1000)
+end
+
+local function format_elapsed(seconds)
+  seconds = math.max(0, tonumber(seconds) or 0)
+  if seconds < 10 then
+    return ("%.1fs"):format(seconds)
+  end
+  return format_hms(math.floor(seconds + 0.5))
 end
 
 local function next_inline_token(text, offset)
@@ -1367,4 +1387,6 @@ end
 
 M.split_lines = split_lines
 M.result_text = result_text
+M.format_duration = format_duration
+M.format_elapsed = format_elapsed
 return M

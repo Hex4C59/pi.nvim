@@ -1,5 +1,11 @@
 local renderer = require("pi.ui.render")
 
+assert(renderer.format_elapsed(3.7) == "3.7s", "live sub-minute duration lost its precision")
+assert(renderer.format_elapsed(357) == "5m 57s", "live duration must switch to minutes")
+assert(renderer.format_elapsed(3723) == "1h 2m 3s", "live duration must switch to hours")
+assert(renderer.format_duration(357000) == "5m 57s", "recorded duration must switch to minutes")
+assert(renderer.format_duration(3723000) == "1h 2m 3s", "recorded duration must switch to hours")
+
 local lua_parser_available = pcall(function()
   local parser = vim.treesitter.get_string_parser("local value = true", "lua")
   assert(parser:parse()[1])
