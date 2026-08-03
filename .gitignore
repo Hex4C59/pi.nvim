@@ -2,3 +2,4 @@
 *.tmp
 .luarc.json
 .DS_Store
+/coverage/

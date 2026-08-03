@@ -390,6 +390,16 @@ make test-file TEST=tests/extensions/security/permission.test.mjs
 affected tests from Git changes, so `make test` remains the complete
 deterministic gate before finishing a change.
 
+Generate separate Lua and bundled Extension coverage summaries with:
+
+```bash
+make coverage
+```
+
+Coverage requires Node 20.1 or newer, runs the normal uninstrumented test gate
+first, and writes ignored local reports under `coverage/`. It is diagnostic and
+does not replace `make smoke` or introduce a CI percentage threshold.
+
 See [`tests/README.md`](tests/README.md) for command scope, test ownership, and
 change-to-test guidance.
 

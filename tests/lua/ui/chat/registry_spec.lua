@@ -23,7 +23,7 @@ local function run()
 
   registry:prepare()
   assert(setup_count == 1, "registry preparation did not initialize highlights")
-  registry:register("registry-project", {
+  local entry = {
     is_open = function()
       return true
     end,
@@ -37,7 +37,8 @@ local function run()
       clamp_count = clamp_count + 1
     end,
     clear_images = function() end,
-  })
+  }
+  registry:register("registry-project", entry)
 
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   assert(setup_count == 2 and refresh_count == 1, "registry did not own colorscheme refresh")

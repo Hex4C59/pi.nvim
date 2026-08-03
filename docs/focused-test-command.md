@@ -1,6 +1,7 @@
 # Focused Test Command and Test Quality Plan
 
-> Status: In progress. Phase 1 was implemented and verified on 2026-08-04.
+> Status: In progress. Phases 1 through 4 were implemented and verified on
+> 2026-08-04; only the final plan audit and closeout remain.
 > Phase 2 is underway: Chat ownership specs and direct Transcript model,
 > projection, retention, history, TranscriptView, renderer text, welcome,
 > message, Markdown, tool, process, and facade specs are complete; remaining
@@ -8,8 +9,8 @@
 > InputArea buffer, frame, footer, action, sizing, and lifecycle coverage is
 > complete. Direct CommandMenu catalogue presentation, fuzzy completion,
 > geometry, selection, acceptance, and lifecycle coverage is also complete.
-> Phase 4's coverage-tooling evaluation is complete; the public coverage
-> command and baseline remain pending.
+> Phase 4's coverage-tooling evaluation, public command, and first baseline are
+> complete.
 >
 > Scope: local test invocation, test-infrastructure regression coverage, test
 > failure granularity, and coverage visibility in pi.nvim. This proposal does
@@ -33,11 +34,11 @@ make test-file TEST=tests/extensions/security/permission.test.mjs
 The target is intended for the short edit-test loop. It must not infer affected
 tests from Git changes, and it must not replace the complete `make test` gate.
 
-The command is the first phase of this plan, not the complete test-quality
-outcome. Later phases add an automated contract test for the command, split
-overly broad Lua specs along existing ownership boundaries, improve failure
-identification, and establish coverage visibility without turning a raw coverage
-percentage into the definition of correctness.
+The command was the first phase of this plan, not the complete test-quality
+outcome. Subsequent phases added an automated contract test, split broad Lua
+specs along ownership boundaries, improved failure identification, and shipped
+coverage visibility without turning a raw percentage into the definition of
+correctness.
 
 ## 2. Current Behavior
 
@@ -49,8 +50,9 @@ The current Make targets have deliberately broad meanings:
 | `make test-lua` | Recursively discovers and runs every `tests/lua/**/*_spec.lua` file |
 | `make test-file TEST=<path>` | Validates and runs exactly one Lua or bundled Extension test file |
 | `make test-extensions` | Recursively runs every `tests/extensions/**/*.test.mjs` file in lexical order |
+| `make coverage` | Validates pinned tools, runs the uninstrumented deterministic gate, then writes fresh separate Lua and Extension reports |
 | `make smoke` | Checks the installed Pi RPC process and bundled Extension loading without calling a model |
-| `make format-check` | Checks formatting under `lua/`, `plugin/`, and `tests/` |
+| `make format-check` | Checks formatting under `lua/`, `plugin/`, `tests/`, and repository coverage helpers |
 
 Each Lua spec starts its own headless Neovim process. This isolation is useful,
 but repeatedly running the full Lua suite slows down the local feedback loop
@@ -80,8 +82,8 @@ The remaining known quality gaps are:
 
 - Top-level Lua assertions stop at the first failure in a file and provide no
   test-case-level summary beyond the assertion message.
-- The repository has no coverage report or maintained map showing which tests
-  protect each critical module and boundary.
+- The first diagnostic baseline identifies owner-specific behavior gaps; their
+  risk ordering and follow-up rules are maintained in `tests/README.md`.
 
 ## 3. Goals
 
@@ -348,8 +350,8 @@ Phase 3 harness decision record, 2026-08-04:
 The temporary candidates were outside tracked test paths and were removed after
 evaluation. Revisit this decision only if owner specs repeatedly need case-level
 filtering, current cleanup boilerplate causes real defects, or file-plus-assert
-failure output becomes inadequate. Task 18 must copy the concise decision and
-test-writing rule into `tests/README.md` before this planning document is closed.
+failure output becomes inadequate. Task 18 copied the concise decision and
+test-writing rule into `tests/README.md`.
 
 ### 8.4 Phase 4: establish coverage visibility
 
@@ -373,12 +375,12 @@ Phase 4 tooling decision record, 2026-08-04:
   `b1f9eae400da976b93edb7f94cf5d05f538a0655` under its MIT license. Use its
   debug-hook collector, stats reader, line scanner, and reporter base inside
   Neovim; do not require a system Lua, LuaRocks, Python, CLuaCov, or the HTML
-  reporter. Task 20 must vendor the exact required upstream Lua files plus the
-  license and provenance (56,986 bytes in the evaluated subset), because tests
-  must work offline and Neovim embeds its own LuaJIT. LuaCov's rockspec-level
-  `datafile` dependency is used by the HTML reporter and is not needed by this
-  text-only path. The repository merger will explicitly add zero-hit source
-  entries, avoiding LuaFileSystem's `includeuntestedfiles` dependency.
+  reporter. The shipped command vendors the exact required upstream Lua files
+  plus the license and provenance (56,986 bytes in the evaluated subset),
+  because tests must work offline and Neovim embeds its own LuaJIT. LuaCov's
+  rockspec-level `datafile` dependency is used by the HTML reporter and is not
+  needed by this text-only path. The repository merger explicitly adds zero-hit
+  source entries, avoiding LuaFileSystem's `includeuntestedfiles` dependency.
 - **Node decision:** use Node's built-in test coverage and a small
   repository-owned reporter. No npm coverage package is needed. The reporter
   must consume the documented `test:coverage` event, retain normal `spec`
@@ -388,9 +390,9 @@ Phase 4 tooling decision record, 2026-08-04:
   the newer flags would violate the supported-major contract.
 - **Version boundary:** `--experimental-test-coverage` works with `--test`
   beginning in Node 20.1.0. It passed on Node 20.20.2 and local Node 22.23.1;
-  Node 20.0.0 rejected the combination with exit 9. Task 20 must make the
-  coverage prerequisite explicit as Node >=20.1 and align the repository's
-  version check/documentation. Raw `NODE_V8_COVERAGE` worked on 20.0.0 but was
+  Node 20.0.0 rejected the combination with exit 9. The coverage command makes
+  Node >=20.1 explicit while normal tests retain their Node 20 major boundary.
+  Raw `NODE_V8_COVERAGE` worked on 20.0.0 but was
   rejected as the implementation path because it would require pi.nvim to own
   a V8 range-to-line/branch merger. Normal tests remain compatible with the
   existing Node 20 major boundary.
@@ -420,8 +422,8 @@ a 37 KiB stats file. LuaCov's default source listing was 520 KiB, so it is not
 the selected report format. A custom summary reporter produced the same
 7,533-hit/1,063-missed result in 2.6 KiB without source contents, absolute
 paths, tests, prompts, secrets, or dependency code. Its provisional diagnostic
-total was 87.63% line coverage. Task 20 must regenerate and record the shipped
-baseline rather than treating this temporary result as the durable baseline.
+total was 87.63% line coverage. The shipped baseline below supersedes this
+temporary result.
 
 Node automatically merged the five Extension test subprocesses. Both accepted
 Node versions reported the same provisional helper totals: 96.58% lines,
@@ -457,7 +459,7 @@ spec's assertions passed on both Neovim versions with about 7% overhead, so it
 will remain instrumented; there is no evidence-based exclusion. Normal
 `make test` remains uninstrumented.
 
-Task 20 must use a fresh, repository-local layout:
+The shipped workflow uses a fresh, repository-local layout:
 
 ```text
 coverage/lua/raw/
@@ -466,20 +468,43 @@ coverage/lua/summary.txt
 coverage/extensions/summary.txt
 ```
 
-The generated `coverage/` root must be narrowly ignored. A helper must resolve
-the repository root, validate that the cleanup target is exactly its
-`coverage/` child, clear it at the beginning of every run, assign a unique Lua
-stats file per spec, merge only the current manifest, remove raw files after a
-successful merge, and retain only bounded summaries. No coverage command may
-fetch from the network.
+The generated `coverage/` root is narrowly ignored. The helper resolves the
+repository root, validates that the cleanup target is exactly its non-symlink
+`coverage/` child, clears it at the beginning of every run, assigns a unique
+Lua stats file per spec, merges only the current manifest, removes raw files
+after a successful merge, and retains only bounded summaries. The command does
+not fetch from the network.
 
 One pre-existing compatibility failure was discovered outside the tooling:
 the uninstrumented Neovim 0.10.4 suite formats `compact_count(1250)` as `1.3k`
 while local stable formats it as `1.2k`, causing `shared_owners_spec.lua` to
-fail before coverage starts. Task 20 is blocked until that cross-LuaJIT rounding
-behavior is fixed and protected without changing production code merely to
-raise coverage. The coverage workflow must run or require the normal gate so it
+fail before coverage starts. Commit `5fbc944` replaced runtime-dependent decimal
+formatting with protected half-even rounding and restored the full Neovim 0.10.4
+gate. The coverage workflow runs the normal uninstrumented gate first so it
 cannot conceal this kind of baseline failure.
+
+Phase 4 implementation record, 2026-08-04:
+
+- `make coverage` validates the vendored LuaCov hashes and Node >=20.1, runs
+  `make test` uninstrumented, then collects one fresh stats file from each of 50
+  isolated Neovim processes. It merges all 57 Lua production files, including
+  explicit zero-hit entries, and runs all five authoritative Extension test
+  files in one Node coverage command.
+- The shipped Neovim 0.12.4 / LuaJIT 2.1.1767980792 baseline is 7,539 hit and
+  1,063 missed executable lines, or 87.64%. The Node 22.23.1 helper baseline is
+  96.58% lines, 87.36% branches, and 92.86% functions. Scope, blind spots, and
+  risk-ordered follow-ups are recorded in `tests/README.md`.
+- Two complete public-command runs produced identical summaries. A stale probe
+  inserted before the second run was removed, current-only manifests still
+  merged exactly 50 artifacts, and no raw or manifest file survived success.
+- A controlled coverage-only failure passed the uninstrumented prerequisite,
+  failed the first instrumented spec with its original traceback, and made GNU
+  Make return non-zero. The temporary failure was restored immediately.
+- Instrumentation exposed a weak-reference flaw in `registry_spec.lua`: its
+  temporary Chat entry could be collected before the resize assertion. The
+  spec now retains the same strong owner reference that a real Chat has; normal
+  and instrumented forms both pass. Production Registry behavior was unchanged.
+- Generated reports remain ignored and no CI percentage threshold was added.
 
 The first coverage report establishes a baseline. Do not fail CI on an arbitrary
 percentage initially. A later non-regression gate may be proposed only after the

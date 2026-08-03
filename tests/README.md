@@ -21,7 +21,9 @@ Run commands from the repository root.
 | `make test-lua` | Every recursively discovered `tests/lua/**/*_spec.lua` file, one Neovim process per file | Lua subsystem gate |
 | `make test-extensions` | Every recursively discovered `tests/extensions/**/*.test.mjs` file | Bundled Extension gate |
 | `make test` | All Lua, Extension, and repository policy tests | Completion and CI gate |
-| `make format-check` | StyLua validation for `lua/`, `plugin/`, and `tests/` | Formatting gate |
+| `make coverage` | Uninstrumented `make test`, then fresh Lua and Extension coverage reports | Diagnostic coverage baseline |
+| `make coverage-clean` | Only the validated repository-local `coverage/` directory | Remove generated reports |
+| `make format-check` | StyLua validation for `lua/`, `plugin/`, `tests/`, and repository coverage helpers | Formatting gate |
 | `make smoke` | Installed Pi RPC startup and bundled Extension loading, without model calls | Installed compatibility gate |
 | `make ci-policy-check` | GitHub Actions immutable-pin policy | CI workflow gate |
 
@@ -38,8 +40,9 @@ from Git changes and never replaces the complete `make test` gate. `make test`
 does not include formatting or installed-process smoke checks; run those when
 the change scope requires them.
 
-Coverage status: objective coverage reporting is planned but is not currently
-shipped. There is no `make coverage` target yet.
+`make coverage` additionally requires Node 20.1 or newer. Normal tests retain
+their Node 20 major-version boundary. Coverage is deliberately separate from
+the focused loop and is not part of CI.
 
 ## Directory Map
 
@@ -143,11 +146,92 @@ repository-owned or external harness is loaded. Reconsider this only if repeated
 case-level filtering needs or cleanup defects provide concrete evidence that a
 harness would remove more complexity than it adds.
 
-## Coverage Status
+## Coverage
 
-Instrumented coverage reporting is not currently shipped. Until a pinned,
-offline-capable command is added, use the ownership map and behavior tests to
-review change coverage. A future report will remain diagnostic: it will not
-replace explicit RPC ordering, security, lifecycle, memory-budget, performance,
-or installed-process smoke tests, and an arbitrary 100% target is not a quality
-requirement.
+Run the complete diagnostic workflow from the repository root:
+
+```bash
+make coverage
+```
+
+The command validates its pinned tools before running anything, runs the normal
+`make test` gate without instrumentation, clears only a resolved non-symlink
+`coverage/` child of the repository, and then collects fresh data. It needs no
+model, authentication, installed Pi mutation, package installation, network
+fetch, system Lua, Python, or LuaRocks. A test failure remains non-zero and the
+next invocation discards incomplete or stale artifacts.
+
+LuaCov 0.17.0 is vendored at commit
+`b1f9eae400da976b93edb7f94cf5d05f538a0655`; the command verifies every
+selected upstream source file and its MIT license by SHA-256 before collection.
+Each Lua spec retains its own Neovim process and unique stats file. The merger
+accepts only the current invocation manifest, normalizes paths to the original
+repository sources, explicitly adds unloaded modules with zero hits, and
+deletes raw per-process files after a successful report.
+
+Node uses its built-in test coverage and one repository reporter. All
+`tests/extensions/**/*.test.mjs` files run in one test command so Node can merge
+their worker coverage while preserving normal `spec` failures. Node 20.1 is the
+minimum coverage version because 20.0 rejects `--test` with
+`--experimental-test-coverage`.
+
+| Report | Included source | Excluded source |
+| --- | --- | --- |
+| `coverage/lua/summary.txt` | `lua/pi/**/*.lua`, `plugin/pi.lua` | Tests, fixtures, vendored tooling, generated data |
+| `coverage/lua/merged.stats` | Current-run normalized LuaCov stats | Stale and raw process artifacts |
+| `coverage/extensions/summary.txt` | `extensions/lib/**/*.mjs` | Tests, Node internals, global Pi, generated cache, `extensions/*.ts` |
+
+The generated root is ignored by Git. `make coverage-clean` removes it through
+the same exact-path and symlink checks. Reports are bounded summaries and do not
+copy source lines, prompt contents, Base64 data, test fixtures, or absolute
+repository paths.
+
+### Baseline
+
+The first shipped baseline was recorded on 2026-08-04 with Neovim 0.12.4,
+LuaJIT 2.1.1767980792, Node 22.23.1, vendored LuaCov 0.17.0, and Node's built-in
+test coverage. Two consecutive complete runs produced identical totals after a
+deliberate stale artifact was placed in `coverage/` before the second run.
+
+| Owner | Result |
+| --- | --- |
+| Lua frontend | 7,539 hit and 1,063 missed executable lines: 87.64% line coverage |
+| Extension helpers | 96.58% lines, 87.36% branches, 92.86% functions |
+
+The performance regression spec runs first without instrumentation as part of
+the normal gate and then under LuaCov. It passed in both modes and contributes
+coverage; the diagnostic line hook does not redefine its uninstrumented timing
+contract.
+
+Interpret the baseline by ownership and risk:
+
+- The authoritative permission helper is the highest-priority Extension gap at
+  93.64% lines, 84.56% branches, and 84.62% functions. Follow-up tests should
+  target unverified fail-closed response and transition branches, not execute
+  lines without asserting the decision.
+- RPC-critical Lua owners remain incomplete: `client.lua` is 80.20%,
+  `runtime.lua` 81.79%, and `protocol.lua` 92.41%. Follow-ups should prioritize
+  subprocess errors, correlation/queue limits, malformed frames, and final
+  cleanup ordering.
+- Dialog and permission presentation are 84.62% and 92.34%; remaining work
+  should focus on cancellation, malformed UI responses, and teardown paths
+  while keeping decisions authoritative in the Extension.
+- Transcript and TranscriptView owners exceed 94% line coverage, but explicit
+  memory, timer, and post-destroy behavior tests remain more meaningful than
+  percentage gains.
+- Native picker/command integration is intentionally sparse in
+  `commands/model.lua`, `commands/session.lua`, `commands/ui.lua`, and
+  `clipboard.lua`. Environment-independent capability-limit and cleanup tests
+  are useful; plugin-specific happy paths do not justify weakening isolation.
+- Image source/backend branches depend on optional executables and UI backends.
+  Add deterministic adapter/error tests where behavior matters rather than
+  importing host state into the default suite.
+
+LuaCov reports lines only, so Lua branch and function coverage remain a blind
+spot. Trusted TypeScript entry points under `extensions/*.ts` are excluded
+because Pi's jiti transformation did not provide reliable source-mapped V8
+positions; `make smoke` remains their installed-Pi loading check. Coverage also
+does not replace RPC ordering, security, lifecycle, memory-budget, performance,
+or smoke assertions. No percentage threshold is enforced in CI. Reproduce the
+baseline with exactly `make coverage` after relevant source or behavior-test
+changes.
