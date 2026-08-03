@@ -13,15 +13,6 @@ local function has_buffer_mapping(buf, mode, lhs)
   return false
 end
 
-local function has_extmark_highlight(buf, highlight)
-  for _, extmark in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })) do
-    if extmark[4] and (extmark[4].hl_group == highlight or extmark[4].line_hl_group == highlight) then
-      return true
-    end
-  end
-  return false
-end
-
 local chat = Chat.new(root, {
   submit = function(prompt)
     submitted = prompt
@@ -56,11 +47,6 @@ assert(status_config.height == 1, "footer must remain a single quiet row")
 assert(chat:permission_mode() == nil, "confirm UI guessed a mode before Extension status")
 
 chat:set_input("/smd")
-local command_start, command_matches = chat:_command_completion_context()
-assert(command_start == 1, "slash completion starts at the wrong input column")
-assert(#command_matches == 1 and command_matches[1].word == "/scoped-models", "fuzzy slash matching failed")
-assert(command_matches[1].kind == "TUI", "RPC-unavailable Pi command must be identified in completion")
-assert(#command_matches[1].match_positions == 3, "fuzzy match positions are missing")
 vim.api.nvim_exec_autocmds("TextChangedI", { buffer = chat.input_area:buffer() })
 assert(
   vim.wait(500, function()
@@ -68,54 +54,12 @@ assert(
   end, 10),
   "custom slash command menu did not open while typing"
 )
-assert(
-  chat.command_menu:window() and vim.api.nvim_win_is_valid(chat.command_menu:window()),
-  "command menu window is missing"
-)
-local command_config = vim.api.nvim_win_get_config(chat.command_menu:window())
-assert(command_config.border == nil or command_config.border == "none", "command menu must not render a detached box")
-assert(command_config.focusable == false, "command menu must keep focus in the prompt")
-assert(
-  command_config.col == 0 and command_config.width == vim.api.nvim_win_get_width(chat.win),
-  "command menu must align with both canvas edges"
-)
-assert(
-  command_config.row + command_config.height <= vim.api.nvim_win_get_config(chat.input_area:window()).row,
-  "command menu must stay above the prompt frame"
-)
-assert(
-  vim.wo[chat.command_menu:window()].winhighlight:find("Normal:PiCommandMenu", 1, true),
-  "command menu does not use the Pi canvas surface"
-)
-local command_surface = vim.api.nvim_get_hl(0, { name = "PiCommandMenu", link = false })
-local command_selection = vim.api.nvim_get_hl(0, { name = "PiCommandSelected", link = false })
-local canvas_surface = vim.api.nvim_get_hl(0, { name = "PiCanvasNormal", link = false })
-assert(command_surface.bg == canvas_surface.bg, "command menu must blend into the transcript canvas")
-assert(command_selection.bg ~= canvas_surface.bg, "selected command needs a distinct but local surface")
-local command_lines = vim.api.nvim_buf_get_lines(chat.command_menu:buffer(), 0, -1, false)
-assert(command_lines[1]:find("› /scoped-models", 1, true), "selected fuzzy command is not clearly marked")
-assert(vim.api.nvim_strwidth(command_lines[1]) <= command_config.width, "command menu row overflowed its window")
-assert(
-  has_extmark_highlight(chat.command_menu:buffer(), "PiCommandMatch"),
-  "fuzzy matched characters are not highlighted"
-)
-assert(
-  has_extmark_highlight(chat.command_menu:buffer(), "PiCommandSelected"),
-  "selected command row is not highlighted"
-)
-assert(vim.fn.pumvisible() == 0, "native popup menu leaked into the custom command UI")
 assert(chat:_accept_command_completion(), "selected command was not accepted")
 assert(
   vim.api.nvim_buf_get_lines(chat.input_area:buffer(), 0, 1, false)[1] == "/scoped-models ",
   "accepted command did not replace the fuzzy query"
 )
 assert(not chat:_command_menu_visible(), "command menu remained open after accepting a command")
-chat:set_input("/model")
-command_start, command_matches = chat:_command_completion_context()
-assert(
-  command_start == 1 and command_matches[1].abbr:find("<provider/model>", 1, true),
-  "command argument hint is missing"
-)
 chat:set_input("/mo")
 vim.api.nvim_exec_autocmds("TextChangedI", { buffer = chat.input_area:buffer() })
 assert(
@@ -124,7 +68,11 @@ assert(
   end, 10),
   "ranked fuzzy menu did not reopen"
 )
-assert(chat:_select_command(1), "command menu did not accept downward selection")
+local insert_down = vim.api.nvim_buf_call(chat.input_area:buffer(), function()
+  return vim.fn.maparg("<Down>", "i", false, true)
+end)
+assert(type(insert_down.callback) == "function", "InputArea did not wire command-menu navigation")
+insert_down.callback()
 assert(chat.command_menu:selected_index() == 2, "Down did not select the next fuzzy command")
 chat:set_input("")
 

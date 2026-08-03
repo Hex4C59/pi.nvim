@@ -6,7 +6,8 @@
 > message, Markdown, tool, process, and facade specs are complete; remaining
 > UI-owner work is tracked by `docs/modular-architecture-plan.md`. Direct
 > InputArea buffer, frame, footer, action, sizing, and lifecycle coverage is
-> complete.
+> complete. Direct CommandMenu catalogue presentation, fuzzy completion,
+> geometry, selection, acceptance, and lifecycle coverage is also complete.
 >
 > Scope: local test invocation, test-infrastructure regression coverage, test
 > failure granularity, and coverage visibility in pi.nvim. This proposal does

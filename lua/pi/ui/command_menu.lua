@@ -87,6 +87,7 @@ function CommandMenu.new(deps)
     first = 1,
     start_col = nil,
     base = nil,
+    destroyed = false,
   }, CommandMenu)
   return self
 end
@@ -125,6 +126,9 @@ function CommandMenu:visible()
 end
 
 function CommandMenu:ensure_buffer()
+  if self.destroyed then
+    return nil
+  end
   if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
     return self.buf
   end
@@ -251,6 +255,9 @@ function CommandMenu:render(width, height, first)
 end
 
 function CommandMenu:layout()
+  if self.destroyed then
+    return false
+  end
   local main_win = self.main_window()
   local input_win = self.input_window()
   if not self:visible() or #self.matches == 0 then
@@ -301,6 +308,9 @@ function CommandMenu:layout()
 end
 
 function CommandMenu:open()
+  if self.destroyed then
+    return false
+  end
   local main_win = self.main_window()
   if not main_win or not vim.api.nvim_win_is_valid(main_win) then
     return false
@@ -338,6 +348,9 @@ function CommandMenu:open()
 end
 
 function CommandMenu:update()
+  if self.destroyed then
+    return false
+  end
   if vim.api.nvim_get_current_win() ~= self.input_window() then
     self:close()
     return false
@@ -374,7 +387,7 @@ function CommandMenu:show()
 end
 
 function CommandMenu:select(delta)
-  if not self:visible() or #self.matches == 0 then
+  if self.destroyed or not self:visible() or #self.matches == 0 then
     return false
   end
   local count = #self.matches
@@ -384,6 +397,9 @@ function CommandMenu:select(delta)
 end
 
 function CommandMenu:accept()
+  if self.destroyed then
+    return false
+  end
   local input_win = self.input_window()
   local input_buf = self.input_buffer()
   if not self:visible() then
@@ -422,6 +438,7 @@ function CommandMenu:owns_buffer(bufnr)
 end
 
 function CommandMenu:destroy()
+  self.destroyed = true
   self:close()
   if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
     pcall(vim.api.nvim_buf_delete, self.buf, { force = true })
