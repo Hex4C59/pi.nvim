@@ -315,6 +315,40 @@ Do not add a framework solely to obtain `describe`/`it` syntax. If smaller specs
 and descriptive assertions provide adequate diagnostics, retaining the current
 dependency-free approach is acceptable and should be recorded as the decision.
 
+Phase 3 harness decision record, 2026-08-04:
+
+- **Decision:** retain dependency-free top-level Lua specs. Keep one Neovim
+  process per spec file, file-level `make test-file` selection, descriptive Lua
+  assertions, and explicit owner-local cleanup. No suite migration or harness
+  dependency is planned.
+- **Tested runtimes:** the official Neovim 0.10.4 Linux release with LuaJIT
+  2.1.1713484068, and local stable Neovim 0.12.4 with LuaJIT
+  2.1.1767980792. The CI matrix continues to name `v0.10.4` and `stable`.
+- **Current-suite evidence:** the suite has 50 Lua spec files and 8,888 lines;
+  35 specs use protected cleanup. The largest remaining owner specs are
+  `transcript_view_spec.lua` (555 lines), `input_spec.lua` (502), and
+  `render/tools_spec.lua` (476). Representative `make test-file` runs took
+  13 ms for a pure renderer spec, 33 ms for an interactive UI spec, and 108 ms
+  for the fake-RPC integration spec on the local stable runtime.
+- **Reporting and stability:** the controlled Task 16 failure named the Make
+  file prefix, behavior assertion, and original traceback while cleanup still
+  removed its probe directory. Four representative async/integration specs ran
+  five times on each tested Neovim version (20/20 passes per version). No flaky
+  cross-scenario state or demonstrated need to filter several cases inside one
+  owner-aligned file was found.
+
+| Candidate | Compatibility and prototype result | Dependency/offline cost | Decision |
+| --- | --- | --- | --- |
+| Current top-level specs | Passed the existing pure, UI, async, cleanup, traceback, ordering, and non-zero-status contracts on both runtimes. Exact file filtering remains available. | No test dependency, plugin manager, network access, or additional global state. | Selected. File plus behavior diagnostics are adequate. |
+| Small repository-owned harness | A temporary named-case prototype passed pure renderer, buffer cleanup, bounded async, exact filtering, forced-failure cleanup, traceback, and exit-status checks on both runtimes. Median prototype startup was about 4 ms. | A production version would require about 100-150 maintained lines across the runner, filter/reporting logic, and direct self-tests. It removes the common `xpcall` shell but not the 35 owner-specific cleanup implementations. | Rejected until real case-filtering or reporting pain justifies owning a framework. |
+| `mini.test` from `mini.nvim` v0.17.0 (`a995fe9`) | The pinned temporary prototype passed the same cases on both runtimes. Named failure output, `MiniTest.finally`, exact leaf-case filtering, deterministic execution, and non-zero status worked. Median single-case startup was about 14 ms versus 10-11 ms for the current pure-spec command. | MIT licensed and actively released; supports Neovim 0.9+, needs no plugin manager or transitive runtime dependency, but a pinned checkout was about 21 MiB (`mini.test` itself is 2,385 lines). CI and offline contributors would require a vendored or pre-fetched pinned copy; an unpinned test-time clone is unacceptable. `setup()` also creates the documented global `MiniTest`. | Rejected because its additional case/reporting features do not offset acquisition, pinning, migration, and lifecycle cost for this suite. |
+
+The temporary candidates were outside tracked test paths and were removed after
+evaluation. Revisit this decision only if owner specs repeatedly need case-level
+filtering, current cleanup boilerplate causes real defects, or file-plus-assert
+failure output becomes inadequate. Task 18 must copy the concise decision and
+test-writing rule into `tests/README.md` before this planning document is closed.
+
 ### 8.4 Phase 4: establish coverage visibility
 
 Coverage is a diagnostic signal, not an ownership or correctness guarantee.
