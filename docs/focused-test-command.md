@@ -8,6 +8,8 @@
 > InputArea buffer, frame, footer, action, sizing, and lifecycle coverage is
 > complete. Direct CommandMenu catalogue presentation, fuzzy completion,
 > geometry, selection, acceptance, and lifecycle coverage is also complete.
+> Phase 4's coverage-tooling evaluation is complete; the public coverage
+> command and baseline remain pending.
 >
 > Scope: local test invocation, test-infrastructure regression coverage, test
 > failure granularity, and coverage visibility in pi.nvim. This proposal does
@@ -364,6 +366,120 @@ Introduce it in two steps:
    supports the minimum versions used by CI, excludes generated or fixture code,
    and emits separate Lua and Extension reports. Pin any new tool before adding
    a repeatable `make coverage` target.
+
+Phase 4 tooling decision record, 2026-08-04:
+
+- **Lua decision:** select LuaCov 0.17.0, pinned to commit
+  `b1f9eae400da976b93edb7f94cf5d05f538a0655` under its MIT license. Use its
+  debug-hook collector, stats reader, line scanner, and reporter base inside
+  Neovim; do not require a system Lua, LuaRocks, Python, CLuaCov, or the HTML
+  reporter. Task 20 must vendor the exact required upstream Lua files plus the
+  license and provenance (56,986 bytes in the evaluated subset), because tests
+  must work offline and Neovim embeds its own LuaJIT. LuaCov's rockspec-level
+  `datafile` dependency is used by the HTML reporter and is not needed by this
+  text-only path. The repository merger will explicitly add zero-hit source
+  entries, avoiding LuaFileSystem's `includeuntestedfiles` dependency.
+- **Node decision:** use Node's built-in test coverage and a small
+  repository-owned reporter. No npm coverage package is needed. The reporter
+  must consume the documented `test:coverage` event, retain normal `spec`
+  failure diagnostics, filter to `extensions/lib/**/*.mjs`, recompute source-
+  only totals, and omit test files, Node internals, global Pi, and generated
+  cache paths. Node 20 lacks coverage include/exclude CLI flags, so relying on
+  the newer flags would violate the supported-major contract.
+- **Version boundary:** `--experimental-test-coverage` works with `--test`
+  beginning in Node 20.1.0. It passed on Node 20.20.2 and local Node 22.23.1;
+  Node 20.0.0 rejected the combination with exit 9. Task 20 must make the
+  coverage prerequisite explicit as Node >=20.1 and align the repository's
+  version check/documentation. Raw `NODE_V8_COVERAGE` worked on 20.0.0 but was
+  rejected as the implementation path because it would require pi.nvim to own
+  a V8 range-to-line/branch merger. Normal tests remain compatible with the
+  existing Node 20 major boundary.
+
+Primary references are the [LuaCov 0.17 documentation](https://lunarmodules.github.io/luacov/),
+its pinned upstream source, and the [Node 20 test-runner documentation](https://nodejs.org/download/release/latest-v20.x/docs/api/test.html).
+LuaCov provides line coverage only; Node reports line, branch, and function
+coverage.
+
+| Runtime | Prototype result |
+| --- | --- |
+| Neovim 0.10.4 / LuaJIT 2.1.1713484068 | Pure renderer and buffer/window UI specs passed under instrumentation in separate processes. Their unique stats merged exactly, the summary used original repository paths, a controlled failure returned 1, and `performance_spec.lua` passed both normally and instrumented. |
+| Neovim 0.12.4 / LuaJIT 2.1.1767980792 | The same focused contracts passed. All 50 instrumented Lua specs passed and merged into one report. |
+| Node 20.20.2 | One policy file and all five Extension test files passed with source-only line/branch/function summaries; a controlled failure retained its traceback and exit 1. |
+| Node 22.23.1 | The same Extension results and failure behavior passed. Totals matched Node 20.20.2 exactly. |
+| Node 20.0.0 | Normal tests and raw V8 output worked, but built-in test reporting rejected coverage plus `--test`; unsupported for the coverage command. |
+
+The two focused Neovim processes recorded 1,959 and 8,320 line-hook hits on
+each Neovim version. The merger produced exactly 10,279 hits, proving that one
+process did not overwrite the other. It normalized absolute debug paths to
+`lua/pi/...` and `plugin/pi.lua`, and explicit zero entries made unloaded source
+files visible. `plugin/pi.lua` was sourced naturally after the coverage init
+prepended the repository runtime path, and remains a separate report row.
+
+The stable full-suite spike merged 50 fresh process files (about 1.4 MiB) into
+a 37 KiB stats file. LuaCov's default source listing was 520 KiB, so it is not
+the selected report format. A custom summary reporter produced the same
+7,533-hit/1,063-missed result in 2.6 KiB without source contents, absolute
+paths, tests, prompts, secrets, or dependency code. Its provisional diagnostic
+total was 87.63% line coverage. Task 20 must regenerate and record the shipped
+baseline rather than treating this temporary result as the durable baseline.
+
+Node automatically merged the five Extension test subprocesses. Both accepted
+Node versions reported the same provisional helper totals: 96.58% lines,
+87.36% branches, and 92.86% functions across all eight
+`extensions/lib/**/*.mjs` files. The custom reporter removed test files from
+both rows and aggregate percentages.
+
+TypeScript entry-point percentages are explicitly rejected. Production Pi/jiti
+smoke emitted V8 script URLs ending in the four original `.ts` paths but no
+source-map cache. A direct jiti probe reported an uninvoked six-line entry as
+100% covered and placed a `todo.ts` load error at generated position `1:222`.
+Those numbers describe transformed code under an original-looking filename,
+not trustworthy TypeScript lines. `extensions/*.ts` therefore remain covered
+by the installed-Pi loading smoke and behavior in their imported policy
+helpers, but are excluded from percentage totals. Coverage must not replace
+`make smoke`.
+
+Measured wall-clock overhead was:
+
+| Scope | Normal | Instrumented | Increase |
+| --- | ---: | ---: | ---: |
+| Stable pure spec, 50 processes | 0.48 s | 0.74 s | 54% |
+| Stable UI spec, 25 processes | 0.37 s | 0.72 s | 95% |
+| Stable full Lua suite, 50 specs | 2.79 s | 42.96 s | 1,440% |
+| Stable `performance_spec.lua` | 0.15 s | 0.16 s | 7% |
+| Neovim 0.10 `performance_spec.lua` | 0.14 s | 0.15 s | 7% |
+| Node 20 Extension suite, 20 runs | 1.07 s | 1.59 s | 49% |
+| Node 22 Extension suite, 20 runs | 2.98 s | 3.61 s | 21% |
+
+Lua's full-run cost is concentrated in high-volume client paths under the line
+debug hook. Coverage remains a separate diagnostic target. The performance
+spec's assertions passed on both Neovim versions with about 7% overhead, so it
+will remain instrumented; there is no evidence-based exclusion. Normal
+`make test` remains uninstrumented.
+
+Task 20 must use a fresh, repository-local layout:
+
+```text
+coverage/lua/raw/
+coverage/lua/merged.stats
+coverage/lua/summary.txt
+coverage/extensions/summary.txt
+```
+
+The generated `coverage/` root must be narrowly ignored. A helper must resolve
+the repository root, validate that the cleanup target is exactly its
+`coverage/` child, clear it at the beginning of every run, assign a unique Lua
+stats file per spec, merge only the current manifest, remove raw files after a
+successful merge, and retain only bounded summaries. No coverage command may
+fetch from the network.
+
+One pre-existing compatibility failure was discovered outside the tooling:
+the uninstrumented Neovim 0.10.4 suite formats `compact_count(1250)` as `1.3k`
+while local stable formats it as `1.2k`, causing `shared_owners_spec.lua` to
+fail before coverage starts. Task 20 is blocked until that cross-LuaJIT rounding
+behavior is fixed and protected without changing production code merely to
+raise coverage. The coverage workflow must run or require the normal gate so it
+cannot conceal this kind of baseline failure.
 
 The first coverage report establishes a baseline. Do not fail CI on an arbitrary
 percentage initially. A later non-regression gate may be proposed only after the
