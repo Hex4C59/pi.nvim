@@ -74,4 +74,20 @@ trailing:push("{\"type\":\"eof\"}")
 trailing:finish()
 assert(received[5].type == "eof", "final frame at EOF was not decoded")
 
+local recovered = {}
+local fragmented_errors = {}
+local fragmented_oversized = Parser.new({
+  max_frame_bytes = 8,
+  on_message = function(message)
+    table.insert(recovered, message)
+  end,
+  on_error = function(err)
+    table.insert(fragmented_errors, err)
+  end,
+})
+fragmented_oversized:push(string.rep("x", 9))
+fragmented_oversized:push("discarded tail\n{\"ok\":1}\n")
+assert(#fragmented_errors == 1, "fragmented oversized frames must report exactly once")
+assert(#recovered == 1 and recovered[1].ok == 1, "parser did not recover at the frame after oversized input")
+
 print("protocol_spec: ok")

@@ -78,6 +78,7 @@ assert(insert_enter.expr == 0, "Insert Enter must not mutate the prompt from an 
 local insert_down = assert(get_buffer_mapping(chat.input_buf, "i", "<Down>"), "command menu is missing Down navigation")
 assert(insert_down.expr == 0, "command navigation must be able to redraw outside expression-map textlock")
 assert(has_buffer_mapping(chat.input_buf, "i", "<Up>"), "command menu is missing Up navigation")
+assert(has_buffer_mapping(chat.input_buf, "i", "<M-p>"), "prompt is missing permission mode shortcut")
 assert(has_buffer_mapping(chat.buf, "n", "<LeftMouse>"), "chat canvas is missing its mouse tool toggle")
 assert(has_buffer_mapping(chat.input_buf, "i", "<LeftMouse>"), "prompt cannot dispatch mouse clicks to the chat")
 assert(chat.status_win and vim.api.nvim_win_is_valid(chat.status_win), "status window was not created")
@@ -87,18 +88,26 @@ assert(input_config.relative == "win" and input_config.win == chat.win, "prompt 
 assert(status_config.relative == "win" and status_config.win == chat.win, "footer is not attached to the chat canvas")
 assert(status_config.focusable == false, "footer must not steal focus")
 assert(not vim.wo[chat.win].cursorline, "chat canvas must not show a stale cursor line")
-assert(input_config.col == 1, "prompt must keep a one-column outer gutter")
+assert(input_config.col == 0, "prompt must align with the canvas left edge")
 assert(
-  input_config.border[1][1] == "╱" and input_config.border[5][1] == "╱",
-  "prompt border must use symmetric chamfered corners"
+  input_config.width + 2 == vim.api.nvim_win_get_width(chat.win),
+  "prompt frame must align with the canvas right edge"
+)
+assert(status_config.col == 0 and status_config.width == vim.api.nvim_win_get_width(chat.win), "footer is misaligned")
+assert(
+  input_config.border[1][1] == "┌"
+    and input_config.border[3][1] == "┐"
+    and input_config.border[5][1] == "┘"
+    and input_config.border[7][1] == "└",
+  "prompt border must use square corners"
 )
 assert(
-  input_config.border[2][1] == "▔" and input_config.border[6][1] == "▁",
+  input_config.border[2][1] == "─" and input_config.border[6][1] == "─",
   "prompt surface must meet its horizontal edges"
 )
 assert(
-  input_config.border[4][1] == "▕" and input_config.border[8][1] == "▏",
-  "prompt surface must meet its vertical edges"
+  input_config.border[4][1] == "│" and input_config.border[8][1] == "│",
+  "prompt must use vertical side borders"
 )
 assert(input_config.height == 3, "prompt must reserve balanced vertical padding")
 assert(vim.wo[chat.input_win].winbar == " ", "prompt must keep its top padding row")
@@ -119,14 +128,13 @@ local input_border = vim.api.nvim_get_hl(0, { name = "PiInputBorder", link = fal
 local input_corner = vim.api.nvim_get_hl(0, { name = "PiInputCorner", link = false })
 local canvas_surface = vim.api.nvim_get_hl(0, { name = "PiCanvasNormal", link = false })
 assert(input_border.bg == input_surface.bg, "gray input surface must fill the straight edge cells")
-assert(input_surface.bold, "prompt text must remain visually prominent while composing input")
+assert(not input_surface.bold, "prompt text should use normal weight for CJK readability")
 assert(
-  input_cursor.fg == input_surface.fg and input_cursor.bg == 0x000000,
-  "IME preedit reverse rendering must produce black text on a light surface"
+  input_cursor.fg == 0x000000 and input_cursor.bg == 0x000000,
+  "IME preedit text must remain black regardless of which cursor color the terminal uses"
 )
 assert(input_cursor.bold and input_cursor.nocombine, "IME cursor contrast must not inherit a weaker text style")
-assert(input_corner.bg == canvas_surface.bg, "chamfered corners must not leak gray outside the frame")
-assert(input_corner.bg ~= input_surface.bg, "corner cells must stay outside the gray input surface")
+assert(input_corner.bg == input_surface.bg, "square corner cells must be part of the input surface")
 assert(
   vim.api.nvim_strwidth(styled_text(input_config.title)) == input_config.width,
   "prompt top border must span the full frame"
@@ -137,6 +145,8 @@ assert(
 )
 assert(status_config.height == 1, "footer must remain a single quiet row")
 assert(vim.wo[chat.status_win].winhighlight:find("Normal:PiStatusNormal", 1, true), "footer surface is missing")
+assert(chat:permission_mode() == nil, "confirm UI guessed a mode before Extension status")
+assert(chat:_status_text(80)[1]:find("--", 1, true), "unsynchronized permission mode is not visible")
 
 chat:set_input("/smd")
 local command_start, command_matches = chat:_command_completion_context()
@@ -156,8 +166,8 @@ local command_config = vim.api.nvim_win_get_config(chat.command_win)
 assert(command_config.border == nil or command_config.border == "none", "command menu must not render a detached box")
 assert(command_config.focusable == false, "command menu must keep focus in the prompt")
 assert(
-  command_config.col + vim.api.nvim_strwidth("› ") == vim.api.nvim_win_get_config(chat.input_win).col + 1,
-  "command names must align with the prompt text while the selection marker stays in the gutter"
+  command_config.col == 0 and command_config.width == vim.api.nvim_win_get_width(chat.win),
+  "command menu must align with both canvas edges"
 )
 assert(
   command_config.row + command_config.height <= vim.api.nvim_win_get_config(chat.input_win).row,
@@ -222,6 +232,7 @@ assert(
 )
 
 chat:set_path(vim.fs.joinpath(root, "lua", "pi", "init.lua"))
+chat:update_permission_mode("manual")
 chat:update_state({
   model = { id = "gpt-5.6-sol" },
   thinkingLevel = "high",
@@ -236,11 +247,22 @@ local welcome = table.concat(vim.api.nvim_buf_get_lines(chat.buf, 0, -1, false),
 assert(vim.api.nvim_buf_get_lines(chat.buf, 0, 1, false)[1]:find("╭", 1, true), "welcome has a top gap")
 assert(welcome:find("coding agent", 1, true), "empty chat welcome is missing")
 assert(welcome:find("gpt-5.6-sol · high", 1, true), "welcome did not refresh the model state")
-assert(welcome:find("confirm changes", 1, true), "welcome permission state is missing")
+assert(welcome:find("manual", 1, true), "welcome permission state is missing")
 local status = table.concat(vim.api.nvim_buf_get_lines(chat.status_buf, 0, -1, false), "\n")
 assert(not status:find(vim.fs.basename(root), 1, true), "project name should be hidden")
-assert(status:find("gpt-5.6-sol", 1, true), "model is missing")
-assert(status:find("high", 1, true), "thinking level is missing")
+assert(status:find("Manual", 1, true), "permission mode is missing from the footer")
+assert(not status:find("permissions", 1, true), "permission label should not be repeated in the footer")
+local permission_status_groups = {
+  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionManual", link = false }),
+  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionAcceptEdits", link = false }),
+  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionAuto", link = false }),
+  vim.api.nvim_get_hl(0, { name = "PiStatusPermissionPlan", link = false }),
+}
+local permission_status_colors = {}
+for _, group in ipairs(permission_status_groups) do
+  permission_status_colors[group.fg] = true
+end
+assert(vim.tbl_count(permission_status_colors) == 4, "permission modes must use distinct footer colors")
 assert(not status:find("idle", 1, true), "idle state should be hidden")
 assert(status:find("context 71.1%", 1, true), "context usage is missing")
 assert(not status:find("$6.186", 1, true), "session cost should not crowd the persistent footer")
@@ -248,14 +270,13 @@ assert(not status:find("cache", 1, true), "cache details should not crowd the pe
 local wide_lines = chat:_status_text(120)
 local wide_status = table.concat(wide_lines, "\n")
 assert(wide_status:find("context 71.1%", 1, true), "wide status is missing context usage")
+assert(wide_status:find("Manual", 1, true), "wide status is missing permission mode")
+assert(not wide_status:find("permissions", 1, true), "wide status should not repeat the permission label")
 assert(#wide_lines == 1, "wide status must remain a single-line layout")
 assert(wide_lines[1]:find("gpt-5.6-sol · high", 1, true) == 3, "model state must align with the composer text")
 local narrow_lines = chat:_status_text(50)
 assert(#narrow_lines == 1, "narrow status must remain a single-line layout")
-assert(
-  narrow_lines[1]:find("gpt-5.6-sol · high", 1, true) == 3,
-  "narrow model state must align with the composer text"
-)
+assert(narrow_lines[1]:find("Manual", 1, true) == 3, "narrow permission mode must align with the composer text")
 for _, line in ipairs(narrow_lines) do
   local display_width = vim.api.nvim_strwidth(line)
   assert(display_width <= 50, ("narrow footer overflowed its window (%d): %s"):format(display_width, vim.inspect(line)))
@@ -280,12 +301,13 @@ chat:end_assistant({
 local transcript = table.concat(vim.api.nvim_buf_get_lines(chat.buf, 0, -1, false), "\n")
 assert(transcript:find("coding agent", 1, true), "welcome disappeared after the conversation started")
 assert(
-  transcript:find("coding agent", 1, true) < transcript:find("YOU", 1, true),
+  transcript:find("coding agent", 1, true) < transcript:find(" › hello", 1, true),
   "welcome must remain above the conversation"
 )
 assert(transcript:find(" hello", 1, true), "user message is missing")
-assert(transcript:find("YOU", 1, true), "user label is missing")
-assert(transcript:find("◆ PI", 1, true), "assistant label is missing")
+assert(transcript:find(" › hello", 1, true), "user marker is missing")
+assert(not transcript:find("YOU", 1, true), "role labels should not be printed in the transcript")
+assert(not transcript:find("◆ PI", 1, true), "assistant role labels should not be printed in the transcript")
 local public_answer = assert(transcript:find("public answer", 1, true), "completed work lost its public answer")
 local thought_summary =
   assert(transcript:find("▸ Thought", 1, true), "completed work did not collapse into a process summary")
@@ -302,7 +324,19 @@ chat:toggle_process()
 assert(not chat.process_expanded, "process detail state did not return to compact mode")
 
 chat:set_activity("working")
-chat:start_tool("tool-1", "bash", { command = "printf hello" })
+chat:start_tool("tool-1", "bash", { command = "printf hello\nprintf world" })
+local multiline_command_lines = vim.api.nvim_buf_get_lines(chat.buf, 0, -1, false)
+transcript = table.concat(multiline_command_lines, "\n")
+assert(
+  transcript:find("Running  printf hello ↵ printf", 1, true),
+  "multiline Bash command did not preserve its line-break marker"
+)
+for index, line in ipairs(multiline_command_lines) do
+  assert(
+    not line:find("[\r\n]"),
+    ("transcript row %d contains an embedded newline: %s"):format(index, vim.inspect(line))
+  )
+end
 local output = {}
 for index = 1, 12 do
   table.insert(output, "line " .. index)
@@ -457,4 +491,4 @@ assert(submitted_root == root, "prompt was not bound to the chat project")
 assert(vim.api.nvim_buf_get_lines(chat.input_buf, 0, -1, false)[1] == "", "prompt was not cleared")
 
 chat:close()
-print("ui_spec: ok")
+print("chat_spec: ok")

@@ -6,11 +6,12 @@ local model_cmds = require("pi.commands.model")
 local session_cmds = require("pi.commands.session")
 local action_cmds = require("pi.commands.action")
 local ui_cmds = require("pi.commands.ui")
+local permission_cmds = require("pi.commands.permission")
 
 local M = {}
 
 -- Frozen command exports. M.submit dispatches through M.* so callers can
--- replace individual commands at runtime (see tests/commands_spec.lua).
+-- replace individual commands at runtime (see tests/lua/commands/dispatch_spec.lua).
 M.select_model = model_cmds.select_model
 M.select_thinking_level = model_cmds.select_thinking_level
 M.cycle_model = model_cmds.cycle_model
@@ -34,6 +35,8 @@ M.copy_last_response = action_cmds.copy_last_response
 M.layout = ui_cmds.layout
 M.settings = ui_cmds.settings
 M.hotkeys = ui_cmds.hotkeys
+M.select_permission_mode = permission_cmds.select
+M.cycle_permission_mode = permission_cmds.cycle
 
 function M.setup(opts)
   config.setup(opts)
@@ -47,9 +50,9 @@ function M.chat()
   chat:open()
 end
 
-function M.submit(text, root, behavior)
+function M.submit(text, root, behavior, images)
   text = vim.trim(text or "")
-  if text == "" then
+  if text == "" and (#(images or {}) == 0) then
     return
   end
   root = root or runtime.client_root()
@@ -58,6 +61,10 @@ function M.submit(text, root, behavior)
     M.select_model(root, arguments)
   elseif command == "thinking" then
     M.select_thinking_level(root, arguments)
+  elseif command == "permissions" or command == "permission" then
+    M.select_permission_mode(root, arguments)
+  elseif command == "mode" then
+    M.select_permission_mode(root, arguments)
   elseif command == "settings" then
     M.settings(root)
   elseif command == "layout" then
@@ -97,7 +104,7 @@ function M.submit(text, root, behavior)
   elseif text:sub(1, 1) == "!" then
     M.bash(text:sub(text:sub(1, 2) == "!!" and 3 or 2), root)
   else
-    runtime.send_prompt(text, nil, root, behavior)
+    runtime.send_prompt(text, nil, root, behavior, images)
   end
 end
 
@@ -123,10 +130,10 @@ function M.stop()
   if runtime.clients[root] then
     runtime.clients[root]:stop()
     runtime.clients[root] = nil
-    if runtime.chats[root] then
-      runtime.chats[root].history_loaded = false
-      runtime.chats[root]:set_activity("stopped")
-    end
+  end
+  if runtime.chats[root] then
+    runtime.chats[root]:destroy()
+    runtime.chats[root] = nil
   end
 end
 
@@ -134,10 +141,10 @@ function M.stop_all()
   for root, client in pairs(runtime.clients) do
     client:stop()
     runtime.clients[root] = nil
-    if runtime.chats[root] then
-      runtime.chats[root].history_loaded = false
-      runtime.chats[root]:set_activity("stopped")
-    end
+  end
+  for root, chat in pairs(runtime.chats) do
+    chat:destroy()
+    runtime.chats[root] = nil
   end
 end
 

@@ -1,0 +1,44 @@
+local root = vim.fn.getcwd()
+local image = {
+  type = "image",
+  mimeType = "image/png",
+  data = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+}
+
+local rpc_capture
+local fake_client = {
+  root = root,
+  state = "idle",
+  commands_by_name = {},
+}
+function fake_client:on_event() end
+function fake_client:start()
+  return true
+end
+function fake_client:request(command, payload, callback)
+  rpc_capture = { command = command, payload = payload }
+  if callback then
+    callback(true, {})
+  end
+  return "image-request"
+end
+
+package.loaded["pi.client"] = {
+  Client = {
+    new = function()
+      return fake_client
+    end,
+  },
+}
+package.loaded["pi.runtime"] = nil
+local runtime = require("pi.runtime")
+runtime.send_prompt("describe this", nil, root, nil, { image })
+assert(rpc_capture and rpc_capture.command == "prompt", "image prompt did not use the prompt RPC command")
+assert(rpc_capture.payload.message == "describe this", "image prompt text was changed")
+assert(
+  rpc_capture.payload.images and rpc_capture.payload.images[1] == image,
+  "image prompt was not forwarded as RPC images"
+)
+runtime.chat_for(root):close()
+
+print("image_rpc_spec: ok")

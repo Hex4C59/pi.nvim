@@ -29,7 +29,18 @@ assert(welcome_text:find("Session", 1, true), "welcome session section is missin
 assert(welcome_text:find("Workspace", 1, true), "welcome workspace section is missing")
 assert(welcome_text:find("gpt-5.6-sol · high", 1, true), "welcome model state is missing")
 assert(welcome_text:find("/tmp/pi.nvim", 1, true), "welcome project is missing")
-assert(welcome_text:find("confirm changes", 1, true), "welcome permission mode is missing")
+assert(welcome_text:find("manual", 1, true), "welcome permission mode is missing")
+local read_only_text = table.concat(
+  renderer.render_welcome({
+    width = 80,
+    model = "fixture",
+    thinking = "off",
+    root = "/tmp/pi.nvim",
+    permission = "read-only",
+  }),
+  "\n"
+)
+assert(read_only_text:find("workspace read only", 1, true), "read-only welcome label is inaccurate")
 assert(not welcome_text:find("Enter send", 1, true), "welcome send hint should be removed")
 assert(not welcome_text:find("Ctrl-J", 1, true), "welcome newline hint should be removed")
 assert(not welcome_text:find("/hotkeys", 1, true), "welcome keybinding hint should be removed")
@@ -129,11 +140,16 @@ local lines, marks, tool_ranges = renderer.render(items, {
 local text = table.concat(lines, "\n")
 assert(lines[1] ~= "  PI", "legacy transcript PI header is still present")
 assert(text:find("Review this", 1, true), "user component is missing")
-assert(text:find(" ▎ YOU\n   Review this", 1, true), "user text must align with the YOU label")
-assert(text:find("◆ PI  ·  Thought 6.1s", 1, true), "thinking duration is missing from the assistant header")
+assert(text:find(" › Review this", 1, true), "user text must start with the structural marker")
+assert(not text:find("YOU", 1, true), "role labels should not be printed in the transcript")
+assert(text:find("Thought for 6.1s", 1, true), "thinking duration is missing from the assistant status")
 assert(not text:find("+ Thought", 1, true), "thinking duration still occupies a separate row")
 assert(not text:find("reasoning", 1, true), "thinking should be collapsed")
-assert(text:find("◆ PI", 1, true) < text:find(" Result", 1, true), "assistant header must precede the final response")
+assert(not text:find("◆ PI", 1, true), "assistant role labels should not be printed in the transcript")
+assert(
+  text:find("Thought for 6.1s", 1, true) < text:find(" Result", 1, true),
+  "thinking status must precede the final response"
+)
 assert(text:find(" Result", 1, true), "Markdown heading was not rendered")
 assert(not text:find("# Result", 1, true), "Markdown heading marker was not removed")
 assert(text:find(" Overview", 1, true), "strong section heading was not rendered")
@@ -161,6 +177,52 @@ assert(text:find("Read  README.md:1", 1, true), "read title is missing")
 assert(text:find("2 lines · Ctrl-O expand", 1, true), "read summary is missing")
 assert(not text:find("raw file content", 1, true), "collapsed read leaked file contents")
 assert(#tool_ranges == 3 and tool_ranges[1].first <= tool_ranges[1].last, "tool row ranges are missing")
+
+local soft_break_lines = renderer.render({
+  {
+    type = "assistant",
+    message = {
+      role = "assistant",
+      content = {
+        {
+          type = "text",
+          text = "我会沿 client ->\nruntime -> `render/UI` -> extensions\n逐层检查。\n\n显式硬换行  \n必须另起一行",
+        },
+      },
+    },
+  },
+}, { width = 80 })
+local soft_break_text = table.concat(soft_break_lines, "\n")
+assert(
+  soft_break_text:find("我会沿 client -> runtime -> render/UI -> extensions 逐层检查。", 1, true),
+  "Markdown soft breaks must remain in one logical buffer line"
+)
+assert(
+  soft_break_text:find("显式硬换行\n   必须另起一行", 1, true),
+  "Markdown hard breaks must remain separate buffer lines"
+)
+
+local multiline_error_lines = renderer.render({
+  {
+    type = "assistant",
+    message = {
+      content = {},
+      stopReason = "error",
+      errorMessage = "first line\r\nsecond line",
+    },
+  },
+}, { width = 80 })
+local multiline_error_text = table.concat(multiline_error_lines, "\n")
+assert(
+  multiline_error_text:find(" Error: first line\n        second line", 1, true),
+  "multiline assistant error was not rendered as separate buffer rows"
+)
+for index, line in ipairs(multiline_error_lines) do
+  assert(
+    not line:find("[\r\n]"),
+    ("rendered error row %d contains an embedded newline: %s"):format(index, vim.inspect(line))
+  )
+end
 
 local highlights = {}
 for _, mark in ipairs(marks) do

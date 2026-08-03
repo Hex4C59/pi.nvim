@@ -4,6 +4,7 @@
 -- callers and tests keep addressing chat.* directly.
 
 local M = {}
+local attachment_namespace = vim.api.nvim_create_namespace("pi.nvim.input.attachments")
 
 local function name_buffer(buf, kind, root)
   local titles = { chat = "Pi Chat", commands = "Pi Commands", prompt = "Pi", status = "Pi Status" }
@@ -94,15 +95,39 @@ local function format_percent(value)
 end
 
 local status_padding = "  "
+local permission_highlights = {
+  manual = "PiStatusPermissionManual",
+  acceptEdits = "PiStatusPermissionAcceptEdits",
+  auto = "PiStatusPermissionAuto",
+  plan = "PiStatusPermissionPlan",
+}
+
+local function permission_highlight(chat)
+  return permission_highlights[chat:permission_mode()] or "PiStatusPermission"
+end
 
 local InputArea = {}
 InputArea.__index = InputArea
+
+local function input_border(border_highlight, corner_highlight)
+  return {
+    { "┌", corner_highlight },
+    { "─", border_highlight },
+    { "┐", corner_highlight },
+    { "│", border_highlight },
+    { "┘", corner_highlight },
+    { "─", border_highlight },
+    { "└", corner_highlight },
+    { "│", border_highlight },
+  }
+end
 
 function InputArea.new(chat, deps)
   local self = setmetatable({
     chat = chat,
     namespace = deps.namespace,
     ui_group = deps.ui_group,
+    input_line_count = nil,
   }, InputArea)
   return self
 end
@@ -146,19 +171,19 @@ function InputArea:frame(width)
     return chunks
   end
 
-  local top = line_chunks(1, width, "▔")
+  local top = line_chunks(1, width, "─")
   local label = active and (" " .. chat:_activity_text() .. " ") or chat.activity == "error" and " Error " or nil
   if not label then
-    return top, line_chunks(1, width, "▁"), base_highlight, corner_highlight
+    return top, line_chunks(1, width, "─"), base_highlight, corner_highlight
   end
 
   label = truncate_display(label, width)
   local label_width = vim.api.nvim_strwidth(label)
   local left_width = math.floor((width - label_width) / 2)
-  local bottom = line_chunks(1, left_width, "▁")
+  local bottom = line_chunks(1, left_width, "─")
   append_chunk(bottom, label, chat.activity == "error" and "PiInputBorderError" or "PiInputActivity")
   for index = left_width + label_width + 1, width do
-    append_chunk(bottom, "▁", cell_highlights[index])
+    append_chunk(bottom, "─", cell_highlights[index])
   end
   return top, bottom, base_highlight, corner_highlight
 end
@@ -170,26 +195,33 @@ function InputArea:window_config(row, width, height)
     relative = "win",
     win = chat.win,
     row = row,
-    col = 1,
+    col = 0,
     width = width,
     height = height,
     style = "minimal",
-    border = {
-      { "╱", corner_highlight },
-      { "▔", border_highlight },
-      { "╲", corner_highlight },
-      { "▕", border_highlight },
-      { "╱", corner_highlight },
-      { "▁", border_highlight },
-      { "╲", corner_highlight },
-      { "▏", border_highlight },
-    },
+    border = input_border(border_highlight, corner_highlight),
     title = top,
     title_pos = "center",
     footer = bottom,
     footer_pos = "center",
     zindex = 50,
   }
+end
+
+function InputArea:update_frame()
+  local chat = self.chat
+  if not chat.input_win or not vim.api.nvim_win_is_valid(chat.input_win) then
+    return
+  end
+  local width = vim.api.nvim_win_get_width(chat.input_win)
+  local top, bottom, border_highlight, corner_highlight = self:frame(width)
+  vim.api.nvim_win_set_config(chat.input_win, {
+    border = input_border(border_highlight, corner_highlight),
+    title = top,
+    title_pos = "center",
+    footer = bottom,
+    footer_pos = "center",
+  })
 end
 
 function InputArea:update_chrome()
@@ -232,7 +264,13 @@ function InputArea:status_text(width)
   end
 
   local content_width = math.max(1, width - vim.api.nvim_strwidth(status_padding) * 2)
-  local line, right_start = compose_line(chat.model .. " · " .. chat.thinking, right, content_width)
+  local permission = chat:permission_mode_label()
+  local compact = content_width < 60
+  local left = compact and permission or (chat.model .. " · " .. chat.thinking)
+  if not compact then
+    right = permission .. " · " .. right
+  end
+  local line, right_start = compose_line(left, right, content_width)
   return { status_padding .. line }, { #status_padding + right_start }
 end
 
@@ -262,10 +300,25 @@ function InputArea:render_status()
     })
   end
 
-  highlight(0, #status_padding, math.min(right_starts[1], #lines[1]), "PiStatusModel")
-  local thinking_start = lines[1]:find(chat.thinking, #status_padding + 1, true)
-  if thinking_start then
-    highlight(0, thinking_start - 1, thinking_start - 1 + #chat.thinking, "PiStatusThinking", 130)
+  local content_width = math.max(1, width - vim.api.nvim_strwidth(status_padding) * 2)
+  local compact = content_width < 60
+  local permission_label = chat:permission_mode_label()
+  local permission_group = permission_highlight(chat)
+  if compact then
+    local permission_start = lines[1]:find(permission_label, #status_padding + 1, true)
+    if permission_start then
+      highlight(0, permission_start - 1, permission_start - 1 + #permission_label, permission_group, 150)
+    end
+  else
+    highlight(0, #status_padding, math.min(right_starts[1], #lines[1]), "PiStatusModel")
+    local thinking_start = lines[1]:find(chat.thinking, #status_padding + 1, true)
+    if thinking_start then
+      highlight(0, thinking_start - 1, thinking_start - 1 + #chat.thinking, "PiStatusThinking", 130)
+    end
+    local permission_start = lines[1]:find(permission_label, right_starts[1] + 1, true)
+    if permission_start then
+      highlight(0, permission_start - 1, permission_start - 1 + #permission_label, permission_group, 150)
+    end
   end
 
   local right_highlight = "PiStatusContext"
@@ -290,7 +343,16 @@ function InputArea:desired_input_height()
 end
 
 function InputArea:resize()
-  self.chat:_layout()
+  local chat = self.chat
+  if not chat.input_buf or not vim.api.nvim_buf_is_valid(chat.input_buf) then
+    return
+  end
+  local line_count = vim.api.nvim_buf_line_count(chat.input_buf)
+  if self.input_line_count == line_count then
+    return
+  end
+  self.input_line_count = line_count
+  chat:_layout()
 end
 
 function InputArea:set_input(text)
@@ -305,6 +367,25 @@ function InputArea:set_input(text)
     local line = vim.api.nvim_buf_get_lines(buf, last - 1, last, false)[1] or ""
     vim.api.nvim_win_set_cursor(chat.input_win, { last, #line })
   end
+end
+
+function InputArea:render_attachments()
+  local chat = self.chat
+  if not chat.input_buf or not vim.api.nvim_buf_is_valid(chat.input_buf) then
+    return
+  end
+  vim.api.nvim_buf_clear_namespace(chat.input_buf, attachment_namespace, 0, -1)
+  local count = #(chat.pending_images or {})
+  if count == 0 then
+    return
+  end
+  local last = vim.api.nvim_buf_line_count(chat.input_buf)
+  local line = vim.api.nvim_buf_get_lines(chat.input_buf, last - 1, last, false)[1] or ""
+  vim.api.nvim_buf_set_extmark(chat.input_buf, attachment_namespace, last - 1, #line, {
+    virt_text = { { ("  [%d image%s attached]"):format(count, count == 1 and "" or "s"), "PiInputAttachment" } },
+    virt_text_pos = "eol",
+    priority = 120,
+  })
 end
 
 function InputArea:focus()
@@ -356,18 +437,36 @@ function InputArea:ensure_input_buffer()
   local function submit(behavior)
     local lines = vim.api.nvim_buf_get_lines(chat.input_buf, 0, -1, false)
     local prompt = vim.trim(table.concat(lines, "\n"))
-    if prompt == "" then
+    if prompt == "" and #(chat.pending_images or {}) == 0 then
       return
     end
+    local images = chat:take_image_attachments()
     chat:_close_command_menu()
     vim.api.nvim_buf_set_lines(chat.input_buf, 0, -1, false, { "" })
     self:resize()
     vim.api.nvim_win_set_cursor(chat.input_win, { 1, 0 })
-    require("pi").submit(prompt, chat.root, behavior)
+    require("pi").submit(prompt, chat.root, behavior, images)
   end
 
   local function feed(key)
     vim.api.nvim_feedkeys(vim.keycode(key), "n", false)
+  end
+
+  local function paste_clipboard()
+    local image, err = require("pi.clipboard").read_image()
+    if image then
+      chat:add_image_attachment(image)
+      return
+    end
+    if err then
+      vim.notify(err, vim.log.levels.WARN, { title = "Pi clipboard" })
+    end
+    local text = require("pi.clipboard").read_text()
+    if text then
+      vim.paste(text, -1)
+    else
+      feed("<C-v>")
+    end
   end
 
   vim.keymap.set("n", "<CR>", function()
@@ -394,6 +493,8 @@ function InputArea:ensure_input_buffer()
     end
     feed("<Tab>")
   end, { buffer = chat.input_buf, silent = true })
+  vim.keymap.set("i", "<C-v>", paste_clipboard, { buffer = chat.input_buf, silent = true })
+  vim.keymap.set("i", "<C-S-v>", paste_clipboard, { buffer = chat.input_buf, silent = true })
   vim.keymap.set("i", "<Down>", function()
     if not chat:_select_command(1) then
       feed("<Down>")
@@ -437,6 +538,9 @@ function InputArea:ensure_input_buffer()
       return
     end
     require("pi").cycle_model(chat.root)
+  end, { buffer = chat.input_buf, silent = true })
+  vim.keymap.set({ "n", "i" }, "<M-p>", function()
+    require("pi").cycle_permission_mode(chat.root)
   end, { buffer = chat.input_buf, silent = true })
   vim.keymap.set("n", "<S-Tab>", function()
     require("pi").cycle_thinking_level(chat.root)

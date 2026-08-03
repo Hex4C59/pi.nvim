@@ -12,6 +12,9 @@ streamed transcript, user message blocks, collapsible thinking and tool output,
 persistent prompt editor, command completion, model/thinking controls, queue
 state, live footer, settings, session tree inspection, fork/clone, compaction,
 and extension confirmation dialogs.
+The bundled todo Extension makes the agent decompose complex implementation work
+into a branch-aware plan, keep it current during execution, and render its
+compact native widget above the prompt.
 
 Pi 0.83 RPC does not expose in-place `navigate_tree` or a session-list command.
 The tree UI therefore supports inspection and forking from user messages;
@@ -24,6 +27,11 @@ interactive resume picker.
 - `pi` available on `PATH`
 - A model configured in Pi (`pi`, then `/login` when needed)
 - Optional Tree-sitter parsers for syntax highlighting in fenced-code languages
+- Clipboard image capture uses `wl-paste` on Wayland or `xclip` on X11.
+- Optional `snacks.nvim` with `image.enabled = true` enables true terminal
+  images in Kitty, Ghostty, and compatible terminals. With ImageMagick,
+  unsupported terminals such as Konsole receive an asynchronous true-color
+  half-block preview; otherwise they use a compact text placeholder.
 
 Run `:checkhealth pi` after installation.
 
@@ -34,11 +42,20 @@ With lazy.nvim:
 ```lua
 {
   "Hex4C59/pi.nvim",
+  dependencies = {
+    {
+      "folke/snacks.nvim",
+      opts = { image = { enabled = true } },
+    },
+  },
   config = function()
     require("pi").setup()
   end,
 }
 ```
+
+The `snacks.nvim` dependency is optional. Remove it when using
+`images.backend = "text"` or when terminal image rendering is not needed.
 
 ## Commands
 
@@ -51,6 +68,7 @@ With lazy.nvim:
 | `:PiAbort` | Abort the current operation |
 | `:PiModel` | Select a configured model |
 | `:PiThinking` | Select a supported thinking level |
+| `:PiPermissions [mode]` | Select the session permission mode |
 | `:PiSettings` | Open the Pi settings selector |
 | `:PiLayout [layout]` | Switch between tab, float, right, and bottom workspaces |
 | `:PiTree` | Inspect the current session tree |
@@ -100,8 +118,9 @@ level. During active work, mirrored cyan highlights travel along the prompt
 frame while the elapsed activity label stays centered in its bottom border.
 The frame returns to a uniform cyan outline as soon as Pi becomes idle.
 
-Below the prompt, a single quiet row keeps only the selected model and thinking
-level on the left and context usage on the right. Queue counts temporarily
+Below the prompt, a single quiet row keeps the selected model and thinking level
+on the left, and shows the selected permission mode beside context usage. On narrow
+layouts the permission mode takes priority over model details. Queue counts temporarily
 replace context usage when steering or follow-up prompts are waiting. Detailed
 token, cache, cost, and compaction information remains available through
 `:PiStatus`, `/session`, and `/settings` instead of competing for permanent
@@ -118,13 +137,21 @@ The prompt editor focuses automatically and mirrors Pi's primary controls:
 | `Esc` / `Ctrl-C` | Interrupt active work |
 | `Ctrl-L` | Select a model |
 | `Ctrl-P` | Cycle models |
+| `Alt-P` | Cycle permission mode |
 | `Shift-Tab` | Cycle thinking level |
 | `Ctrl-O` | Toggle the tool under the cursor, or the complete process from the prompt |
 | Left click | Toggle the clicked process summary or tool output |
 | `Ctrl-T` | Toggle complete process details (compatibility alias) |
 | `Ctrl-X` | Copy the last assistant response |
+| `Ctrl-V` / `Ctrl-Shift-V` | Paste an image from the system clipboard (text paste is preserved as a fallback) |
 | `/` | Open slash-command completion |
 | `Tab` / `Shift-Tab`, `Up` / `Down` | Select the next or previous command |
+
+While a permission prompt is open, the dedicated Pi permission surface captures
+its navigation keys and stays read-only, so completion, search, cursor-line, and
+other editor plugins cannot alter it. Use `j`/`k` or arrows to select, `Enter` to
+confirm, `Esc` to block, and `Ctrl-Q` to cancel safely and return to the Pi canvas
+in Neovim Normal mode.
 
 Typing `/` opens Pi's borderless command menu containing built-ins plus commands
 loaded from extensions, prompt templates, and skills. Command names are fuzzy
@@ -132,7 +159,14 @@ matched and ranked while matched characters, the active row, parameter hints,
 and descriptions retain distinct semantic highlighting. Commands implemented by the RPC
 frontend include `/settings`, `/model`, `/copy`, `/name`, `/session`, `/hotkeys`,
 `/fork`, `/clone`, `/tree`, `/new`, `/compact`, `/resume`, `/export`, and `/quit`.
-pi.nvim also provides `/thinking`, `/layout`, `/commands`, `/abort`, and `/clear`.
+pi.nvim also provides `/thinking`, `/permissions`, `/mode`, `/layout`, `/commands`, `/abort`, and `/clear`.
+The bundled `/todos [show|hide]` command controls the task widget. The agent's
+`todo` tool creates an ordered plan atomically with `plan`, then supports `list`,
+`add`, `update`, `remove`, and `clear`. For requests with at least three
+meaningful steps, the Extension tells the agent to establish a 3-7 step plan
+before substantive implementation, update each item immediately after
+verification, and resolve the list before its final response. Pending,
+in-progress, and completed state is restored from the active Pi session branch.
 Both `/new` and `/clear` start a fresh Pi session, so `/clear` resets the model
 conversation and context usage instead of only hiding the rendered transcript.
 Pi TUI commands that RPC 0.83 does not expose remain searchable and report the
@@ -159,15 +193,39 @@ require("pi").setup({
   security = {
     mode = "confirm", -- "read-only", "confirm", or "full"
   },
+  output = {
+    live_max_bytes = 64 * 1024,
+    live_max_lines = 2000,
+    max_chunks = 256,
+    tool_max_bytes = 256 * 1024,
+    transcript_max_bytes = 2 * 1024 * 1024,
+    rpc_queue_max_messages = 1024,
+    rpc_queue_max_bytes = 16 * 1024 * 1024,
+    render_interval_ms = 50,
+  },
   context = {
     max_bytes = 100000, -- UTF-8-safe byte limit; max_chars remains a compatibility alias
     include_diagnostics = true,
+  },
+  images = {
+    max_bytes = 8 * 1024 * 1024,
+    max_width = 72,
+    max_height = 32,
+    max_pixels = 40 * 1000 * 1000,
+    cache_max_age_days = 7,
+    backend = "auto", -- "auto", "terminal", or "text"
+    terminal = {
+      provider = "snacks",
+      auto_resize = true,
+      timeout_ms = 10000,
+    },
   },
   chat = {
     position = "right", -- "right", "bottom", "tab", or "float"
     width = 0.42,
     height = 0.38,
     max_input_height = 8,
+    max_widget_height = 8,
     float = {
       width = 0.84,
       height = 0.86,
@@ -178,14 +236,114 @@ require("pi").setup({
 })
 ```
 
-`confirm` loads the bundled Pi extension and asks before common destructive
-shell commands. It is a guardrail, not a sandbox. Pi still runs with the same
-filesystem and process permissions as Neovim. Use `read-only` or an external
-container/VM for untrusted repositories.
+`auto` uses terminal images only after the optional provider confirms support;
+`terminal` requests the same backend but reports a health warning when it must
+fall back. When terminal graphics are unavailable, ImageMagick provides a
+bounded colored-block preview without blocking Neovim. `text` never loads the
+provider or creates colored previews. Terminal images use one stable transcript
+anchor and provider-owned virtual rows, avoiding duplicate blank space while
+still pushing later messages below the image. Click an image, or place the
+cursor on its anchor and press Enter, to open a larger preview. Explicit
+Markdown images and ordinary Markdown links to supported
+raster files in assistant responses are previewed when they resolve inside the
+canonical project root. Ordinary links keep their text and place the preview
+below it. URLs and paths that escape the workspace remain text and are never
+fetched by the client. Repeated renders reuse stable placements, while resize, layout changes,
+Buffer deletion, chat close, and Neovim exit clean up only pi.nvim-owned image
+handles. Cached image bytes are content-addressed, stored with `0600`
+permissions, bounded by compressed size and pixel count, and aged out according
+to `cache_max_age_days`.
 
-Project trust controls loading `.pi` resources, not tool permissions.
-`AGENTS.md` and `CLAUDE.md` are still loaded unless `load_context_files` is
-false.
+### Security modes
+
+| Mode | Model reads | Model modifications | Model Bash | Cross-project resume |
+| --- | --- | --- | --- | --- |
+| `read-only` | Canonical workspace only | Disabled | Disabled | Rejected |
+| `confirm` | Session permission mode | Session permission mode | Session permission mode | Rejected |
+| `full` | Host-level | Host-level | Host-level | Rejected until the client can migrate safely |
+
+### Session permission modes
+
+With the default `security.mode = "confirm"`, the active session permission mode
+can be changed without restarting Pi. Use `Alt-P`, `/permissions`, `/mode`, or
+`:PiPermissions`:
+
+| Mode | Behavior |
+| --- | --- |
+| `manual` | Allow canonical workspace reads; ask before Bash, file modifications, and outside-workspace reads or changes |
+| `acceptEdits` | Automatically accept canonical workspace writes/edits; ask before Bash and all outside-workspace access |
+| `auto` | Allow structurally valid built-in tool calls without confirmation, including Bash and outside-workspace access |
+| `plan` | Expose only `read`, `grep`, `find`, `ls`, and `todo`; inject read-only planning instructions and block every other model tool |
+
+The bundled `permission-gate.ts` Extension is the only authority for mode,
+session approvals, and allow/block decisions. Neovim sends mode commands and
+updates the footer only after the Extension publishes `pi.permission_mode`;
+before that synchronization the footer shows `--`. Changing mode, switching
+sessions, or restarting Pi clears previous session approvals and restores
+`manual`. `Allow for session` uses canonical file targets, canonical outside
+read targets, or the exact Bash command and workspace rather than a command
+family.
+
+`auto` suppresses permission prompts, but it does not bypass structural input
+validation, canonical path resolution, or the cross-project session guard. It
+grants model tools the same host access as the Neovim/Pi process for the current
+session, so use it only in a trusted workspace.
+
+Entering `plan` snapshots the exact active tool list and replaces it with the
+read-only planning set. Leaving `plan` restores that snapshot. The Extension
+also injects the current permission boundary into each agent turn, so the model
+does not repeatedly attempt tools that the selected mode will reject. Tool-call
+blocking remains in place as defense in depth.
+
+Whenever the selected mode requires confirmation, the request fails closed if
+its UI is unavailable, cancelled, throws an error, returns an unknown choice,
+or the session closes. An open permission panel has no implicit timeout: the
+current tool batch remains stopped until the user allows, blocks, or cancels
+the request. The policy covers Pi's built-in `bash`, `edit`, `write`, `read`,
+`grep`, `find`, and `ls` tools. Lua does not parse dialog text or shell strings
+to make security decisions.
+Outside Plan mode, additional tools supplied by other Extensions are trusted
+code and need their own policy. Plan blocks them unless they are the bundled
+`todo` tool. A `!command` typed directly by the user is not a model-initiated
+tool call and does not prompt.
+
+`read-only` canonicalizes the workspace and requested paths, follows symlinks,
+and blocks `read`, `grep`, `find`, and `ls` when their resolved target is outside
+the workspace. It exposes those tools plus `todo` and injects the same read-only
+planning guidance. `full` deliberately opts out of tool permission guards. All
+bundled guards run with the same user permissions as Neovim and Pi; they are not
+an operating-system sandbox. Use a container, VM, or equivalent OS isolation for
+untrusted or unattended work.
+
+Project trust controls loading protected project `.pi` resources, not tool
+permissions. Context files such as `AGENTS.md` and `CLAUDE.md` are controlled
+separately by `load_context_files`. A conservative profile for an untrusted
+repository is:
+
+```lua
+require("pi").setup({
+  project_trust = "never",
+  load_context_files = false,
+  security = {
+    mode = "read-only",
+  },
+})
+```
+
+`/resume` reads a bounded session header and accepts only sessions whose
+canonical `cwd` equals the active client root. Cross-project resume is rejected
+in every security mode because Pi RPC 0.83 does not return enough authoritative
+state to migrate the Neovim client safely.
+
+Live Bash output retains at most the configured tail, then shows the client-side
+omitted byte/line counts and Pi's `fullOutputPath` when available. Tool arguments
+and results share a per-tool limit. When the transcript budget is exceeded, the
+oldest completed bodies and then old argument payloads are released while their
+tool name, status, timing, and bounded metadata remain visible. The decoded RPC
+dispatch queue is also bounded by message count and bytes; exceeding either
+limit stops the Pi process instead of continuing with partial client state.
+`:PiStop` and shutdown release the Client, Chat transcript, render caches, and
+owned scratch buffers for the stopped project.
 
 ## Development
 

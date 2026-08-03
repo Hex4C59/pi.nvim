@@ -33,6 +33,12 @@ local builtin_commands = {
   { name = "commands", description = "Browse available commands" },
   { name = "abort", description = "Abort the active operation" },
   { name = "clear", description = "Clear the conversation and start a fresh session" },
+  {
+    name = "permissions",
+    description = "Select the session permission mode",
+    argument_hint = "<manual|acceptEdits|auto|plan>",
+  },
+  { name = "mode", description = "Alias for /permissions", argument_hint = "<manual|acceptEdits|auto|plan>" },
 }
 
 function M.commands(instances)
@@ -317,7 +323,7 @@ function CommandMenu:layout()
   end
   chat.command_first = first
 
-  local width = math.max(1, vim.api.nvim_win_get_width(chat.win) - 2)
+  local width = math.max(1, vim.api.nvim_win_get_width(chat.win))
   vim.api.nvim_win_set_config(chat.command_win, {
     relative = "win",
     win = chat.win,

@@ -26,7 +26,8 @@ function M.visual(text, first_line, last_line)
     runtime.send_prompt(
       selected .. "\n\nUser request:\n" .. prompt,
       prompt
-        .. (" [%s:%d-%d]"):format(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t"), first_line, last_line)
+        .. (" [%s:%d-%d]"):format(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t"), first_line, last_line),
+      root
     )
   end)
 end
@@ -39,7 +40,8 @@ function M.buffer(text)
   runtime.with_prompt(text, function(prompt)
     runtime.send_prompt(
       buffer_context .. "\n\nUser request:\n" .. prompt,
-      prompt .. (" [%s]"):format(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t"))
+      prompt .. (" [%s]"):format(vim.fn.fnamemodify(vim.api.nvim_buf_get_name(bufnr), ":t")),
+      root
     )
   end)
 end

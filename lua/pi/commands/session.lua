@@ -1,4 +1,5 @@
 local runtime = require("pi.runtime")
+local session_file = require("pi.session_file")
 local chat_ui = require("pi.ui.chat")
 
 local M = {}
@@ -228,10 +229,29 @@ function M.resume(path, root)
     if not value or vim.trim(value) == "" then
       return
     end
-    client:request("switch_session", { sessionPath = vim.fn.expand(vim.trim(value)) }, function(success, data, err)
+    local header, header_err = session_file.read_header(value)
+    if not header then
+      notify_error(header_err)
+      return
+    end
+    local same, roots = session_file.same_root(client.root, header.cwd)
+    if not same then
+      if type(roots) == "string" then
+        notify_error(roots)
+      else
+        notify_error(
+          ("Cross-project session resume is blocked. Current root: %s; session root: %s"):format(
+            roots.current,
+            roots.session
+          )
+        )
+      end
+      return
+    end
+    client:request("switch_session", { sessionPath = header.path }, function(success, data, err)
       if not success then
         notify_error(err)
-      elseif not data.cancelled then
+      elseif data and not data.cancelled then
         runtime.reload_session(client)
       end
     end)

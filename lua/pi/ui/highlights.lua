@@ -57,10 +57,28 @@ local function setup()
   welcome_background = canvas
   local secondary = palette[4] or accent
   local input_bg = blend(foreground, canvas, 0.07)
+  local permission_surface = blend(foreground, canvas, 0.08)
+  local permission_selection = blend(accent, permission_surface, 0.34)
+  local permission_block_selection = blend(error_color, permission_surface, 0.34)
+  local permission_allow_selection = blend(success, permission_surface, 0.34)
+  local permission_session_selection = blend(accent, permission_surface, 0.34)
   local code_bg = blend(0x000000, canvas, 0.16)
   local tool_bg = blend(foreground, canvas, 0.045)
+  local widget_bg = blend(foreground, canvas, 0.055)
   local diff_add_bg = blend(success, canvas, 0.11)
   local diff_delete_bg = blend(error_color, canvas, 0.11)
+  local cterm_foreground = normal.ctermfg or 15
+  local cterm_background = normal.ctermbg or 0
+  local cterm_muted = comment.ctermfg or 8
+  local cterm_accent = info.ctermfg or 14
+  local cterm_success = ok.ctermfg or 10
+  local cterm_warning = warn.ctermfg or 11
+  local cterm_error = err.ctermfg or 9
+  local cterm_secondary = special.ctermfg or func.ctermfg or cterm_accent
+  local cterm_plan = 13
+  local cterm_selection = 8
+  local cterm_permission_background = cterm_background == 0 and 8 or cterm_background
+  local cterm_permission_selection = cterm_background
 
   local groups = {
     PiCanvasNormal = { fg = foreground, bg = canvas },
@@ -77,6 +95,7 @@ local function setup()
     PiWelcomeThinkingValue = { fg = warning, bg = canvas, bold = true },
     PiWelcomeProjectValue = { fg = secondary, bg = canvas, bold = true },
     PiWelcomePermissionValue = { fg = warning, bg = canvas, bold = true },
+    PiWelcomePermissionWarning = { fg = warning, bg = canvas, bold = true },
     PiWelcomePermissionSafe = { fg = success, bg = canvas, bold = true },
     PiWelcomePermissionDanger = { fg = error_color, bg = canvas, bold = true },
     PiInputBorder = { fg = accent, bg = input_bg },
@@ -84,14 +103,198 @@ local function setup()
     PiInputBorderTrail = { fg = blend(accent, canvas, 0.78), bg = input_bg },
     PiInputBorderPulse = { fg = blend(foreground, accent, 0.38), bg = input_bg, bold = true },
     PiInputBorderError = { fg = error_color, bg = input_bg, bold = true },
-    PiInputCorner = { fg = accent, bg = canvas },
-    PiInputCornerMuted = { fg = blend(accent, canvas, 0.48), bg = canvas },
-    PiInputCornerError = { fg = error_color, bg = canvas, bold = true },
+    PiInputCorner = { fg = accent, bg = input_bg },
+    PiInputCornerMuted = { fg = blend(accent, canvas, 0.48), bg = input_bg },
+    PiInputCornerError = { fg = error_color, bg = input_bg, bold = true },
     PiInputActivity = { fg = warning, bg = input_bg, bold = true },
-    PiInputNormal = { fg = foreground, bg = input_bg, bold = true },
-    -- Kitty reverses the cursor SGR when drawing IME preedit text, so this
-    -- background becomes the preedit foreground.
-    PiInputCursor = { fg = foreground, bg = 0x000000, bold = true, nocombine = true },
+    PiInputNormal = { fg = foreground, bg = input_bg },
+    -- Terminals disagree on which cursor color is used for IME preedit text.
+    -- Keep both channels black so the composition stays readable everywhere.
+    PiInputCursor = { fg = 0x000000, bg = 0x000000, bold = true, nocombine = true },
+    PiPermissionNormal = {
+      fg = foreground,
+      bg = permission_surface,
+      ctermfg = cterm_foreground,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionCursor = {
+      fg = permission_surface,
+      bg = permission_surface,
+      ctermfg = cterm_permission_background,
+      ctermbg = cterm_permission_background,
+      nocombine = true,
+    },
+    PiPermissionVisual = {
+      fg = foreground,
+      bg = permission_selection,
+      ctermfg = cterm_foreground,
+      ctermbg = cterm_selection,
+    },
+    PiPermissionEdge = {
+      fg = accent,
+      bg = permission_surface,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionRule = {
+      fg = accent,
+      bg = permission_surface,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionTitle = {
+      fg = accent,
+      bg = permission_surface,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionSubject = {
+      fg = foreground,
+      bg = permission_surface,
+      ctermfg = cterm_foreground,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionBody = {
+      fg = foreground,
+      bg = permission_surface,
+      ctermfg = cterm_foreground,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionPath = {
+      fg = secondary,
+      bg = permission_surface,
+      ctermfg = cterm_secondary,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionCommand = {
+      fg = foreground,
+      bg = permission_surface,
+      ctermfg = cterm_foreground,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionCommandPrompt = {
+      fg = accent,
+      bg = permission_surface,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionQuestion = {
+      fg = warning,
+      bg = permission_surface,
+      ctermfg = cterm_warning,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionChoice = {
+      fg = foreground,
+      bg = permission_surface,
+      ctermfg = cterm_foreground,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionBlock = {
+      fg = error_color,
+      bg = permission_surface,
+      ctermfg = cterm_error,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionAllow = {
+      fg = success,
+      bg = permission_surface,
+      ctermfg = cterm_success,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionSession = {
+      fg = accent,
+      bg = permission_surface,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionMarker = {
+      fg = accent,
+      bg = permission_selection,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_selection,
+      bold = true,
+    },
+    PiPermissionBlockSelected = {
+      fg = error_color,
+      bg = permission_block_selection,
+      ctermfg = cterm_error,
+      ctermbg = cterm_permission_selection,
+      bold = true,
+      nocombine = true,
+    },
+    PiPermissionAllowSelected = {
+      fg = success,
+      bg = permission_allow_selection,
+      ctermfg = cterm_success,
+      ctermbg = cterm_permission_selection,
+      bold = true,
+      nocombine = true,
+    },
+    PiPermissionSessionSelected = {
+      fg = accent,
+      bg = permission_session_selection,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_selection,
+      bold = true,
+      nocombine = true,
+    },
+    PiPermissionShellCommand = {
+      fg = accent,
+      bg = permission_surface,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionShellOption = {
+      fg = secondary,
+      bg = permission_surface,
+      ctermfg = cterm_secondary,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionShellOperator = {
+      fg = muted,
+      bg = permission_surface,
+      ctermfg = cterm_muted,
+      ctermbg = cterm_permission_background,
+      bold = true,
+    },
+    PiPermissionShellString = {
+      fg = warning,
+      bg = permission_surface,
+      ctermfg = cterm_warning,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionShellVariable = {
+      fg = secondary,
+      bg = permission_surface,
+      ctermfg = cterm_secondary,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionHint = {
+      fg = muted,
+      bg = permission_surface,
+      ctermfg = cterm_muted,
+      ctermbg = cterm_permission_background,
+    },
+    PiPermissionSelected = {
+      fg = foreground,
+      bg = permission_selection,
+      ctermfg = cterm_foreground,
+      ctermbg = cterm_selection,
+      bold = true,
+      nocombine = true,
+    },
     PiCommandMenu = { fg = muted, bg = canvas },
     PiCommandSelected = { bg = blend(accent, canvas, 0.075) },
     PiCommandMarker = { fg = accent, bold = true },
@@ -104,6 +307,16 @@ local function setup()
     PiUserLabel = { fg = accent, bg = blend(accent, canvas, 0.14), bold = true },
     PiUserMessageText = { fg = foreground, bg = blend(accent, canvas, 0.14) },
     PiUserMessageBg = { bg = blend(accent, canvas, 0.14) },
+    PiImageSurface = { fg = foreground, bg = canvas },
+    PiImageFallback = { fg = muted, bg = canvas, italic = true },
+    PiInputAttachment = { fg = accent, bg = input_bg, bold = true },
+    PiWidgetNormal = { fg = foreground, bg = widget_bg },
+    PiWidgetTitle = { fg = accent, bg = widget_bg, bold = true },
+    PiWidgetText = { fg = foreground, bg = widget_bg },
+    PiWidgetActive = { fg = warning, bg = widget_bg, bold = true },
+    PiWidgetPending = { fg = foreground, bg = widget_bg },
+    PiWidgetCompleted = { fg = success, bg = widget_bg },
+    PiWidgetMuted = { fg = muted, bg = widget_bg, italic = true },
     PiAssistantLabel = { fg = success, bold = true },
     PiProcessSummary = { fg = muted, italic = true },
     PiProcessToggle = { fg = accent, bold = true },
@@ -139,6 +352,35 @@ local function setup()
     PiStatusContext = { fg = muted, bg = canvas },
     PiStatusModel = { fg = accent, bg = canvas, bold = true },
     PiStatusThinking = { fg = warning, bg = canvas, bold = true },
+    PiStatusPermission = { fg = accent, bg = canvas, bold = true },
+    PiStatusPermissionManual = {
+      fg = warning,
+      bg = canvas,
+      ctermfg = cterm_warning,
+      ctermbg = cterm_background,
+      bold = true,
+    },
+    PiStatusPermissionAcceptEdits = {
+      fg = success,
+      bg = canvas,
+      ctermfg = cterm_success,
+      ctermbg = cterm_background,
+      bold = true,
+    },
+    PiStatusPermissionAuto = {
+      fg = accent,
+      bg = canvas,
+      ctermfg = cterm_accent,
+      ctermbg = cterm_background,
+      bold = true,
+    },
+    PiStatusPermissionPlan = {
+      fg = secondary,
+      bg = canvas,
+      ctermfg = cterm_plan,
+      ctermbg = cterm_background,
+      bold = true,
+    },
     PiStatusWorking = { fg = warning, bg = canvas, bold = true },
     PiStatusWarning = { fg = warning, bg = canvas, bold = true },
     PiStatusError = { fg = error_color, bg = canvas, bold = true },

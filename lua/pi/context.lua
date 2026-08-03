@@ -73,6 +73,69 @@ local function truncate_utf8_bytes(text, maximum)
   return text:sub(1, boundary), true
 end
 
+local function buffer_line_bytes(bufnr, row, line_count)
+  local first = vim.api.nvim_buf_get_offset(bufnr, row)
+  local following = vim.api.nvim_buf_get_offset(bufnr, row + 1)
+  local newline = row < line_count - 1 and 1 or 0
+  return math.max(0, following - first - newline)
+end
+
+local function bounded_buffer_text(bufnr, first_line, last_line, maximum)
+  local first_row = first_line - 1
+  local last_row = last_line
+  local line_count = vim.api.nvim_buf_line_count(bufnr)
+  local parts = {}
+  local retained = 0
+  local row = first_row
+  local chunk_lines = 256
+  local truncated = false
+
+  while row < last_row and retained < maximum do
+    local chunk_start = row
+    local chunk_end = row
+    local chunk_bytes = 0
+    while chunk_end < last_row and chunk_end - chunk_start < chunk_lines do
+      local separator = chunk_end > first_row and 1 or 0
+      local bytes = buffer_line_bytes(bufnr, chunk_end, line_count)
+      if retained + chunk_bytes + separator + bytes > maximum then
+        break
+      end
+      chunk_bytes = chunk_bytes + separator + bytes
+      chunk_end = chunk_end + 1
+    end
+
+    if chunk_end > chunk_start then
+      local lines = vim.api.nvim_buf_get_lines(bufnr, chunk_start, chunk_end, false)
+      local text = table.concat(lines, "\n")
+      if chunk_start > first_row then
+        text = "\n" .. text
+      end
+      parts[#parts + 1] = text
+      retained = retained + #text
+      row = chunk_end
+    else
+      local available = maximum - retained
+      if row > first_row and available > 0 then
+        parts[#parts + 1] = "\n"
+        retained = retained + 1
+        available = available - 1
+      end
+      if available > 0 then
+        local bytes = buffer_line_bytes(bufnr, row, line_count)
+        local take = math.min(bytes, available + 4)
+        local text = table.concat(vim.api.nvim_buf_get_text(bufnr, row, 0, row, take, {}), "\n")
+        text = truncate_utf8_bytes(text, available)
+        parts[#parts + 1] = text
+        retained = retained + #text
+      end
+      truncated = true
+      row = last_row
+    end
+  end
+
+  return table.concat(parts), truncated or row < last_row
+end
+
 local function diagnostics(bufnr, first_line, last_line)
   local items = {}
   for _, diagnostic in ipairs(vim.diagnostic.get(bufnr)) do
@@ -118,12 +181,15 @@ end
 
 function M.range(bufnr, root, first_line, last_line, opts)
   opts = opts or {}
-  local lines = vim.api.nvim_buf_get_lines(bufnr, first_line - 1, last_line, false)
-  local text = table.concat(lines, "\n")
   local maximum = opts.max_bytes or opts.max_chars
-  local truncated
+  local text
+  local truncated = false
   if maximum then
-    text, truncated = truncate_utf8_bytes(text, maximum)
+    maximum = math.max(0, math.floor(tonumber(maximum) or 0))
+    text, truncated = bounded_buffer_text(bufnr, first_line, last_line, maximum)
+  else
+    local lines = vim.api.nvim_buf_get_lines(bufnr, first_line - 1, last_line, false)
+    text = table.concat(lines, "\n")
   end
   if truncated then
     text = text .. "\n[selection truncated by pi.nvim]"

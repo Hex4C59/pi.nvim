@@ -1,6 +1,7 @@
 local config = require("pi.config")
 local runtime = require("pi.runtime")
 local model_cmds = require("pi.commands.model")
+local permission_cmds = require("pi.commands.permission")
 
 local M = {}
 
@@ -39,6 +40,7 @@ function M.settings(root)
   local options = {
     { label = "Model", value = state.model and state.model.id or "unknown", action = "model" },
     { label = "Thinking level", value = state.thinkingLevel or "off", action = "thinking" },
+    { label = "Permission mode", value = chat:permission_mode_label(), action = "permissions" },
     { label = "Auto-compact", value = state.autoCompactionEnabled and "on" or "off", action = "compact" },
     { label = "Steering mode", value = state.steeringMode or "one-at-a-time", action = "steering" },
     { label = "Follow-up mode", value = state.followUpMode or "one-at-a-time", action = "followup" },
@@ -61,6 +63,8 @@ function M.settings(root)
       model_cmds.select_model(client.root)
     elseif item.action == "thinking" then
       model_cmds.select_thinking_level(client.root)
+    elseif item.action == "permissions" then
+      permission_cmds.select(client.root)
     elseif item.action == "compact" then
       local enabled = not state.autoCompactionEnabled
       client:request("set_auto_compaction", { enabled = enabled }, function(ok, _, err)
@@ -106,11 +110,13 @@ function M.hotkeys()
       "Alt-Enter      queue follow-up",
       "Ctrl-L         select model",
       "Ctrl-P         cycle model",
+      "Alt-P          cycle permission mode",
       "Shift-Tab      cycle thinking",
       "Ctrl-O         toggle process details",
       "Ctrl-T         toggle process details",
       "Ctrl-X         copy last response",
       "/               open command completion",
+      "/permissions    select permission mode",
       "Tab / Shift-Tab select command",
     }, "\n"),
     vim.log.levels.INFO,

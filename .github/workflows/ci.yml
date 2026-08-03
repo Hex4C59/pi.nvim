@@ -18,21 +18,24 @@ jobs:
           - v0.10.4
           - stable
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make ci-policy-check
       - name: Set up Neovim
-        uses: thinca/action-setup-vim@v3
+        uses: thinca/action-setup-vim@40587a4deeeaf61ef8086bd3badd42e734a67093 # v3.0.2
         with:
           vim_type: Neovim
           vim_version: ${{ matrix.neovim }}
       - run: nvim --version
+      - run: node --version && test "$(node -p 'Number(process.versions.node.split(".")[0])')" -ge 20
       - run: make test
 
   format:
     name: StyLua
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: JohnnyMorganz/stylua-action@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: make ci-policy-check
+      - uses: JohnnyMorganz/stylua-action@76fd70c03e6340ceaf673366712db9b20560b402 # v5
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           version: 2.5.2

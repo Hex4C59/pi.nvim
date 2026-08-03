@@ -49,6 +49,16 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       isStreaming: false,
       autoCompactionEnabled: true,
     });
+    send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: "manual" });
+    if (!freshSession) {
+      send({
+        type: "extension_ui_request",
+        method: "setWidget",
+        widgetKey: "pi.todo",
+        widgetLines: ["Tasks · 1/2 complete", "◐ #2 Run RPC tests", "✓ #1 Load Extension"],
+        widgetPlacement: "aboveEditor",
+      });
+    }
   } else if (request.type === "get_messages") {
     respondToRequest({
       messages: freshSession ? [] : [
@@ -66,11 +76,21 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       { name: "fixture-noop", description: "No-op extension command", source: "extension" },
       { name: "fixture-prefill", description: "Prefill editor", source: "extension" },
       { name: "fixture-clear", description: "Clear editor", source: "extension" },
+      { name: "permissions", description: "Select permission mode", source: "extension" },
+      { name: "todos", description: "Show or hide todos", source: "extension" },
       { name: "fixture-template", description: "Fixture prompt template", source: "prompt" },
     ] });
   } else if (request.type === "prompt") {
     if (request.message === "/fixture-noop") {
       respondToRequest();
+    } else if (request.message.startsWith("/permissions ")) {
+      respondToRequest();
+      send({
+        type: "extension_ui_request",
+        method: "setStatus",
+        statusKey: "pi.permission_mode",
+        statusText: request.message.slice("/permissions ".length),
+      });
     } else if (request.message === "/fixture-prefill") {
       respondToRequest();
       send({ type: "extension_ui_request", id: "fixture-prefill", method: "set_editor_text", text: "extension draft" });
@@ -97,6 +117,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (request.type === "new_session") {
     freshSession = true;
     respondToRequest({ cancelled: false });
+    send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: "manual" });
+    send({ type: "extension_ui_request", method: "setWidget", widgetKey: "pi.todo" });
   } else {
     respondToRequest();
   }

@@ -3,6 +3,13 @@ local renderer = require("pi.ui.render")
 local highlights = require("pi.ui.highlights")
 local command_menu = require("pi.ui.command_menu")
 local input_area = require("pi.ui.input")
+local permission_panel = require("pi.ui.permission")
+local widget_panel = require("pi.ui.widget")
+local permission_modes = require("pi.permission_mode")
+local BoundedText = require("pi.bounded_text").BoundedText
+local image_data = require("pi.ui.image")
+local image_backend = require("pi.ui.image_backend")
+local markdown_image = require("pi.ui.markdown_image")
 
 local M = {}
 local Chat = {}
@@ -12,6 +19,116 @@ local namespace = vim.api.nvim_create_namespace("pi.nvim")
 local instances = setmetatable({}, { __mode = "v" })
 local welcome_animation_timer = nil
 local welcome_animation_frame = 0
+
+local function slice(items, first, last)
+  local result = {}
+  for index = first, last do
+    table.insert(result, items[index])
+  end
+  return result
+end
+
+local function render_result(items, opts)
+  local lines, marks, tool_ranges, process_ranges, images = renderer.render(items, opts)
+  return {
+    lines = lines,
+    marks = marks,
+    tool_ranges = tool_ranges,
+    process_ranges = process_ranges,
+    images = images or {},
+  }
+end
+
+local function merge_ranges(prefix, tail, row_offset)
+  local result = vim.list_slice(prefix or {})
+  for _, range in ipairs(tail or {}) do
+    table.insert(
+      result,
+      vim.tbl_extend("force", {}, range, {
+        first = range.first + row_offset,
+        last = range.last + row_offset,
+      })
+    )
+  end
+  return result
+end
+
+local function merge_images(prefix, tail, row_offset)
+  local result = vim.list_slice(prefix or {})
+  for _, image in ipairs(tail or {}) do
+    table.insert(result, vim.tbl_extend("force", {}, image, { row = image.row + row_offset }))
+  end
+  return result
+end
+
+local function offset_marks(marks, row_offset)
+  local result = {}
+  for _, mark in ipairs(marks or {}) do
+    table.insert(result, vim.tbl_extend("force", {}, mark, { row = mark.row + row_offset }))
+  end
+  return result
+end
+
+local function effective_marks_by_row(marks)
+  local rows = {}
+  for _, mark in ipairs(marks) do
+    if mark.line_highlight or (mark.highlight and mark.end_col > mark.start_col) then
+      rows[mark.row + 1] = rows[mark.row + 1] or {}
+      table.insert(rows[mark.row + 1], mark)
+    end
+  end
+  return rows
+end
+
+local function marks_equal(left, right)
+  left = left or {}
+  right = right or {}
+  if #left ~= #right then
+    return false
+  end
+  for index, mark in ipairs(left) do
+    local other = right[index]
+    if
+      mark.start_col ~= other.start_col
+      or mark.end_col ~= other.end_col
+      or mark.highlight ~= other.highlight
+      or mark.line_highlight ~= other.line_highlight
+      or mark.priority ~= other.priority
+    then
+      return false
+    end
+  end
+  return true
+end
+
+local function add_marks(buf, marks, first_row, last_row, row_offset)
+  row_offset = row_offset or 0
+  for _, mark in ipairs(marks) do
+    if mark.row >= first_row and mark.row < last_row then
+      if mark.line_highlight then
+        vim.api.nvim_buf_set_extmark(buf, namespace, mark.row + row_offset, 0, {
+          line_hl_group = mark.line_highlight,
+          priority = mark.priority or 90,
+        })
+      end
+      if mark.highlight and mark.end_col > mark.start_col then
+        vim.api.nvim_buf_set_extmark(buf, namespace, mark.row + row_offset, mark.start_col, {
+          end_col = mark.end_col,
+          hl_group = mark.highlight,
+          priority = mark.priority or 100,
+        })
+      end
+    end
+  end
+end
+
+local function initial_permission_mode()
+  local security_mode = (config.get().security or {}).mode
+  if security_mode == "confirm" then
+    return nil
+  end
+  return permission_modes.default_for_security(security_mode)
+end
 
 local function update_welcome_logo_highlights()
   local welcome_logo_palette, welcome_logo_background = highlights.welcome_palette()
@@ -76,6 +193,7 @@ vim.api.nvim_create_autocmd("ColorScheme", {
   group = ui_group,
   callback = function()
     highlights.setup()
+    image_data.refresh_preview_highlights()
     update_welcome_logo_highlights()
   end,
 })
@@ -103,7 +221,14 @@ vim.api.nvim_create_autocmd("WinScrolled", {
 })
 vim.api.nvim_create_autocmd("VimLeavePre", {
   group = ui_group,
-  callback = stop_welcome_animation,
+  callback = function()
+    stop_welcome_animation()
+    for _, chat in pairs(instances) do
+      if chat.image_backend then
+        chat.image_backend:clear()
+      end
+    end
+  end,
 })
 
 local function text_content(content)
@@ -133,6 +258,242 @@ local function format_count(value)
   return ("%dM"):format(math.floor(value / 1000000 + 0.5))
 end
 
+local function utf8_tail(text, maximum)
+  if #text <= maximum then
+    return text, 0
+  end
+  local first = #text - maximum + 1
+  while first <= #text do
+    local byte = text:byte(first)
+    if not byte or byte < 0x80 or byte > 0xBF then
+      break
+    end
+    first = first + 1
+  end
+  return text:sub(first), first - 1
+end
+
+local function utf8_head(text, maximum)
+  if #text <= maximum then
+    return text, 0
+  end
+  local boundary = maximum
+  while boundary > 0 do
+    local next_byte = text:byte(boundary + 1)
+    if not next_byte or next_byte < 0x80 or next_byte >= 0xC0 then
+      break
+    end
+    boundary = boundary - 1
+  end
+  return text:sub(1, boundary), #text - boundary
+end
+
+local arg_key_priority = {
+  path = 1,
+  file_path = 1,
+  command = 2,
+  pattern = 3,
+  query = 3,
+  glob = 3,
+  offset = 4,
+  limit = 4,
+  edits = 10,
+  oldText = 11,
+  newText = 11,
+  old_string = 11,
+  new_string = 11,
+  content = 12,
+}
+local arg_key_order = {
+  "path",
+  "file_path",
+  "command",
+  "pattern",
+  "query",
+  "glob",
+  "offset",
+  "limit",
+  "edits",
+  "oldText",
+  "newText",
+  "old_string",
+  "new_string",
+  "content",
+}
+
+local function bounded_arg_keys(value, maximum)
+  local keys = {}
+  local seen = {}
+  local overflow = false
+  for _, key in ipairs(arg_key_order) do
+    seen[key] = true
+    if value[key] ~= nil then
+      if #keys < maximum then
+        table.insert(keys, key)
+      else
+        overflow = true
+      end
+    end
+  end
+  for key in pairs(value) do
+    if not seen[key] then
+      if #keys >= maximum then
+        overflow = true
+        break
+      end
+      table.insert(keys, key)
+    end
+  end
+  table.sort(keys, function(left, right)
+    local left_priority = arg_key_priority[left] or 100
+    local right_priority = arg_key_priority[right] or 100
+    if left_priority == right_priority then
+      if type(left) == "number" and type(right) == "number" then
+        return left < right
+      end
+      return tostring(left) < tostring(right)
+    end
+    return left_priority < right_priority
+  end)
+  return keys, overflow
+end
+
+local function limited_tool_args(args, maximum, maximum_nodes)
+  local retained = 0
+  local omitted = 0
+  local nodes = 0
+  maximum_nodes = maximum_nodes or 2048
+
+  local function copy(value)
+    if nodes >= maximum_nodes then
+      omitted = omitted + 1
+      return nil
+    end
+    nodes = nodes + 1
+    if type(value) == "string" then
+      local kept, removed = utf8_head(value, math.max(0, maximum - retained))
+      retained = retained + #kept
+      omitted = omitted + removed
+      return kept
+    elseif type(value) ~= "table" then
+      return value
+    end
+
+    local result = {}
+    local keys, overflow = bounded_arg_keys(value, math.max(0, maximum_nodes - nodes))
+    if overflow then
+      omitted = omitted + 1
+    end
+    for _, key in ipairs(keys) do
+      local copied = copy(value[key])
+      if copied ~= nil then
+        result[key] = copied
+      end
+    end
+    return result
+  end
+
+  return copy(type(args) == "table" and args or {}) or {}, retained, omitted
+end
+
+local function summarized_tool_args(args)
+  local summary = {}
+  for _, key in ipairs({ "path", "file_path", "command", "pattern", "query", "glob", "offset", "limit" }) do
+    if args[key] ~= nil then
+      summary[key] = args[key]
+    end
+  end
+  return limited_tool_args(summary, 512, 32)
+end
+
+local function result_without_content(result)
+  local copy = {}
+  if type(result) ~= "table" then
+    copy.content = {}
+    return copy
+  end
+  for key, value in pairs(result or {}) do
+    if key ~= "content" then
+      copy[key] = value
+    end
+  end
+  copy.content = {}
+  return copy
+end
+
+local function details_without_output(details)
+  local copy = {}
+  if type(details) ~= "table" then
+    return copy
+  end
+  for key, value in pairs(details or {}) do
+    if key ~= "output" then
+      copy[key] = value
+    end
+  end
+  return copy
+end
+
+local function limited_result(result, maximum)
+  local limited = { content = {} }
+  local retained = 0
+  local omitted = 0
+  for _, block in ipairs((type(result) == "table" and result.content) or {}) do
+    local remaining = math.max(0, maximum - retained)
+    if block.type == "text" then
+      local text = type(block.text) == "string" and block.text or ""
+      local kept, removed = utf8_tail(text, remaining)
+      omitted = omitted + removed
+      if kept ~= "" then
+        table.insert(limited.content, { type = "text", text = kept })
+        retained = retained + #kept
+      end
+    elseif block.type == "image" then
+      local payload = type(block.data) == "string" and block.data
+        or type(block.source) == "table" and type(block.source.data) == "string" and block.source.data
+        or ""
+      if #payload <= remaining then
+        table.insert(limited.content, block)
+        retained = retained + #payload
+      else
+        omitted = omitted + #payload
+        table.insert(limited.content, {
+          type = "omitted",
+          reason = "image_limit",
+          omittedBytes = #payload,
+          clientOmitted = true,
+        })
+      end
+    end
+  end
+  for key, value in pairs(type(result) == "table" and result or {}) do
+    if key ~= "content" then
+      if type(value) == "string" then
+        local kept, removed = utf8_head(value, math.max(0, maximum - retained))
+        limited[key] = kept
+        retained = retained + #kept
+        omitted = omitted + removed
+      elseif type(value) == "table" then
+        local kept, kept_bytes, removed = limited_tool_args(value, math.max(0, maximum - retained), 512)
+        limited[key] = kept
+        retained = retained + kept_bytes
+        omitted = omitted + removed
+      else
+        limited[key] = value
+      end
+    end
+  end
+  if omitted > 0 then
+    if type(limited.details) ~= "table" then
+      limited.details = {}
+    end
+    limited.details.clientTruncated = true
+    limited.details.clientOmittedBytes = (limited.details.clientOmittedBytes or 0) + omitted
+    limited.details.clientRetainedBytes = retained
+  end
+  return limited, retained
+end
+
 function Chat.new(root)
   highlights.setup()
   update_welcome_logo_highlights()
@@ -149,12 +510,24 @@ function Chat.new(root)
     command_first = 1,
     status_buf = nil,
     status_win = nil,
+    permission_buf = nil,
+    permission_win = nil,
+    widget_buf = nil,
+    widget_win = nil,
+    permission_restore_height = nil,
     transcript_width = nil,
     history_loaded = false,
     items = {},
+    next_item_id = 0,
+    pending_images = {},
     tools_by_id = {},
+    tool_retained_bytes = 0,
     tool_ranges = {},
     process_ranges = {},
+    image_placements = {},
+    image_preview_buf = nil,
+    image_preview_win = nil,
+    image_preview_block = nil,
     streaming_assistant = nil,
     tools_expanded = false,
     hide_thinking = true,
@@ -162,13 +535,19 @@ function Chat.new(root)
     commands = {},
     queue = { steering = {}, followUp = {} },
     render_pending = false,
+    render_timer = nil,
+    render_cache = nil,
+    render_frame = nil,
+    prepared_images_width = nil,
     animation_frame = 0,
     animation_timer = nil,
     activity_started_at = nil,
     path = root,
     activity = "starting",
+    title = "pi",
     model = "loading",
     thinking = "-",
+    reported_permission_mode = initial_permission_mode(),
     auto_compaction = true,
     stats = {
       tokens = {},
@@ -186,8 +565,35 @@ function Chat.new(root)
     namespace = namespace,
     ui_group = ui_group,
   })
+  chat.permission_area = permission_panel.PermissionPanel.new(chat, {
+    namespace = namespace,
+  })
+  chat.widget_area = widget_panel.WidgetArea.new(chat, {
+    namespace = namespace,
+  })
+  chat.image_backend = image_backend.new({
+    on_change = function()
+      chat:_invalidate_render_cache()
+      chat:_schedule_render()
+    end,
+  })
   instances[root] = chat
   return chat
+end
+
+function Chat:_new_item_id(kind)
+  self.next_item_id = self.next_item_id + 1
+  return ("%s:%d"):format(kind or "item", self.next_item_id)
+end
+
+function Chat:_invalidate_render_cache()
+  self.render_cache = nil
+end
+
+function Chat:_invalidate_cached_item(item)
+  if self.render_cache and self.render_cache.items[item] then
+    self:_invalidate_render_cache()
+  end
 end
 
 function Chat:is_open()
@@ -267,24 +673,59 @@ function Chat:_sync_animation()
         return
       end
       self.animation_frame = self.animation_frame + 1
-      self:_layout()
+      self.input_area:update_frame()
     end)
   )
 end
 
 function Chat:close()
   self:_stop_animation()
-  for _, win in ipairs({ self.command_win, self.status_win, self.input_win, self.win }) do
+  self:_close_image_preview()
+  if self.image_backend then
+    self.image_backend:clear(self.buf)
+  end
+  self.permission_area:cancel_all()
+  self.widget_area:close_windows()
+  for _, win in ipairs({ self.command_win, self.permission_win, self.status_win, self.input_win, self.win }) do
     if win and vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_win_close(win, true)
     end
   end
   self.command_win = nil
   self.command_matches = {}
+  self.permission_win = nil
+  self.permission_restore_height = nil
   self.status_win = nil
   self.input_win = nil
   self.win = nil
+  self.transcript_width = nil
   sync_welcome_animation()
+end
+
+function Chat:destroy()
+  self:close()
+  if self.render_timer then
+    self.render_timer:stop()
+    self.render_timer:close()
+    self.render_timer = nil
+  end
+  self.items = {}
+  self.tools_by_id = {}
+  self.tool_retained_bytes = 0
+  self.render_cache = nil
+  self.render_frame = nil
+  self.pending_images = {}
+  self.image_placements = {}
+  self.streaming_assistant = nil
+  self.widget_area:clear()
+  for _, field in ipairs({ "command_buf", "permission_buf", "widget_buf", "status_buf", "input_buf", "buf" }) do
+    local bufnr = self[field]
+    if bufnr and vim.api.nvim_buf_is_valid(bufnr) then
+      pcall(vim.api.nvim_buf_delete, bufnr, { force = true })
+    end
+    self[field] = nil
+  end
+  instances[self.root] = nil
 end
 
 function Chat:set_path(path)
@@ -354,6 +795,38 @@ function Chat:set_queue(queue)
   self:_update_input_chrome()
 end
 
+function Chat:permission_mode()
+  return permission_modes.normalize(self.reported_permission_mode)
+end
+
+function Chat:permission_mode_label()
+  return permission_modes.label(self:permission_mode())
+end
+
+function Chat:update_permission_mode(mode)
+  mode = permission_modes.normalize(mode)
+  if not mode then
+    return false
+  end
+  if self.reported_permission_mode == mode then
+    return true
+  end
+  self.reported_permission_mode = mode
+  self:_close_command_menu()
+  self:_update_input_chrome()
+  self:_render_status()
+  if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
+    self:_render_transcript()
+  end
+  return true
+end
+
+function Chat:reset_permission_mode()
+  self.reported_permission_mode = initial_permission_mode()
+  self:_update_input_chrome()
+  self:_render_status()
+end
+
 function Chat:set_commands(commands)
   self.commands = commands or {}
   if self:_command_menu_visible() then
@@ -374,7 +847,11 @@ function Chat:_ensure_command_buffer()
 end
 
 function Chat:_close_command_menu()
+  local visible = self.command_menu:visible()
   self.command_menu:close()
+  if visible then
+    self:_layout()
+  end
 end
 
 function Chat:_render_command_menu(width, height, first)
@@ -390,7 +867,9 @@ function Chat:_open_command_menu()
 end
 
 function Chat:_update_command_menu()
-  return self.command_menu:update()
+  local visible = self.command_menu:update()
+  self:_layout()
+  return visible
 end
 
 function Chat:_show_command_completion()
@@ -402,7 +881,36 @@ function Chat:_select_command(delta)
 end
 
 function Chat:_accept_command_completion()
-  return self.command_menu:accept()
+  local accepted = self.command_menu:accept()
+  if accepted then
+    self:_layout()
+  end
+  return accepted
+end
+
+function Chat:set_widget(key, lines, placement)
+  return self.widget_area:set(key, lines, placement)
+end
+
+function Chat:clear_widgets()
+  self.widget_area:clear()
+end
+
+function Chat:set_title(title)
+  title = tostring(title or ""):gsub("[\r\n].*$", "")
+  title = vim.trim(title)
+  if title == "" then
+    title = "pi"
+  end
+  self.title = vim.fn.strcharpart(title, 0, 80)
+  if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
+    vim.b[self.buf].pi_title = self.title
+    local label = ("Pi · %s · %s"):format(self.title, vim.fs.basename(self.root))
+    if not pcall(vim.api.nvim_buf_set_name, self.buf, label) then
+      pcall(vim.api.nvim_buf_set_name, self.buf, label .. " · " .. vim.fn.sha256(self.root):sub(1, 6))
+    end
+  end
+  self:_layout_main()
 end
 
 function Chat:_update_input_chrome()
@@ -434,7 +942,7 @@ function Chat:_layout_main()
     height = height,
     style = "minimal",
     border = options.border or "rounded",
-    title = { { " pi ", "PiPanelTitle" } },
+    title = { { (" %s "):format(self.title or "pi"), "PiPanelTitle" } },
     title_pos = "center",
     zindex = 40,
   })
@@ -451,17 +959,40 @@ function Chat:_layout()
     return
   end
 
+  local permission_active = self.permission_area:active()
+  if self.position == "bottom" then
+    if permission_active then
+      if not self.permission_restore_height then
+        self.permission_restore_height = vim.api.nvim_win_get_height(self.win)
+      end
+      local maximum = math.max(10, vim.o.lines - vim.o.cmdheight - 3)
+      pcall(vim.api.nvim_win_set_height, self.win, math.min(16, maximum))
+    elseif self.permission_restore_height then
+      pcall(vim.api.nvim_win_set_height, self.win, self.permission_restore_height)
+      self.permission_restore_height = nil
+    end
+  end
+
   local width = vim.api.nvim_win_get_width(self.win)
   local height = vim.api.nvim_win_get_height(self.win)
   local transcript_width_changed = self.transcript_width ~= width
   self.transcript_width = width
   local footer_height = 1
-  local available_input = math.max(1, height - footer_height - 4)
+  local widget_hidden = permission_active or self:_command_menu_visible()
+  local widget_width = width
+  local widget_budget = widget_hidden and 0 or math.max(0, height - footer_height - 7)
+  local above_widget_height, below_widget_height = self.widget_area:measure(widget_width, widget_budget)
+  local widget_height = above_widget_height + below_widget_height
+  local available_input = math.max(1, height - footer_height - 4 - widget_height)
   local input_height = math.min(self:_desired_input_height(), available_input)
-  local input_row = math.max(0, height - footer_height - input_height - 2)
+  if permission_active then
+    input_height = math.min(input_height, 3)
+  end
+  local input_row = math.max(0, height - footer_height - below_widget_height - input_height - 2)
   local footer_row = math.max(0, height - footer_height)
 
-  local input_config = self:_input_window_config(input_row, math.max(1, width - 4), input_height)
+  local input_config = self:_input_window_config(input_row, math.max(1, width - 2), input_height)
+  input_config.focusable = not permission_active
   vim.api.nvim_win_set_config(self.input_win, input_config)
   vim.api.nvim_win_set_config(self.status_win, {
     relative = "win",
@@ -478,7 +1009,9 @@ function Chat:_layout()
     self:_layout_command_menu()
   end
 
-  local overlay_height = input_height + footer_height + 2
+  local permission_height = permission_active and self.permission_area:layout(width, input_row) or 0
+  self.widget_area:layout(widget_width, input_row, input_height, above_widget_height, below_widget_height)
+  local overlay_height = input_height + footer_height + 2 + permission_height + widget_height
   local overlay_changed = self.overlay_height ~= overlay_height
   self.overlay_height = overlay_height
   self:_render_status()
@@ -493,7 +1026,25 @@ function Chat:set_input(text)
   self.input_area:set_input(text)
 end
 function Chat:_focus_input()
+  if self.permission_area:active() then
+    self.permission_area:focus()
+    return
+  end
   self.input_area:focus()
+end
+
+function Chat:confirm(request, callback)
+  self:open(false)
+  local display = vim.deepcopy(request)
+  display.options = { "Block", "Allow once" }
+  self.permission_area:show(display, function(decision)
+    callback(decision == "Allow once")
+  end)
+end
+
+function Chat:select_permission(request, callback)
+  self:open(false)
+  self.permission_area:show(request, callback)
 end
 function Chat:_ensure_input_buffer()
   return self.input_area:ensure_input_buffer()
@@ -513,6 +1064,20 @@ function Chat:_ensure_buffer()
   vim.bo[self.buf].swapfile = false
   vim.bo[self.buf].filetype = "markdown"
   vim.bo[self.buf].modifiable = false
+
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = ui_group,
+    buffer = self.buf,
+    callback = function(event)
+      if self.image_backend then
+        self.image_backend:clear(event.buf)
+      end
+      if self.buf == event.buf then
+        self.buf = nil
+        self.render_frame = nil
+      end
+    end,
+  })
 
   vim.keymap.set("n", "q", function()
     self:close()
@@ -546,6 +1111,14 @@ function Chat:_ensure_buffer()
   vim.keymap.set("n", "<LeftMouse>", function()
     input_area.dispatch_left_mouse(self)
   end, { buffer = self.buf, silent = true })
+  vim.keymap.set("n", "<CR>", function()
+    local descriptor = self:_image_at_row(vim.api.nvim_win_get_cursor(self.win)[1])
+    if descriptor then
+      self:_open_image_preview(descriptor)
+    else
+      vim.api.nvim_feedkeys(vim.keycode("<CR>"), "n", false)
+    end
+  end, { buffer = self.buf, silent = true })
   return self.buf
 end
 
@@ -562,6 +1135,173 @@ local function style_window(win, normal_group)
     normal_group,
     normal_group
   )
+end
+
+function Chat:_close_image_preview()
+  local buf = self.image_preview_buf
+  local win = self.image_preview_win
+  self.image_preview_buf = nil
+  self.image_preview_win = nil
+  self.image_preview_block = nil
+  if self.image_backend and buf then
+    self.image_backend:clear(buf)
+  end
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_win_close, win, true)
+  end
+  if buf and vim.api.nvim_buf_is_valid(buf) then
+    pcall(vim.api.nvim_buf_delete, buf, { force = true })
+  end
+end
+
+function Chat:_render_image_preview_blocks(block)
+  local buf = self.image_preview_buf
+  if self.image_preview_block ~= block or not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  local preview = image_data.preview(block)
+  local lines = {}
+  if preview then
+    for _, preview_row in ipairs(preview.rows) do
+      table.insert(lines, preview_row.text)
+    end
+  else
+    lines = { image_data.fallback(block) }
+  end
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+  vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
+  if preview then
+    for row, preview_row in ipairs(preview.rows) do
+      for _, mark in ipairs(preview_row.marks) do
+        vim.api.nvim_buf_set_extmark(buf, namespace, row - 1, mark.start_col, {
+          end_col = mark.end_col,
+          hl_group = mark.highlight,
+          priority = 150,
+        })
+      end
+    end
+  end
+  vim.bo[buf].modifiable = false
+end
+
+function Chat:_open_image_preview(descriptor)
+  local prepared = descriptor and image_data.prepared(descriptor.block)
+  if not prepared then
+    return false
+  end
+  self:_close_image_preview()
+
+  local maximum_width = math.max(12, vim.o.columns - 4)
+  local maximum_height = math.max(4, vim.o.lines - vim.o.cmdheight - 4)
+  local block = {
+    type = "image",
+    mimeType = prepared.mime_type,
+    path = prepared.path,
+  }
+  local zoom = image_data.prepare(block, maximum_width, nil, {
+    max_width = maximum_width,
+    max_height = maximum_height,
+  })
+  if not zoom then
+    return false
+  end
+
+  local width = math.max(12, zoom.width)
+  local height = math.max(4, zoom.height)
+  local buf = vim.api.nvim_create_buf(false, true)
+  local label = ("Pi Image Preview · %s"):format(vim.fs.basename(self.root))
+  if not pcall(vim.api.nvim_buf_set_name, buf, label) then
+    pcall(vim.api.nvim_buf_set_name, buf, label .. " · " .. vim.fn.sha256(self.root):sub(1, 6))
+  end
+  vim.b[buf].pi_kind = "image_preview"
+  vim.b[buf].pi_root = self.root
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "wipe"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].filetype = "pi_image_preview"
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "" })
+  vim.bo[buf].modifiable = false
+
+  local win = vim.api.nvim_open_win(buf, true, {
+    relative = "editor",
+    row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1),
+    col = math.max(0, math.floor((vim.o.columns - width) / 2)),
+    width = width,
+    height = height,
+    style = "minimal",
+    border = ((config.get().chat or {}).float or {}).border or "rounded",
+    title = { { (" Image %dx%d "):format(prepared.pixel_width, prepared.pixel_height), "PiPanelTitle" } },
+    title_pos = "center",
+    zindex = 80,
+  })
+  style_window(win, "PiCanvasNormal")
+  vim.wo[win].wrap = false
+  vim.wo[win].cursorline = false
+  self.image_preview_buf = buf
+  self.image_preview_win = win
+  self.image_preview_block = block
+
+  local function close()
+    self:_close_image_preview()
+  end
+  for _, key in ipairs({ "q", "<Esc>", "<CR>", "<LeftMouse>" }) do
+    vim.keymap.set("n", key, close, { buffer = buf, silent = true })
+  end
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = ui_group,
+    pattern = tostring(win),
+    once = true,
+    callback = function()
+      if self.image_preview_win == win then
+        self:_close_image_preview()
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+    group = ui_group,
+    buffer = buf,
+    once = true,
+    callback = function(event)
+      if self.image_preview_buf ~= event.buf then
+        return
+      end
+      local preview_win = self.image_preview_win
+      self.image_preview_buf = nil
+      self.image_preview_win = nil
+      self.image_preview_block = nil
+      if self.image_backend then
+        self.image_backend:clear(event.buf)
+      end
+      if preview_win and vim.api.nvim_win_is_valid(preview_win) then
+        pcall(vim.api.nvim_win_close, preview_win, true)
+      end
+    end,
+  })
+
+  if self.image_backend and self.image_backend:is_terminal() then
+    self.image_backend:sync(buf, win, {
+      {
+        key = "preview:" .. zoom.key,
+        content_key = zoom.key,
+        block = block,
+        path = zoom.path,
+        row = 0,
+        col = 0,
+        width = zoom.width,
+        height = zoom.height,
+        range_height = 1,
+        conceal = true,
+        inline = false,
+      },
+    })
+  else
+    image_data.prepare_preview(block, function()
+      self:_render_image_preview_blocks(block)
+    end)
+    self:_render_image_preview_blocks(block)
+  end
+  return true
 end
 
 function Chat:set_position(position)
@@ -625,7 +1365,7 @@ function Chat:open(focus_input)
   vim.wo[self.win].winbar = ""
 
   local width = vim.api.nvim_win_get_width(self.win)
-  self.input_win = vim.api.nvim_open_win(input_buf, false, self:_input_window_config(0, math.max(1, width - 4), 3))
+  self.input_win = vim.api.nvim_open_win(input_buf, false, self:_input_window_config(0, math.max(1, width - 2), 3))
   style_window(self.input_win, "PiInputNormal")
   vim.wo[self.input_win].cursorline = false
   vim.wo[self.input_win].spell = false
@@ -694,6 +1434,11 @@ function Chat:_clamp_transcript_view()
 end
 
 function Chat:_render_transcript()
+  for _, item in pairs(self.tools_by_id) do
+    if item.bash_dirty then
+      self:_materialize_bash(item)
+    end
+  end
   local follow_output = true
   local previous_row = 1
   if self.win and vim.api.nvim_win_is_valid(self.win) and self.buf and vim.api.nvim_buf_is_valid(self.buf) then
@@ -702,52 +1447,221 @@ function Chat:_render_transcript()
   end
 
   local width = self.win and vim.api.nvim_win_is_valid(self.win) and vim.api.nvim_win_get_width(self.win) or 80
-  local lines, marks, tool_ranges, process_ranges = renderer.render(self.items, {
+  local process_active = self:_process_is_active()
+  local stable_count = #self.items
+  if #self.items > 0 and (process_active or self.items[#self.items].type == "user") then
+    stable_count = 0
+    for index = #self.items, 1, -1 do
+      if self.items[index].type == "user" then
+        stable_count = index - 1
+        break
+      end
+    end
+  end
+
+  local image_terminal = self.image_backend and self.image_backend:is_terminal() or false
+  local security_mode = (config.get().security or {}).mode
+  local cache_key = table.concat({
+    tostring(width),
+    tostring(self.hide_thinking),
+    tostring(self.tools_expanded),
+    tostring(self.process_expanded),
+    tostring(image_terminal),
+    tostring(self.root),
+    tostring(self.model),
+    tostring(self.thinking),
+    tostring(self:permission_mode() or "syncing"),
+    tostring(security_mode),
+  }, "\0")
+  local previous_cache_count = self.render_cache and self.render_cache.count or 0
+  local prepare_start = self.prepared_images_width == width and (previous_cache_count + 1) or 1
+  self.prepared_images_width = width
+  local backend_status = self.image_backend and self.image_backend.status and self.image_backend:status() or nil
+  local prepare_preview = backend_status
+    and backend_status.requested ~= "text"
+    and backend_status.state ~= "probing"
+    and not image_terminal
+  self:_prepare_images(width, prepare_start, prepare_preview)
+
+  local base_opts = {
     hide_thinking = self.hide_thinking,
     tools_expanded = self.tools_expanded,
     collapse_processes = true,
     process_expanded = self.process_expanded,
-    process_active = self:_process_is_active(),
+    image_terminal = image_terminal,
+    root = self.root,
     width = width,
-    welcome = {
-      model = self.model,
-      thinking = self.thinking,
-      root = self.root,
-      permission = (config.get().security or {}).mode,
-    },
-  })
-  self.tool_ranges = tool_ranges
-  self.process_ranges = process_ranges
-  for _ = 1, self.overlay_height or 0 do
-    table.insert(lines, "")
-  end
-  if #lines == 0 then
-    lines = { "" }
+  }
+  local prefix
+  local cache_reused = false
+  if self.render_cache and self.render_cache.key == cache_key and self.render_cache.count == stable_count then
+    prefix = self.render_cache.result
+    cache_reused = true
+  else
+    local prefix_opts = vim.tbl_extend("force", {}, base_opts, {
+      process_active = false,
+      welcome = {
+        model = self.model,
+        thinking = self.thinking,
+        root = self.root,
+        permission = self:permission_mode() or "syncing",
+        security = security_mode,
+      },
+    })
+    prefix = render_result(slice(self.items, 1, stable_count), prefix_opts)
+    local cached_items = {}
+    for index = 1, stable_count do
+      cached_items[self.items[index]] = true
+    end
+    self.render_cache = {
+      key = cache_key,
+      count = stable_count,
+      items = cached_items,
+      result = prefix,
+    }
   end
 
+  local tail = nil
+  if stable_count < #self.items then
+    tail = render_result(
+      slice(self.items, stable_count + 1, #self.items),
+      vim.tbl_extend("force", {}, base_opts, {
+        process_active = process_active,
+      })
+    )
+  end
+
+  local separator = tail and #prefix.lines > 0 and prefix.lines[#prefix.lines] ~= "" and #tail.lines > 0 and 1 or 0
+  local prefix_rows = #prefix.lines
+  local tail_offset = prefix_rows + separator
+  local dynamic_lines = {}
+  if separator == 1 then
+    table.insert(dynamic_lines, "")
+  end
+  if tail then
+    vim.list_extend(dynamic_lines, tail.lines)
+  end
+  for _ = 1, self.overlay_height or 0 do
+    table.insert(dynamic_lines, "")
+  end
+  if prefix_rows == 0 and #dynamic_lines == 0 then
+    dynamic_lines = { "" }
+  end
+  local dynamic_marks = tail and offset_marks(tail.marks, separator) or {}
+  self.tool_ranges = merge_ranges(prefix.tool_ranges, tail and tail.tool_ranges, tail_offset)
+  self.process_ranges = merge_ranges(prefix.process_ranges, tail and tail.process_ranges, tail_offset)
+  self.image_placements = merge_images(prefix.images, tail and tail.images, tail_offset)
+  local total_lines = prefix_rows + #dynamic_lines
+
+  local dynamic_row_marks = effective_marks_by_row(dynamic_marks)
   self:_with_modifiable(function(buf)
-    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-    vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
-    for _, mark in ipairs(marks) do
-      if mark.line_highlight then
-        vim.api.nvim_buf_set_extmark(buf, namespace, mark.row, 0, {
-          line_hl_group = mark.line_highlight,
-          priority = mark.priority or 90,
-        })
-      end
-      if mark.highlight and mark.end_col > mark.start_col then
-        vim.api.nvim_buf_set_extmark(buf, namespace, mark.row, mark.start_col, {
-          end_col = mark.end_col,
-          hl_group = mark.highlight,
-          priority = mark.priority or 100,
-        })
-      end
+    local old = self.render_frame
+    local fast_path = cache_reused
+      and old
+      and old.prefix == prefix
+      and old.prefix_rows == prefix_rows
+      and vim.api.nvim_buf_line_count(buf) == old.total_lines
+    if not fast_path then
+      local lines = vim.list_slice(prefix.lines)
+      vim.list_extend(lines, dynamic_lines)
+      local marks = vim.list_slice(prefix.marks)
+      vim.list_extend(marks, offset_marks(dynamic_marks, prefix_rows))
+      vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
+      vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+      add_marks(buf, marks, 0, #lines)
+      return
     end
+
+    local prefix_count = 0
+    local shared = math.min(#old.dynamic_lines, #dynamic_lines)
+    while
+      prefix_count < shared
+      and old.dynamic_lines[prefix_count + 1] == dynamic_lines[prefix_count + 1]
+      and marks_equal(old.dynamic_row_marks[prefix_count + 1], dynamic_row_marks[prefix_count + 1])
+    do
+      prefix_count = prefix_count + 1
+    end
+    local suffix_count = 0
+    while
+      suffix_count < shared - prefix_count
+      and old.dynamic_lines[#old.dynamic_lines - suffix_count] == dynamic_lines[#dynamic_lines - suffix_count]
+      and marks_equal(
+        old.dynamic_row_marks[#old.dynamic_lines - suffix_count],
+        dynamic_row_marks[#dynamic_lines - suffix_count]
+      )
+    do
+      suffix_count = suffix_count + 1
+    end
+
+    local old_last = #old.dynamic_lines - suffix_count
+    local new_last = #dynamic_lines - suffix_count
+    if prefix_count == old_last and prefix_count == new_last then
+      return
+    end
+    local first_row = prefix_rows + prefix_count
+    vim.api.nvim_buf_clear_namespace(buf, namespace, first_row, prefix_rows + old_last)
+    vim.api.nvim_buf_set_lines(
+      buf,
+      first_row,
+      prefix_rows + old_last,
+      false,
+      slice(dynamic_lines, prefix_count + 1, new_last)
+    )
+    add_marks(buf, dynamic_marks, prefix_count, new_last, prefix_rows)
   end)
+  self.render_frame = {
+    prefix = prefix,
+    prefix_rows = prefix_rows,
+    dynamic_lines = vim.list_slice(dynamic_lines),
+    dynamic_row_marks = dynamic_row_marks,
+    total_lines = total_lines,
+  }
+  if self.image_backend then
+    self.image_backend:sync(self.buf, self.win, self.image_placements)
+  end
 
   if self.win and vim.api.nvim_win_is_valid(self.win) then
-    local row = follow_output and #lines or math.min(previous_row, #lines)
+    local row = follow_output and total_lines or math.min(previous_row, total_lines)
     vim.api.nvim_win_set_cursor(self.win, { math.max(1, row), 0 })
+  end
+end
+
+function Chat:_prepare_images(width, start_index, prepare_preview)
+  local seen = {}
+  local function prepare(content, include_markdown)
+    if type(content) ~= "table" then
+      return
+    end
+    local function prepare_block(block)
+      if block.type == "image" and not seen[block] then
+        seen[block] = true
+        local prepared = image_data.prepare(block, width - 6)
+        if prepared and prepare_preview then
+          image_data.prepare_preview(block, function()
+            self:_invalidate_render_cache()
+            self:_schedule_render()
+          end)
+        end
+      end
+    end
+    for _, block in ipairs(content or {}) do
+      prepare_block(block)
+      if include_markdown and block.type == "text" then
+        for _, referenced_image in ipairs(markdown_image.blocks(block, self.root)) do
+          prepare_block(referenced_image)
+        end
+      end
+    end
+  end
+  for index = math.max(1, start_index or 1), #self.items do
+    local item = self.items[index]
+    if item.type == "user" then
+      prepare(item.content, false)
+    elseif item.type == "assistant" then
+      prepare(item.message and item.message.content, true)
+    elseif item.type == "tool" then
+      prepare(item.result and item.result.content, false)
+    end
   end
 end
 
@@ -756,30 +1670,74 @@ function Chat:_schedule_render()
     return
   end
   self.render_pending = true
-  vim.defer_fn(function()
+  local interval = math.max(50, config.get().output.render_interval_ms)
+  self.render_timer = vim.defer_fn(function()
     self.render_pending = false
+    self.render_timer = nil
     if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
       self:_render_transcript()
     end
-  end, 25)
+  end, interval)
 end
 
 function Chat:clear()
   self.items = {}
+  self:_invalidate_render_cache()
+  self.prepared_images_width = nil
+  self.next_item_id = 0
   self.tools_by_id = {}
+  self.tool_retained_bytes = 0
+  self:reset_permission_mode()
   self.tool_ranges = {}
   self.process_ranges = {}
+  self.image_placements = {}
   self.streaming_assistant = nil
+  self.pending_images = {}
+  self.widget_area:clear()
+  self.input_area:render_attachments()
   self:_render_transcript()
 end
 
-function Chat:add_user(text)
-  table.insert(self.items, { type = "user", text = text or "" })
+function Chat:add_user(text, content)
+  table.insert(self.items, {
+    type = "user",
+    _pi_id = self:_new_item_id("user"),
+    text = text or "",
+    content = content,
+  })
   self:_render_transcript()
+end
+
+function Chat:add_image_attachment(image)
+  if type(image) ~= "table" or image.type ~= "image" then
+    return false
+  end
+  table.insert(self.pending_images, image)
+  self.input_area:render_attachments()
+  return true
+end
+
+function Chat:take_image_attachments()
+  local images = self.pending_images
+  self.pending_images = {}
+  self.input_area:render_attachments()
+  return images
+end
+
+function Chat:restore_image_attachments(images)
+  for _, image in ipairs(images or {}) do
+    table.insert(self.pending_images, image)
+  end
+  self.input_area:render_attachments()
 end
 
 function Chat:start_assistant(message)
-  local item = { type = "assistant", message = message or { content = {} }, started_at = vim.uv.hrtime() }
+  local item = {
+    type = "assistant",
+    _pi_id = self:_new_item_id("assistant"),
+    message = message or { content = {} },
+    started_at = vim.uv.hrtime(),
+  }
   table.insert(self.items, item)
   self.streaming_assistant = item
   self:_render_transcript()
@@ -811,22 +1769,143 @@ end
 function Chat:start_tool(id, name, args)
   local item = self.tools_by_id[id]
   if item then
+    self:_invalidate_cached_item(item)
     item.name = name or item.name
-    item.args = args or item.args
     item.state = "pending"
   else
     item = {
       type = "tool",
+      _pi_id = self:_new_item_id("tool"),
       id = id,
       name = name or "tool",
-      args = args or {},
+      args = {},
       state = "pending",
       started_at = vim.uv.hrtime(),
     }
     self.tools_by_id[id] = item
     table.insert(self.items, item)
   end
+  self:_set_tool_args(item, args or item.args)
+  if item.name == "bash" then
+    local output = config.get().output
+    item.bash_buffer = BoundedText.new({
+      max_bytes = output.live_max_bytes,
+      max_lines = output.live_max_lines,
+      max_chunks = output.max_chunks,
+    })
+    item.bash_dirty = false
+  end
   self:_render_transcript()
+end
+
+function Chat:_set_tool_args(item, args)
+  self:_invalidate_cached_item(item)
+  self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - (item.args_retained_bytes or 0))
+  local limited, retained, omitted = limited_tool_args(args, config.get().output.tool_max_bytes)
+  item.args = limited
+  item.args_retained_bytes = retained
+  item.args_omitted_bytes = omitted
+  item.args_truncated = omitted > 0
+  item.args_released = false
+  self.tool_retained_bytes = self.tool_retained_bytes + retained
+  self:_enforce_transcript_budget()
+end
+
+function Chat:_release_tool_args(item)
+  if not item or (item.args_retained_bytes or 0) == 0 then
+    return
+  end
+  self:_invalidate_cached_item(item)
+  local previous = item.args_retained_bytes
+  local summary, retained, omitted = summarized_tool_args(item.args or {})
+  if retained >= previous then
+    summary = {}
+    retained = 0
+  end
+  self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - previous + retained)
+  item.args = summary
+  item.args_retained_bytes = retained
+  item.args_omitted_bytes = (item.args_omitted_bytes or 0) + omitted + math.max(0, previous - retained)
+  item.args_truncated = true
+  item.args_released = true
+end
+
+function Chat:_release_tool_output(item)
+  if not item or (item.retained_bytes or 0) == 0 then
+    return
+  end
+  self:_invalidate_cached_item(item)
+  self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - item.retained_bytes)
+  item.retained_bytes = 0
+  item.result = result_without_content(item.result)
+  item.output_released = true
+end
+
+function Chat:_enforce_transcript_budget()
+  local maximum = config.get().output.transcript_max_bytes
+  if self.tool_retained_bytes <= maximum then
+    return
+  end
+  for _, item in ipairs(self.items) do
+    if self.tool_retained_bytes <= maximum then
+      break
+    end
+    if item.type == "tool" and item.state == "done" and not item.output_released then
+      self:_release_tool_output(item)
+    end
+  end
+  for _, item in ipairs(self.items) do
+    if self.tool_retained_bytes <= maximum then
+      break
+    end
+    if item.type == "tool" and not item.args_released then
+      self:_release_tool_args(item)
+    end
+  end
+  for _, item in ipairs(self.items) do
+    if self.tool_retained_bytes <= maximum then
+      break
+    end
+    if item.type == "tool" and (item.args_retained_bytes or 0) > 0 then
+      local released = item.args_retained_bytes
+      self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - released)
+      item.args = {}
+      item.args_retained_bytes = 0
+      item.args_omitted_bytes = (item.args_omitted_bytes or 0) + released
+      item.args_truncated = true
+      item.args_released = true
+    end
+  end
+end
+
+function Chat:_set_tool_result(item, result)
+  self:_invalidate_cached_item(item)
+  self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - (item.retained_bytes or 0))
+  local remaining = math.max(0, config.get().output.tool_max_bytes - (item.args_retained_bytes or 0))
+  local limited, retained = limited_result(result or {}, remaining)
+  item.result = limited
+  item.retained_bytes = retained
+  item.output_released = false
+  self.tool_retained_bytes = self.tool_retained_bytes + retained
+  self:_enforce_transcript_budget()
+end
+
+function Chat:_materialize_bash(item)
+  if not item.bash_buffer then
+    return
+  end
+  local stats = item.bash_buffer:stats()
+  local details = {}
+  details = details_without_output(item.bash_details)
+  details.clientTruncated = stats.truncated
+  details.clientOmittedBytes = stats.omitted_bytes
+  details.clientOmittedLines = stats.omitted_lines
+  details.clientRetainedBytes = stats.retained_bytes
+  self:_set_tool_result(item, {
+    content = { { type = "text", text = item.bash_buffer:text() } },
+    details = details,
+  })
+  item.bash_dirty = false
 end
 
 function Chat:update_tool(id, result)
@@ -834,8 +1913,8 @@ function Chat:update_tool(id, result)
   if not item then
     return
   end
-  item.result = result
   item.state = "pending"
+  self:_set_tool_result(item, result)
   self:_schedule_render()
 end
 
@@ -844,8 +1923,11 @@ function Chat:append_bash_delta(id, delta)
   if not item then
     return
   end
-  item.bash_output = (item.bash_output or "") .. (delta or "")
-  item.result = { content = { { type = "text", text = item.bash_output } } }
+  if not item.bash_buffer or type(delta) ~= "string" or delta == "" then
+    return
+  end
+  item.bash_buffer:append(delta)
+  item.bash_dirty = true
   self:_schedule_render()
 end
 
@@ -855,14 +1937,16 @@ function Chat:end_bash(id, data, is_error)
     return
   end
   data = data or {}
-  local output = item.bash_output
-  if not output or output == "" then
-    output = data.output or ""
+  local stats = item.bash_buffer and item.bash_buffer:stats() or { retained_bytes = 0, omitted_bytes = 0 }
+  if item.bash_buffer and stats.retained_bytes == 0 and stats.omitted_bytes == 0 then
+    item.bash_buffer:append(type(data.output) == "string" and data.output or "")
   end
-  self:end_tool(id, {
-    content = { { type = "text", text = output } },
-    details = data,
-  }, is_error)
+  item.bash_details = data
+  item.bash_dirty = true
+  self:_materialize_bash(item)
+  item.bash_buffer = nil
+  item.bash_details = nil
+  self:end_tool(id, item.result, is_error)
 end
 
 function Chat:end_tool(id, result, is_error)
@@ -870,9 +1954,12 @@ function Chat:end_tool(id, result, is_error)
   if not item then
     return
   end
-  item.result = result
   item.error = is_error == true
   item.state = "done"
+  item.bash_buffer = nil
+  item.bash_details = nil
+  item.bash_dirty = false
+  self:_set_tool_result(item, result)
   if item.started_at then
     item.duration_ms = math.max(1, math.floor((vim.uv.hrtime() - item.started_at) / 1000000))
   end
@@ -880,7 +1967,12 @@ function Chat:end_tool(id, result, is_error)
 end
 
 function Chat:add_status(text, is_error)
-  table.insert(self.items, { type = "status", text = text, error = is_error == true })
+  table.insert(self.items, {
+    type = "status",
+    _pi_id = self:_new_item_id("status"),
+    text = text,
+    error = is_error == true,
+  })
   self:_render_transcript()
 end
 
@@ -908,6 +2000,45 @@ function Chat:_process_at_row(row)
   end
 end
 
+function Chat:_image_at_row(row)
+  row = tonumber(row)
+  if not row then
+    return nil
+  end
+  for index = #(self.image_placements or {}), 1, -1 do
+    local descriptor = self.image_placements[index]
+    local first = descriptor.row + 1
+    local last = first + (descriptor.range_height or descriptor.height or 1) - 1
+    if row >= first and row <= last then
+      return descriptor
+    end
+  end
+end
+
+function Chat:_image_at_mouse(mouse)
+  if not self.win or not vim.api.nvim_win_is_valid(self.win) or not mouse or tonumber(mouse.winid) ~= self.win then
+    return nil
+  end
+  local screen_row = tonumber(mouse.screenrow)
+  local screen_col = tonumber(mouse.screencol)
+  if screen_row and screen_col then
+    for index = #(self.image_placements or {}), 1, -1 do
+      local descriptor = self.image_placements[index]
+      local position = vim.fn.screenpos(self.win, descriptor.row + 1, descriptor.col + 1)
+      if
+        position.row > 0
+        and screen_row >= position.row
+        and screen_row < position.row + descriptor.height
+        and screen_col >= position.col
+        and screen_col < position.col + descriptor.width
+      then
+        return descriptor
+      end
+    end
+  end
+  return self:_image_at_row(mouse.line)
+end
+
 function Chat:_tool_under_cursor()
   if not self.win or not vim.api.nvim_win_is_valid(self.win) or vim.api.nvim_get_current_win() ~= self.win then
     return nil
@@ -916,6 +2047,7 @@ function Chat:_tool_under_cursor()
 end
 
 function Chat:_toggle_tool(item)
+  self:_invalidate_cached_item(item)
   local expanded = item.expanded
   if expanded == nil then
     expanded = self.tools_expanded
@@ -927,6 +2059,11 @@ function Chat:_handle_left_mouse(mouse)
   mouse = mouse or vim.fn.getmousepos()
   if not self.win or not vim.api.nvim_win_is_valid(self.win) or mouse.winid ~= self.win then
     return false
+  end
+  local image = self:_image_at_mouse(mouse)
+  if image then
+    pcall(vim.api.nvim_win_set_cursor, self.win, { image.row + 1, image.col })
+    return self:_open_image_preview(image)
   end
   local item = self:_tool_at_row(mouse.line)
   local process = not item and self:_process_at_row(mouse.line) or nil
@@ -993,44 +2130,66 @@ function Chat:render_history(messages)
     return
   end
   self.history_loaded = true
+  self:_invalidate_render_cache()
+  self.prepared_images_width = nil
   self.items = {}
+  self.next_item_id = 0
   self.tools_by_id = {}
+  self.tool_retained_bytes = 0
   self.tool_ranges = {}
   self.process_ranges = {}
   for _, message in ipairs(messages or {}) do
     if message.role == "user" then
-      table.insert(self.items, { type = "user", text = text_content(message.content) })
+      table.insert(self.items, {
+        type = "user",
+        _pi_id = self:_new_item_id("history-user"),
+        text = text_content(message.content),
+        content = message.content,
+      })
     elseif message.role == "assistant" then
-      table.insert(self.items, { type = "assistant", message = message })
+      table.insert(self.items, {
+        type = "assistant",
+        _pi_id = self:_new_item_id("history-assistant"),
+        message = message,
+      })
       for _, block in ipairs(message.content or {}) do
         if block.type == "toolCall" then
           local item = {
             type = "tool",
+            _pi_id = self:_new_item_id("history-tool"),
             id = block.id,
             name = block.name,
-            args = block.arguments or {},
+            args = {},
             state = "pending",
           }
           self.tools_by_id[block.id] = item
           table.insert(self.items, item)
+          self:_set_tool_args(item, block.arguments or {})
         end
       end
     elseif message.role == "toolResult" then
       local item = self.tools_by_id[message.toolCallId]
       if item then
-        item.result = message
         item.error = message.isError == true
         item.state = "done"
+        self:_set_tool_result(item, message)
       end
     elseif message.role == "bashExecution" then
-      table.insert(self.items, {
+      local item = {
         type = "tool",
+        _pi_id = self:_new_item_id("history-bash"),
         id = "bash-" .. tostring(message.timestamp or #self.items),
         name = "bash",
-        args = { command = message.command },
-        result = { content = { { type = "text", text = message.output or "" } } },
+        args = {},
         error = (message.exitCode or 0) ~= 0,
         state = "done",
+      }
+      self.tools_by_id[item.id] = item
+      table.insert(self.items, item)
+      self:_set_tool_args(item, { command = message.command })
+      self:_set_tool_result(item, {
+        content = { { type = "text", text = message.output or "" } },
+        details = details_without_output(message),
       })
     end
   end

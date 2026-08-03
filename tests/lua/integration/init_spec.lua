@@ -46,4 +46,9 @@ assert(notification, "a synchronous Bash send failure was silently dropped")
 assert(notification.message:find("fixture write failure", 1, true), "the Bash send failure lost its cause")
 assert(notification.level == vim.log.levels.ERROR, "the Bash send failure did not use error severity")
 
+local runtime = require("pi.runtime")
+assert(runtime.chats[root], "Bash fixture did not create a Chat")
+require("pi").stop()
+assert(runtime.clients[root] == nil and runtime.chats[root] == nil, "PiStop retained the project Client or Chat")
+
 print("init_spec: ok")

@@ -7,10 +7,48 @@ function Parser.new(opts)
   opts = opts or {}
   return setmetatable({
     buffer = "",
+    parts = {},
+    frame_bytes = 0,
+    discarding = false,
     max_frame_bytes = opts.max_frame_bytes or (10 * 1024 * 1024),
     on_message = assert(opts.on_message, "on_message is required"),
     on_error = opts.on_error or function() end,
   }, Parser)
+end
+
+function Parser:_reset_frame()
+  self.parts = {}
+  self.frame_bytes = 0
+  self.discarding = false
+  self.buffer = ""
+end
+
+function Parser:_append(part)
+  if part == "" or self.discarding then
+    return
+  end
+  local next_size = self.frame_bytes + #part
+  if next_size > self.max_frame_bytes then
+    local preview = table.concat(self.parts)
+    local remaining = math.max(0, self.max_frame_bytes - #preview)
+    self.on_error("RPC frame exceeded maximum size", preview .. part:sub(1, remaining))
+    self.parts = {}
+    self.frame_bytes = 0
+    self.discarding = true
+    return
+  end
+  table.insert(self.parts, part)
+  self.frame_bytes = next_size
+end
+
+function Parser:_finish_frame()
+  if self.discarding then
+    self:_reset_frame()
+    return
+  end
+  local line = table.concat(self.parts)
+  self:_reset_frame()
+  self:_consume(line)
 end
 
 function Parser:_decode(line)
@@ -27,7 +65,7 @@ function Parser:_decode(line)
     self.on_error("RPC frame must decode to an object", line)
     return
   end
-  self.on_message(message)
+  self.on_message(message, #line)
 end
 
 function Parser:_consume(line)
@@ -46,32 +84,34 @@ function Parser:push(chunk)
     return
   end
 
-  self.buffer = self.buffer .. chunk
-  while true do
-    local newline = self.buffer:find("\n", 1, true)
-    if not newline then
+  local offset = 1
+  while offset <= #chunk do
+    local newline = chunk:find("\n", offset, true)
+    if newline then
+      self:_append(chunk:sub(offset, newline - 1))
+      self:_finish_frame()
+      offset = newline + 1
+    else
+      self:_append(chunk:sub(offset))
       break
     end
-
-    local line = self.buffer:sub(1, newline - 1)
-    self.buffer = self.buffer:sub(newline + 1)
-    self:_consume(line)
-  end
-
-  if #self.buffer > self.max_frame_bytes then
-    local dropped = self.buffer
-    self.buffer = ""
-    self.on_error("RPC frame exceeded maximum size", dropped)
   end
 end
 
 function Parser:finish()
-  if self.buffer == "" then
+  -- Keep accepting direct buffer assignment for callers using the old parser state.
+  if self.buffer ~= "" then
+    self:_append(self.buffer)
+    self.buffer = ""
+  end
+  if self.discarding then
+    self:_reset_frame()
     return
   end
-  local line = self.buffer
-  self.buffer = ""
-  self:_consume(line)
+  if self.frame_bytes == 0 then
+    return
+  end
+  self:_finish_frame()
 end
 
 M.Parser = Parser

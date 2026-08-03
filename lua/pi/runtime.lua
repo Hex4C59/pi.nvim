@@ -27,7 +27,12 @@ local rpc_unavailable_commands = {
 local function client_root()
   local bufnr = vim.api.nvim_get_current_buf()
   for root, chat in pairs(chats) do
-    if bufnr == chat.buf or bufnr == chat.input_buf or bufnr == chat.status_buf then
+    if
+      bufnr == chat.buf
+      or bufnr == chat.input_buf
+      or bufnr == chat.status_buf
+      or (chat.widget_area and chat.widget_area:owns_buffer(bufnr))
+    then
       return root
     end
   end
@@ -56,9 +61,9 @@ local function refresh_commands(client)
   end)
 end
 
-local function pending_display(client, message, display)
+local function pending_display(client, message, display, images)
   if display ~= nil then
-    return { text = display }
+    return { text = display, images = images }
   end
 
   local command_name = message:match("^/([^%s]+)")
@@ -68,7 +73,7 @@ local function pending_display(client, message, display)
       return nil
     end
   end
-  return { text = message }
+  return { text = message, images = images }
 end
 
 local function remove_pending_display(queue, entry)
@@ -132,6 +137,9 @@ local function attach(client)
         refresh_stats(client)
         refresh_commands(client)
       else
+        if event.state == "starting" then
+          chat:reset_permission_mode()
+        end
         chat:set_activity(event.state)
       end
     elseif event.type == "history" then
@@ -140,7 +148,11 @@ local function attach(client)
       if event.message.role == "user" then
         local pending = table.remove(display_queue, 1)
         local display = pending and pending.text or text_content(event.message.content)
-        chat:add_user(display)
+        local content = event.message.content
+        if (type(content) ~= "table" or #content == 0) and pending and pending.images then
+          content = pending.images
+        end
+        chat:add_user(display, content)
       elseif event.message.role == "assistant" then
         chat:start_assistant(event.message)
       end
@@ -159,10 +171,29 @@ local function attach(client)
     elseif event.type == "queue_update" then
       chat:set_queue(event)
     elseif event.type == "extension_ui_request" then
-      dialog.handle(client, event, function(text)
-        chat:open(false)
-        chat:set_input(text)
-      end)
+      dialog.handle(client, event, {
+        permission_select = function(request, respond)
+          chat:select_permission(request, respond)
+        end,
+        confirm = function(request, respond)
+          chat:confirm(request, respond)
+        end,
+        set_status = function(key, value)
+          if key == "pi.permission_mode" then
+            chat:update_permission_mode(value)
+          end
+        end,
+        set_widget = function(key, lines, placement)
+          chat:set_widget(key, lines, placement)
+        end,
+        set_title = function(title)
+          chat:set_title(title)
+        end,
+        set_editor_text = function(text)
+          chat:open(false)
+          chat:set_input(text)
+        end,
+      })
     elseif event.type == "agent_start" then
       chat:set_activity("working")
     elseif event.type == "agent_settled" then
@@ -193,11 +224,16 @@ local function attach(client)
     elseif event.type == "client_error" then
       chat:set_activity("error")
       notify_error(event.error)
-    elseif event.type == "client_exit" and not event.expected then
-      chat:set_activity("error")
-      local suffix = event.stderr ~= "" and ("\n" .. event.stderr) or ""
-      notify_error(("Pi exited with code %s%s"):format(event.code, suffix))
-    elseif event.type == "response" and event.success == false then
+    elseif event.type == "client_exit" then
+      dialog.discard(client)
+      chat:reset_permission_mode()
+      chat:clear_widgets()
+      if not event.expected then
+        chat:set_activity("error")
+        local suffix = event.stderr ~= "" and ("\n" .. event.stderr) or ""
+        notify_error(("Pi exited with code %s%s"):format(event.code, suffix))
+      end
+    elseif event.type == "response" and event.success == false and not event._pi_request_matched then
       notify_error(event.error)
     end
   end)
@@ -230,13 +266,16 @@ local function with_prompt(text, callback)
   end)
 end
 
-local function send_prompt(message, display, root, behavior)
+local function send_prompt(message, display, root, behavior, images)
   local client = get_client(root)
-  local display_entry = pending_display(client, message, display)
+  local display_entry = pending_display(client, message, display, images)
   if display_entry then
     table.insert(client.display_queue, display_entry)
   end
   local payload = { message = message }
+  if type(images) == "table" and #images > 0 then
+    payload.images = images
+  end
   if behavior == "followUp" and (client.state == "streaming" or client.state == "compacting") then
     payload.streamingBehavior = "followUp"
   elseif behavior == "steer" or client.state == "streaming" or client.state == "compacting" then
@@ -245,6 +284,9 @@ local function send_prompt(message, display, root, behavior)
   client:request("prompt", payload, function(success, _, err)
     if not success then
       remove_pending_display(client.display_queue, display_entry)
+      if type(images) == "table" and #images > 0 then
+        chat_for(client.root):restore_image_attachments(images)
+      end
       notify_error(err)
     end
   end)

@@ -1,28 +1,25 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
-const dangerous = [
-  /\brm\s+(?:-[^\s]*r[^\s]*\s+|--recursive\b)/i,
-  /\bsudo\b/i,
-  /\bgit\s+reset\s+--hard\b/i,
-  /\bgit\s+clean\s+-[^\s]*f/i,
-  /\b(?:mkfs|shutdown|reboot|poweroff)\b/i,
-  /\bdd\b[^\n]*\bof=\/dev\//i,
-  /\b(?:chmod|chown)\s+-R\b/i,
-];
+import { createPermissionController, createPermissionToolModeController } from "./lib/security-policy.mjs";
 
 export default function (pi: ExtensionAPI) {
-  pi.on("tool_call", async (event, ctx) => {
-    if (event.toolName !== "bash") return;
-    const command = String(event.input.command ?? "");
-    if (!dangerous.some((pattern) => pattern.test(command))) return;
-
-    if (!ctx.hasUI) {
-      return { block: true, reason: "Dangerous command blocked because no confirmation UI is available" };
-    }
-
-    const allowed = await ctx.ui.confirm("Allow dangerous command?", command);
-    if (!allowed) {
-      return { block: true, reason: "Blocked by user" };
-    }
+  const tools = createPermissionToolModeController(pi);
+  const permissions = createPermissionController({ onModeChange: tools.onModeChange });
+  pi.on("tool_call", permissions.onToolCall);
+  pi.on("session_start", permissions.onSessionStart);
+  pi.on("before_agent_start", (event, ctx) => {
+    tools.enforce(permissions.getMode());
+    return permissions.onBeforeAgentStart(event, ctx);
+  });
+  pi.on("session_shutdown", () => {
+    tools.clear();
+    permissions.onSessionShutdown();
+  });
+  pi.registerCommand("permissions", {
+    description: "Select the session permission mode",
+    handler: permissions.command,
+  });
+  pi.registerCommand("mode", {
+    description: "Alias for /permissions",
+    handler: permissions.command,
   });
 }

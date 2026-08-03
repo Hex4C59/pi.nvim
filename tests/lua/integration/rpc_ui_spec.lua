@@ -9,10 +9,10 @@ end)
 
 local root = vim.fn.getcwd()
 config.setup({
-  command = root .. "/tests/fake_pi.js",
+  command = root .. "/tests/fixtures/fake_pi.js",
   persist_session = false,
   project_trust = "never",
-  security = { mode = "full" },
+  security = { mode = "confirm" },
   request_timeout = 3000,
 })
 
@@ -28,12 +28,37 @@ end
 
 local chat_buf = assert(find_buffer("chat"), "chat buffer was not created")
 local input_buf = assert(find_buffer("prompt"), "prompt buffer was not created")
+local status_buf = assert(find_buffer("status"), "status buffer was not created")
 assert(
   vim.wait(3000, function()
     local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
     return text:find("history answer", 1, true) ~= nil
   end, 20),
   "history was not rendered"
+)
+assert(
+  vim.wait(3000, function()
+    local widget = find_buffer("widget")
+    if not widget then
+      return false
+    end
+    local text = table.concat(vim.api.nvim_buf_get_lines(widget, 0, -1, false), "\n")
+    return text:find("Run RPC tests", 1, true) ~= nil
+  end, 20),
+  "Extension setWidget event was not rendered"
+)
+local widget_buf = assert(find_buffer("widget"), "widget buffer was not created")
+local chat = require("pi.runtime").chat_for(root)
+assert(chat.widget_win and vim.api.nvim_win_is_valid(chat.widget_win), "widget window was not created")
+assert(vim.api.nvim_win_get_config(chat.widget_win).focusable == false, "RPC widget can steal prompt focus")
+
+pi.select_permission_mode(root, "auto")
+assert(
+  vim.wait(3000, function()
+    local status = table.concat(vim.api.nvim_buf_get_lines(status_buf, 0, -1, false), "\n")
+    return status:find("Auto", 1, true) ~= nil
+  end, 20),
+  "Extension permission status did not update the footer"
 )
 
 assert(
@@ -60,14 +85,13 @@ assert(
 
 pi.submit("/fixture-noop", root)
 pi.submit("hello from fixture", root)
-local status_buf = assert(find_buffer("status"), "status buffer was not created")
 local settled = vim.wait(3000, function()
   local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
   local status = table.concat(vim.api.nvim_buf_get_lines(status_buf, 0, -1, false), "\n")
   return text:find("live answer", 1, true) ~= nil
     and text:find("▸ Thought", 1, true) ~= nil
     and text:find("read 1 file", 1, true) ~= nil
-    and status:find("fixture · high", 1, true) ~= nil
+    and status:find("Auto", 1, true) ~= nil
 end, 20)
 if not settled then
   local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
@@ -116,6 +140,14 @@ assert(
   "expanded template content leaked into the transcript"
 )
 
+local failure_notifications = {}
+local original_failure_notify = vim.notify
+vim.notify = function(message, ...)
+  if message == "fixture rejection" then
+    table.insert(failure_notifications, message)
+  end
+  return original_failure_notify(message, ...)
+end
 pi.submit("first accepted", root)
 pi.submit("second rejected", root)
 assert(
@@ -127,10 +159,17 @@ assert(
 )
 transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
 assert(not transcript:find("second rejected", 1, true), "a rejected prompt replaced the accepted prompt display")
+vim.notify = original_failure_notify
+assert(#failure_notifications == 1, "a failed RPC response produced duplicate notifications")
 
 local status = table.concat(vim.api.nvim_buf_get_lines(status_buf, 0, -1, false), "\n")
-assert(status:find("fixture · high", 1, true), "model state is missing from the footer")
-assert(status:find("fixture · high", 1, true) == 3, "model state is not aligned with the composer")
+assert(status:find("Auto", 1, true), "permission mode is missing from the footer")
+assert(not status:find("permissions", 1, true), "permission label should not be repeated in the footer")
+local wide_status = table.concat(chat:_status_text(120), "\n")
+assert(wide_status:find("fixture · high", 1, true), "model state is missing from the wide footer")
+assert(wide_status:find("fixture · high", 1, true) == 3, "model state is not aligned with the composer")
+assert(wide_status:find("Auto", 1, true), "wide footer is missing the permission mode")
+assert(not wide_status:find("permissions", 1, true), "wide footer should not repeat the permission label")
 assert(not status:find("idle", 1, true), "idle state should be hidden")
 
 local notification = nil
@@ -160,9 +199,11 @@ assert(
     return not cleared_transcript:find("history question", 1, true)
       and not cleared_transcript:find("hello from fixture", 1, true)
       and cleared_status:find("context 0%", 1, true) ~= nil
+      and chat.widget_win == nil
   end, 20),
   "/clear did not reset the Pi session transcript and context usage"
 )
+assert(vim.api.nvim_buf_is_valid(widget_buf), "clearing a session unexpectedly destroyed the reusable widget buffer")
 
 pi.stop_all()
 

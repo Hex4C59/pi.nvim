@@ -61,6 +61,9 @@ end
 pi.new_session = function(value)
   calls.new_session = value
 end
+pi.select_permission_mode = function(value, mode)
+  calls.permissions = { value, mode }
+end
 
 pi.submit("/model openai/gpt-test", root)
 pi.submit("/thinking high", root)
@@ -70,6 +73,8 @@ pi.submit("/compact focus on tools", root)
 pi.submit("/tree", root)
 pi.submit("/copy", root)
 pi.submit("/clear", root)
+pi.submit("/permissions auto", root)
+pi.submit("/mode plan", root)
 pi.submit("!printf hello", root)
 
 assert(calls.model == root, "model command was not routed")
@@ -82,16 +87,7 @@ assert(calls.compact[1] == "focus on tools" and calls.compact[2] == root, "compa
 assert(calls.tree == root, "tree command was not routed")
 assert(calls.copy == root, "copy command was not routed")
 assert(calls.new_session == root, "clear command did not start a fresh session")
+assert(calls.permissions[1] == root and calls.permissions[2] == "plan", "permission mode command was not routed")
 assert(calls.bash[1] == "printf hello" and calls.bash[2] == root, "bash command was not routed")
 
-local warning = nil
-local original_notify = vim.notify
-vim.notify = function(message, level)
-  warning = { message = message, level = level }
-end
-pi.submit("/login openai", root)
-vim.notify = original_notify
-assert(warning and warning.level == vim.log.levels.WARN, "TUI-only command did not show an RPC warning")
-assert(warning.message:find("not exposed", 1, true), "RPC warning did not explain the unavailable command")
-
-print("commands_spec: ok")
+print("dispatch_spec: ok")

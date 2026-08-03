@@ -1,10 +1,16 @@
 local M = {}
+local image_data = require("pi.ui.image")
+local markdown_image = require("pi.ui.markdown_image")
 
 local Canvas = {}
 Canvas.__index = Canvas
 
 function Canvas.new()
-  return setmetatable({ lines = {}, marks = {} }, Canvas)
+  return setmetatable({ lines = {}, marks = {}, images = {} }, Canvas)
+end
+
+function Canvas:image(descriptor)
+  table.insert(self.images, descriptor)
 end
 
 function Canvas:add(text, opts)
@@ -47,7 +53,12 @@ local function split_lines(text)
   if not text or text == "" then
     return {}
   end
-  return vim.split(text:gsub("\r\n", "\n"), "\n", { plain = true })
+  local normalized = text:gsub("\r\n", "\n"):gsub("\r", "\n")
+  return vim.split(normalized, "\n", { plain = true })
+end
+
+local function single_line(text)
+  return (tostring(text or ""):gsub("[\r\n]+", " ↵ "))
 end
 
 local function result_text(result)
@@ -55,8 +66,8 @@ local function result_text(result)
   for _, block in ipairs((result and result.content) or {}) do
     if block.type == "text" and block.text then
       table.insert(parts, block.text)
-    elseif block.type == "image" then
-      table.insert(parts, ("[image: %s]"):format(block.mimeType or "unknown"))
+    elseif block.type == "omitted" then
+      table.insert(parts, "[Image omitted: payload exceeded the client tool output limit]")
     end
   end
   return table.concat(parts, "\n")
@@ -87,6 +98,16 @@ local function format_duration(milliseconds)
   return format_hms(milliseconds / 1000)
 end
 
+local function format_bytes(bytes)
+  bytes = math.max(0, tonumber(bytes) or 0)
+  if bytes >= 1024 * 1024 then
+    return ("%.1f MiB"):format(bytes / (1024 * 1024))
+  elseif bytes >= 1024 then
+    return ("%.1f KiB"):format(bytes / 1024)
+  end
+  return ("%d bytes"):format(bytes)
+end
+
 local function format_elapsed(seconds)
   seconds = math.max(0, tonumber(seconds) or 0)
   if seconds < 10 then
@@ -106,7 +127,9 @@ local function next_inline_token(text, offset)
     end
   end
 
-  local first, last, value = text:find("%[([^%]]+)%]%([^%)]+%)", offset)
+  local first, last, value = text:find("!%[([^%]]*)%]%([^%)]+%)", offset)
+  consider(first, last, value ~= "" and value or "Image", "PiImageFallback")
+  first, last, value = text:find("%[([^%]]+)%]%([^%)]+%)", offset)
   consider(first, last, value, "PiMarkdownLink")
   first, last, value = text:find("`([^`]+)`", offset)
   consider(first, last, value, "PiMarkdownInlineCode")
@@ -313,10 +336,111 @@ local function apply_code_highlights(canvas, block)
   end
 end
 
+local render_image_block
+
+local function markdown_source_images(opts, line_number)
+  local images = opts.content_block and markdown_image.at_line_all(opts.content_block, opts.root, line_number) or {}
+  local entries = {}
+  for image_index, block in ipairs(images) do
+    table.insert(entries, {
+      block = block,
+      line_number = line_number,
+      image_index = image_index,
+    })
+  end
+  return entries
+end
+
+local function markdown_block_line(line, images)
+  if #images > 0 and images[1].block._pi_markdown_replace_line then
+    return true
+  end
+  if
+    line:match("^%s*#+%s+")
+    or line:match("^%s*>%s?")
+    or line:match("^%s*[-+*]%s+")
+    or line:match("^%s*%d+[.)]%s+")
+    or line:match("^%s*%*%*[^*]+%*%*%s*$")
+    or line:match("^%s*__[^_]+__%s*$")
+    or line:match("^    %S")
+    or line:match("^%s*|")
+    or line:match("|%s*$")
+    or line:match("^%s*<[/!%a]")
+  then
+    return true
+  end
+
+  local compact = line:gsub("%s", "")
+  return compact:match("^%-%-%-+$") ~= nil or compact:match("^%*%*%*+$") ~= nil or compact:match("^___+$") ~= nil
+end
+
+local function strip_markdown_hard_break(line)
+  if line:match("  $") then
+    return (line:gsub("%s+$", "")), true
+  end
+  if line:sub(-1) == "\\" then
+    return line:sub(1, -2), true
+  end
+  return line, false
+end
+
+-- CommonMark treats a single newline inside a paragraph as a soft break. Keep
+-- block syntax as physical rows and let the Neovim window wrap paragraphs.
+local function markdown_logical_lines(text, opts)
+  local records = {}
+  local paragraph = nil
+  local in_fence = false
+
+  local function flush_paragraph()
+    if paragraph then
+      table.insert(records, paragraph)
+      paragraph = nil
+    end
+  end
+
+  local function add_record(line, images)
+    table.insert(records, { text = line, images = images })
+  end
+
+  for line_number, raw_line in ipairs(split_lines(vim.trim(text or ""))) do
+    local images = markdown_source_images(opts, line_number)
+    local fence = raw_line:match("^%s*```") ~= nil
+    if in_fence or fence then
+      flush_paragraph()
+      add_record(raw_line, images)
+      if fence then
+        in_fence = not in_fence
+      end
+    elseif raw_line:match("^%s*$") then
+      flush_paragraph()
+      add_record(raw_line, images)
+    elseif markdown_block_line(raw_line, images) then
+      flush_paragraph()
+      add_record(raw_line, images)
+    else
+      local line, hard_break = strip_markdown_hard_break(raw_line)
+      local segment = vim.trim(line)
+      if not paragraph then
+        paragraph = { text = segment, images = {} }
+      elseif segment ~= "" then
+        paragraph.text = paragraph.text .. " " .. segment
+      end
+      vim.list_extend(paragraph.images, images)
+      if hard_break then
+        flush_paragraph()
+      end
+    end
+  end
+  flush_paragraph()
+  return records
+end
+
 local function add_markdown(canvas, text, opts)
   opts = opts or {}
   local code_block = nil
-  for _, line in ipairs(split_lines(vim.trim(text or ""))) do
+  for _, record in ipairs(markdown_logical_lines(text, opts)) do
+    local line = record.text
+    local line_images = record.images
     local fence = line:match("^%s*```%s*(.*)$")
     local heading, heading_text = line:match("^%s*(#+)%s+(.+)$")
     local quote = line:match("^%s*>%s?(.*)$")
@@ -347,6 +471,18 @@ local function add_markdown(canvas, text, opts)
           line_highlight = "PiCodeBg",
         })
       )
+    elseif #line_images > 0 and line_images[1].block._pi_markdown_replace_line then
+      for _, image in ipairs(line_images) do
+        render_image_block(
+          canvas,
+          image.block,
+          opts.prefix or "   ",
+          opts.line_highlight,
+          opts.item,
+          ("%s:%s:%s"):format(opts.block_index, image.line_number, image.image_index),
+          opts.render_opts
+        )
+      end
     elseif heading then
       add_inline_line(canvas, opts.prefix or "   ", heading_text, { highlight = "PiMarkdownHeading" })
     elseif strong_heading then
@@ -373,27 +509,125 @@ local function add_markdown(canvas, text, opts)
         })
       end
     end
+    if not code_block then
+      for _, image in ipairs(line_images) do
+        if not image.block._pi_markdown_replace_line then
+          render_image_block(
+            canvas,
+            image.block,
+            opts.prefix or "   ",
+            opts.line_highlight,
+            opts.item,
+            ("%s:%s:%s"):format(opts.block_index, image.line_number, image.image_index),
+            opts.render_opts
+          )
+        end
+      end
+    end
   end
   if code_block then
     apply_code_highlights(canvas, code_block)
   end
 end
 
-local function render_user(canvas, item)
-  canvas:space()
-  canvas:blank({ line_highlight = "PiUserMessageBg" })
-  canvas:add(" ▎ YOU", { highlight = "PiUserLabel", line_highlight = "PiUserMessageBg" })
-  local lines = split_lines(item.text)
-  if #lines == 0 then
-    lines = { "" }
+local function item_identity(item, opts)
+  return tostring(item._pi_id or item.id or (opts.item_ids and opts.item_ids[item]) or "item")
+end
+
+render_image_block = function(canvas, block, prefix, line_highlight, item, block_index, opts)
+  prefix = prefix or "   "
+  line_highlight = line_highlight or "PiCanvasNormal"
+  local prepared = image_data.prepared(block)
+  local preview = image_data.preview(block)
+  if opts.image_terminal and prepared then
+    local first_row = canvas:add(prefix .. string.rep(" ", prepared.width), {
+      highlight = "PiImageSurface",
+      line_highlight = line_highlight,
+    })
+    canvas:image({
+      key = table.concat({ item_identity(item, opts), tostring(block_index), prepared.key }, ":"),
+      content_key = prepared.key,
+      block = block,
+      path = prepared.path,
+      row = first_row,
+      col = #prefix,
+      width = prepared.width,
+      height = prepared.height,
+      range_height = 1,
+      conceal = true,
+    })
+    return first_row
+  elseif preview then
+    local first_row
+    for index, preview_row in ipairs(preview.rows) do
+      local row_prefix = index == 1 and prefix or string.rep(" ", #prefix)
+      local row = canvas:add(row_prefix .. preview_row.text, { line_highlight = line_highlight })
+      first_row = first_row or row
+      for _, mark in ipairs(preview_row.marks) do
+        canvas:mark(row, #row_prefix + mark.start_col, #row_prefix + mark.end_col, mark.highlight, 150)
+      end
+    end
+    if first_row and prepared then
+      canvas:image({
+        key = table.concat({ item_identity(item, opts), tostring(block_index), prepared.key, "preview" }, ":"),
+        content_key = prepared.key,
+        block = block,
+        path = prepared.path,
+        row = first_row,
+        col = #prefix,
+        width = prepared.width,
+        height = prepared.height,
+        range_height = prepared.height,
+        mode = "blocks",
+      })
+    end
+    return first_row
+  else
+    local row = canvas:add(prefix .. image_data.fallback(block), {
+      highlight = "PiImageFallback",
+      line_highlight = line_highlight,
+    })
+    return row
   end
-  for _, line in ipairs(lines) do
-    canvas:add("   " .. line, {
+end
+
+local function render_user(canvas, item, opts)
+  canvas:space()
+  local lines = split_lines(item.text)
+  local images = {}
+  if type(item.content) == "table" then
+    for block_index, block in ipairs(item.content) do
+      if block.type == "image" then
+        table.insert(images, { block = block, index = block_index })
+      end
+    end
+  end
+  local rendered = false
+  for index, line in ipairs(lines) do
+    local prefix = index == 1 and " › " or "   "
+    local row = canvas:add(prefix .. line, {
+      highlight = "PiUserMessageText",
+      line_highlight = "PiUserMessageBg",
+    })
+    if index == 1 then
+      canvas:mark(row, 1, 1 + #"›", "PiUserLabel", 140)
+    end
+    rendered = true
+  end
+  for index, entry in ipairs(images) do
+    local prefix = not rendered and index == 1 and " › " or "   "
+    local row = render_image_block(canvas, entry.block, prefix, "PiUserMessageBg", item, entry.index, opts)
+    if not rendered and index == 1 and row then
+      canvas:mark(row, 1, 1 + #"›", "PiUserLabel", 140)
+    end
+    rendered = true
+  end
+  if not rendered then
+    canvas:add(" › ", {
       highlight = "PiUserMessageText",
       line_highlight = "PiUserMessageBg",
     })
   end
-  canvas:blank({ line_highlight = "PiUserMessageBg" })
 end
 
 local function has_visible_after(content, index)
@@ -402,6 +636,7 @@ local function has_visible_after(content, index)
     if
       (block.type == "text" and vim.trim(block.text or "") ~= "")
       or (block.type == "thinking" and vim.trim(block.thinking or "") ~= "")
+      or block.type == "image"
     then
       return true
     end
@@ -409,22 +644,14 @@ local function has_visible_after(content, index)
   return false
 end
 
-local function render_assistant_header(canvas, has_thinking, duration_ms)
-  local label = " ◆ PI"
+local function render_assistant_meta(canvas, has_thinking, duration_ms)
   if not has_thinking then
-    canvas:add(label, { highlight = "PiAssistantLabel" })
     return
   end
 
   local duration = format_duration(duration_ms)
-  local separator = "  ·  "
-  local thought = duration and "Thought" or "Thinking"
-  local timing = duration and (" " .. duration) or "..."
-  local line = label .. separator .. thought .. timing
-  local row = canvas:add(line, { highlight = "PiAssistantLabel" })
-  canvas:mark(row, #label, #label + #separator, "PiPanelMuted", 140)
-  canvas:mark(row, #label + #separator, #label + #separator + #thought, "PiThinkingLabel", 140)
-  canvas:mark(row, #line - #timing, #line, "PiPanelMuted", 140)
+  local text = duration and ("Thought for " .. duration) or "Thinking..."
+  canvas:add("   " .. text, { highlight = "PiProcessSummary" })
 end
 
 local function render_assistant(canvas, item, opts)
@@ -436,6 +663,7 @@ local function render_assistant(canvas, item, opts)
     if
       (block.type == "text" and vim.trim(block.text or "") ~= "")
       or (block.type == "thinking" and vim.trim(block.thinking or "") ~= "")
+      or block.type == "image"
     then
       visible = true
       has_thinking = has_thinking or block.type == "thinking"
@@ -443,7 +671,7 @@ local function render_assistant(canvas, item, opts)
   end
   if visible then
     canvas:space()
-    render_assistant_header(canvas, has_thinking, item.duration_ms)
+    render_assistant_meta(canvas, has_thinking, item.duration_ms)
   end
 
   for index, block in ipairs(content) do
@@ -455,7 +683,16 @@ local function render_assistant(canvas, item, opts)
         end
       end
     elseif block.type == "text" and vim.trim(block.text or "") ~= "" then
-      add_markdown(canvas, block.text, { prefix = "   " })
+      add_markdown(canvas, block.text, {
+        prefix = "   ",
+        content_block = block,
+        root = opts.root,
+        item = item,
+        block_index = index,
+        render_opts = opts,
+      })
+    elseif block.type == "image" then
+      render_image_block(canvas, block, "   ", nil, item, index, opts)
     end
   end
 
@@ -467,7 +704,14 @@ local function render_assistant(canvas, item, opts)
     canvas:add(" Response stopped at the model output limit", { highlight = "PiToolError" })
   elseif message.stopReason == "error" then
     canvas:blank()
-    canvas:add(" Error: " .. (message.errorMessage or "Unknown error"), { highlight = "PiToolError" })
+    local error_lines = split_lines(message.errorMessage or "")
+    if #error_lines == 0 then
+      error_lines = { "Unknown error" }
+    end
+    for index, line in ipairs(error_lines) do
+      local prefix = index == 1 and " Error: " or string.rep(" ", #" Error: ")
+      canvas:add(prefix .. line, { highlight = "PiToolError" })
+    end
   end
 end
 
@@ -525,6 +769,7 @@ local function tool_verb(item)
 end
 
 local function truncate_display(text, width)
+  text = single_line(text)
   width = math.max(1, width or 80)
   if vim.api.nvim_strwidth(text) <= width then
     return text
@@ -547,7 +792,8 @@ end
 local function add_tool_row(canvas, entry, last_in_group, width, expanded)
   local prefix = last_in_group and "      " or "   │  "
   local available_width = math.max(1, (width or 80) - vim.api.nvim_strwidth(prefix) - 2)
-  local text = expanded and entry.text or truncate_display(entry.text, available_width)
+  local entry_text = single_line(entry.text)
+  local text = expanded and entry_text or truncate_display(entry_text, available_width)
   local trailing = math.max(0, available_width - vim.api.nvim_strwidth(text))
   local line = prefix .. text .. string.rep(" ", trailing)
   local row = canvas:add(line)
@@ -682,7 +928,7 @@ local function render_tool_header(canvas, item, opts, last_in_group)
   local bullet = item.error and "×" or pending and "◌" or "✓"
   local status_highlight = item.error and "PiToolFailed" or pending and "PiToolRunning" or "PiToolSuccess"
   local verb = tool_verb(item)
-  local subject = tool_subject(item)
+  local subject = single_line(tool_subject(item))
   if (opts.width or 80) < 60 and subject ~= "" and vim.tbl_contains({ "read", "write", "edit", "ls" }, item.name) then
     subject = vim.fs.basename(subject)
   end
@@ -784,6 +1030,32 @@ local function render_tool(canvas, item, opts, last_in_group)
   end
 
   local details = item.result and item.result.details or nil
+  if item.output_released then
+    table.insert(entries, {
+      text = "Earlier output released from memory",
+      highlight = "PiToolOmitted",
+    })
+  end
+  if item.args_truncated then
+    table.insert(entries, {
+      text = item.args_released and "Earlier tool input released from memory"
+        or ("Client tool input limit omitted %s"):format(format_bytes(item.args_omitted_bytes or 0)),
+      highlight = "PiToolOmitted",
+    })
+  end
+  if item.name == "bash" and details and details.clientTruncated then
+    local retained = details.clientRetainedBytes or 0
+    local omitted = details.clientOmittedBytes or 0
+    table.insert(entries, {
+      text = ("Client retained the last %s; %s omitted"):format(format_bytes(retained), format_bytes(omitted)),
+      highlight = "PiToolOmitted",
+    })
+  elseif details and details.clientTruncated then
+    table.insert(entries, {
+      text = ("Client output limit omitted %s"):format(format_bytes(details.clientOmittedBytes or 0)),
+      highlight = "PiToolOmitted",
+    })
+  end
   if item.name == "bash" and details and details.truncated then
     table.insert(entries, {
       text = details.fullOutputPath and ("Full output: " .. details.fullOutputPath)
@@ -808,6 +1080,15 @@ local function render_tool(canvas, item, opts, last_in_group)
   end
   if code_block and #code_block.lines > 0 then
     apply_code_highlights(canvas, code_block)
+  end
+  local result_content = item.result and item.result.content
+  if type(result_content) == "table" then
+    for block_index, block in ipairs(result_content) do
+      if block.type == "image" then
+        canvas:space()
+        render_image_block(canvas, block, "   ", "PiToolSurface", item, block_index, opts)
+      end
+    end
   end
   return first_row, #canvas.lines
 end
@@ -855,7 +1136,7 @@ local function public_assistant(item)
   local message = item.message or {}
   local content = {}
   for _, block in ipairs(message.content or {}) do
-    if block.type == "text" and vim.trim(block.text or "") ~= "" then
+    if (block.type == "text" and vim.trim(block.text or "") ~= "") or block.type == "image" then
       table.insert(content, block)
     end
   end
@@ -977,7 +1258,7 @@ local function render_item_range(canvas, items, first, last, opts, tool_ranges)
       vim.list_extend(tool_ranges, render_tool_group(canvas, group, opts))
     else
       if item.type == "user" then
-        render_user(canvas, item)
+        render_user(canvas, item, opts)
       elseif item.type == "assistant" then
         render_assistant(canvas, item, opts)
       elseif item.type == "status" then
@@ -1253,16 +1534,29 @@ local function render_welcome(canvas, opts)
   }
 
   local permission_labels = {
-    confirm = "confirm changes",
-    ["read-only"] = "read only",
+    confirm = "manual",
+    manual = "manual",
+    acceptEdits = "accept edits",
+    ["accept-edits"] = "accept edits",
+    auto = "auto",
+    plan = "plan",
+    ["read-only"] = "workspace read only",
     full = "full access",
   }
   local permission = opts.permission or "confirm"
+  local security = opts.security
+  if security == "read-only" then
+    permission = "read-only"
+  elseif security == "full" then
+    permission = "full"
+  end
   text, marks = welcome_detail(
     "permissions",
     permission_labels[permission] or permission,
     permission == "full" and "PiWelcomePermissionDanger"
       or permission == "read-only" and "PiWelcomePermissionSafe"
+      or permission == "plan" and "PiWelcomePermissionSafe"
+      or permission == "auto" and "PiWelcomePermissionWarning"
       or "PiWelcomePermissionValue"
   )
   local permission_row = { text = text, marks = marks }
@@ -1335,6 +1629,11 @@ end
 
 function M.render(items, opts)
   opts = opts or {}
+  opts = vim.tbl_extend("force", {}, opts)
+  opts.item_ids = {}
+  for index, item in ipairs(items) do
+    opts.item_ids[item] = index
+  end
   local canvas = Canvas.new()
   local tool_ranges = {}
   local process_ranges = {}
@@ -1344,14 +1643,14 @@ function M.render(items, opts)
 
   if not opts.collapse_processes then
     render_item_range(canvas, items, 1, #items, opts, tool_ranges)
-    return canvas.lines, canvas.marks, tool_ranges, process_ranges
+    return canvas.lines, canvas.marks, tool_ranges, process_ranges, canvas.images
   end
 
   local index = 1
   while index <= #items do
     local item = items[index]
     if item.type == "user" then
-      render_user(canvas, item)
+      render_user(canvas, item, opts)
       local turn_first = index + 1
       local next_turn = turn_first
       while next_turn <= #items and items[next_turn].type ~= "user" do
@@ -1382,7 +1681,7 @@ function M.render(items, opts)
     end
   end
 
-  return canvas.lines, canvas.marks, tool_ranges, process_ranges
+  return canvas.lines, canvas.marks, tool_ranges, process_ranges, canvas.images
 end
 
 M.split_lines = split_lines

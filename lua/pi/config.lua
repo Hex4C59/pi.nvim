@@ -14,15 +14,39 @@ local defaults = {
   security = {
     mode = "confirm",
   },
+  output = {
+    live_max_bytes = 64 * 1024,
+    live_max_lines = 2000,
+    max_chunks = 256,
+    tool_max_bytes = 256 * 1024,
+    transcript_max_bytes = 2 * 1024 * 1024,
+    rpc_queue_max_messages = 1024,
+    rpc_queue_max_bytes = 16 * 1024 * 1024,
+    render_interval_ms = 50,
+  },
   context = {
     max_bytes = 100000,
     include_diagnostics = true,
+  },
+  images = {
+    max_bytes = 8 * 1024 * 1024,
+    max_width = 72,
+    max_height = 32,
+    max_pixels = 40 * 1000 * 1000,
+    cache_max_age_days = 7,
+    backend = "auto",
+    terminal = {
+      provider = "snacks",
+      auto_resize = true,
+      timeout_ms = 10000,
+    },
   },
   chat = {
     position = "right",
     width = 0.42,
     height = 0.38,
     max_input_height = 8,
+    max_widget_height = 8,
     float = {
       width = 0.84,
       height = 0.86,
@@ -54,6 +78,78 @@ function M.setup(opts)
   if opts.root_markers then
     options.root_markers = vim.deepcopy(opts.root_markers)
   end
+
+  local output_limits = {
+    live_max_bytes = 64 * 1024 * 1024,
+    live_max_lines = 1000000,
+    max_chunks = 65536,
+    tool_max_bytes = 64 * 1024 * 1024,
+    transcript_max_bytes = 256 * 1024 * 1024,
+    rpc_queue_max_messages = 65536,
+    rpc_queue_max_bytes = 256 * 1024 * 1024,
+    render_interval_ms = 60000,
+  }
+  local output_minimums = { render_interval_ms = 50 }
+  for name, maximum in pairs(output_limits) do
+    local value = options.output[name]
+    if
+      type(value) ~= "number"
+      or value ~= value
+      or value == math.huge
+      or value == -math.huge
+      or value < (output_minimums[name] or 1)
+      or value > maximum
+    then
+      error(("pi.nvim: output.%s must be a positive integer no greater than %d"):format(name, maximum))
+    end
+    options.output[name] = math.floor(value)
+  end
+
+  local image_limits = {
+    max_bytes = { minimum = 1024, maximum = 64 * 1024 * 1024 },
+    max_width = { minimum = 12, maximum = 256 },
+    max_height = { minimum = 4, maximum = 128 },
+    max_pixels = { minimum = 1024, maximum = 268435456 },
+    cache_max_age_days = { minimum = 1, maximum = 365 },
+  }
+  for name, bounds in pairs(image_limits) do
+    local value = options.images[name]
+    if
+      type(value) ~= "number"
+      or value ~= value
+      or value == math.huge
+      or value == -math.huge
+      or value < bounds.minimum
+      or value > bounds.maximum
+    then
+      error(("pi.nvim: images.%s must be between %d and %d"):format(name, bounds.minimum, bounds.maximum))
+    end
+    options.images[name] = math.floor(value)
+  end
+  if not vim.tbl_contains({ "auto", "terminal", "text" }, options.images.backend) then
+    error("pi.nvim: images.backend must be 'auto', 'terminal', or 'text'")
+  end
+  local terminal = options.images.terminal
+  if type(terminal) ~= "table" then
+    error("pi.nvim: images.terminal must be a table")
+  end
+  if terminal.provider ~= "snacks" then
+    error("pi.nvim: images.terminal.provider must be 'snacks'")
+  end
+  if type(terminal.auto_resize) ~= "boolean" then
+    error("pi.nvim: images.terminal.auto_resize must be a boolean")
+  end
+  if
+    type(terminal.timeout_ms) ~= "number"
+    or terminal.timeout_ms ~= terminal.timeout_ms
+    or terminal.timeout_ms == math.huge
+    or terminal.timeout_ms == -math.huge
+    or terminal.timeout_ms < 100
+    or terminal.timeout_ms > 60000
+  then
+    error("pi.nvim: images.terminal.timeout_ms must be between 100 and 60000")
+  end
+  terminal.timeout_ms = math.floor(terminal.timeout_ms)
 
   return options
 end
@@ -90,14 +186,19 @@ function M.command(root)
   end
 
   local security_mode = options.security.mode
+  local function add_extension(name)
+    vim.list_extend(cmd, { "--extension", vim.fs.joinpath(plugin_root(), "extensions", name) })
+  end
   if security_mode == "read-only" then
-    vim.list_extend(cmd, { "--tools", "read,grep,find,ls" })
+    vim.list_extend(cmd, { "--tools", "read,grep,find,ls,todo" })
+    add_extension("workspace-guard.ts")
   elseif security_mode == "confirm" then
-    local extension = vim.fs.joinpath(plugin_root(), "extensions", "permission-gate.ts")
-    vim.list_extend(cmd, { "--extension", extension })
+    add_extension("permission-gate.ts")
   elseif security_mode ~= "full" then
     error("pi.nvim: security.mode must be 'read-only', 'confirm', or 'full'")
   end
+  add_extension("session-root-guard.ts")
+  add_extension("todo.ts")
 
   vim.list_extend(cmd, options.extra_args)
   return cmd, root

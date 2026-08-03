@@ -4,6 +4,7 @@ local Parser = require("pi.protocol").Parser
 local M = {}
 local Client = {}
 Client.__index = Client
+local max_dispatch_batch = 256
 
 function Client.new(root)
   local self = setmetatable({
@@ -16,21 +17,98 @@ function Client.new(root)
     listeners = {},
     stderr = {},
     stopping = false,
+    dispatch_queue = {},
+    dispatch_head = 1,
+    dispatch_tail = 0,
+    dispatch_count = 0,
+    dispatch_bytes = 0,
+    dispatch_scheduled = false,
+    dispatch_overload = nil,
   }, Client)
 
   self.parser = Parser.new({
-    on_message = function(message)
-      vim.schedule(function()
-        self:_handle(message)
-      end)
+    on_message = function(message, frame_bytes)
+      self:_enqueue_dispatch("message", message, nil, frame_bytes)
     end,
     on_error = function(err, frame)
-      vim.schedule(function()
-        self:_emit({ type = "client_error", error = err, frame = frame })
-      end)
+      self:_enqueue_dispatch("error", err, frame, #(frame or ""))
     end,
   })
   return self
+end
+
+function Client:_enqueue_dispatch(kind, value, frame, bytes)
+  if self.dispatch_overload then
+    return
+  end
+  bytes = math.max(0, math.floor(tonumber(bytes) or 0))
+  local output = config.get().output
+  if
+    self.dispatch_count >= output.rpc_queue_max_messages or self.dispatch_bytes + bytes > output.rpc_queue_max_bytes
+  then
+    self.dispatch_overload = ("RPC dispatch queue exceeded %d messages or %d bytes; stopping Pi to preserve client state"):format(
+      output.rpc_queue_max_messages,
+      output.rpc_queue_max_bytes
+    )
+  else
+    self.dispatch_tail = self.dispatch_tail + 1
+    self.dispatch_queue[self.dispatch_tail] = { kind = kind, value = value, frame = frame, bytes = bytes }
+    self.dispatch_count = self.dispatch_count + 1
+    self.dispatch_bytes = self.dispatch_bytes + bytes
+  end
+  if self.dispatch_scheduled then
+    return
+  end
+  self.dispatch_scheduled = true
+  vim.schedule(function()
+    self:_drain_dispatch()
+  end)
+end
+
+function Client:_drain_dispatch()
+  if self.dispatch_overload then
+    local message = self.dispatch_overload
+    self.dispatch_queue = {}
+    self.dispatch_head = 1
+    self.dispatch_tail = 0
+    self.dispatch_count = 0
+    self.dispatch_bytes = 0
+    self.dispatch_scheduled = false
+    self:_emit({ type = "client_error", error = message })
+    self:stop()
+    return
+  end
+  local processed = 0
+  while self.dispatch_count > 0 and processed < max_dispatch_batch do
+    local entry = self.dispatch_queue[self.dispatch_head]
+    self.dispatch_queue[self.dispatch_head] = nil
+    self.dispatch_head = self.dispatch_head + 1
+    self.dispatch_count = self.dispatch_count - 1
+    self.dispatch_bytes = math.max(0, self.dispatch_bytes - (entry.bytes or 0))
+    processed = processed + 1
+    local ok, err = pcall(function()
+      if entry.kind == "message" then
+        self:_handle(entry.value)
+      else
+        self:_emit({ type = "client_error", error = entry.value, frame = entry.frame })
+      end
+    end)
+    if not ok then
+      self:_emit({ type = "client_error", error = "RPC dispatch failed: " .. tostring(err) })
+    end
+  end
+
+  if self.dispatch_count == 0 then
+    self.dispatch_queue = {}
+    self.dispatch_head = 1
+    self.dispatch_tail = 0
+    self.dispatch_bytes = 0
+    self.dispatch_scheduled = false
+    return
+  end
+  vim.schedule(function()
+    self:_drain_dispatch()
+  end)
 end
 
 function Client:on_event(listener)
@@ -58,6 +136,7 @@ function Client:start()
   local cmd = config.command(self.root)
   self.state = "starting"
   self.stopping = false
+  self.dispatch_overload = nil
   self:_emit({ type = "client_state", state = self.state })
 
   local ok, process_or_error = pcall(vim.system, cmd, {
@@ -66,9 +145,7 @@ function Client:start()
     text = false,
     stdout = function(err, chunk)
       if err then
-        vim.schedule(function()
-          self:_emit({ type = "client_error", error = err })
-        end)
+        self:_enqueue_dispatch("error", err)
         return
       end
       if chunk then
@@ -190,6 +267,7 @@ end
 function Client:_handle(message)
   if message.type == "response" then
     local pending = message.id and self.pending[message.id] or nil
+    message._pi_request_matched = pending ~= nil
     if pending then
       self.pending[message.id] = nil
       if pending.callback then

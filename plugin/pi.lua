@@ -35,6 +35,16 @@ vim.api.nvim_create_user_command("PiThinking", function(opts)
   pi().select_thinking_level(nil, opts.args)
 end, { nargs = "?", desc = "Select the Pi thinking level" })
 
+vim.api.nvim_create_user_command("PiPermissions", function(opts)
+  pi().select_permission_mode(nil, opts.args)
+end, {
+  nargs = "?",
+  complete = function()
+    return { "manual", "acceptEdits", "auto", "plan" }
+  end,
+  desc = "Select the Pi permission mode",
+})
+
 vim.api.nvim_create_user_command("PiSettings", function()
   pi().settings()
 end, { desc = "Open Pi settings" })
