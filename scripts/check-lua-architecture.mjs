@@ -152,6 +152,14 @@ const privateChatFields = new Set([
   "process_expanded",
 ]);
 
+const runtimeOwnedClientFields = new Set([
+  "commands_by_name",
+  "stats_pending",
+  "display_queue",
+  "runtime_unsubscribe",
+  "bash_running",
+]);
+
 function chatLeaks(moduleTokens) {
   const leaks = [];
   for (let index = 0; index < moduleTokens.length; index += 1) {
@@ -169,6 +177,26 @@ function chatLeaks(moduleTokens) {
       separator?.value === "[" &&
       field?.type === "string" &&
       privateChatFields.has(field.value) &&
+      moduleTokens[index + 3]?.value === "]"
+    ) {
+      leaks.push({ field: field.value, line: moduleTokens[index].line });
+    }
+  }
+  return leaks;
+}
+
+function clientStateLeaks(moduleTokens) {
+  const leaks = [];
+  for (let index = 0; index < moduleTokens.length; index += 1) {
+    if (moduleTokens[index].type !== "identifier" || moduleTokens[index].value !== "client") continue;
+    const separator = moduleTokens[index + 1];
+    const field = moduleTokens[index + 2];
+    if (separator?.value === "." && field?.type === "identifier" && runtimeOwnedClientFields.has(field.value)) {
+      leaks.push({ field: field.value, line: moduleTokens[index].line });
+    } else if (
+      separator?.value === "[" &&
+      field?.type === "string" &&
+      runtimeOwnedClientFields.has(field.value) &&
       moduleTokens[index + 3]?.value === "]"
     ) {
       leaks.push({ field: field.value, line: moduleTokens[index].line });
@@ -208,14 +236,10 @@ function dependencyViolation(source, dependency) {
 // accepted here.
 const knownCycleEdges = new Set(["pi.ui.input->pi", "pi.ui.transcript_view->pi"]);
 
-// This is a shrinking debt budget, not a general allowlist. Task 02 removes the
-// Runtime/command leaks and Task 03 removes sibling-component reach-through.
-// Exact counts make additions and stale entries fail the policy immediately.
+// This is a shrinking debt budget, not a general allowlist. Task 02 removed the
+// Runtime/command leaks; Task 03 removes sibling-component reach-through. Exact
+// counts make additions and stale entries fail the policy immediately.
 const knownFacadeLeaks = new Map([
-  ["lua/pi/runtime.lua:transcript", 1],
-  ["lua/pi/commands/permission.lua:permission_area", 1],
-  ["lua/pi/commands/ui.lua:position", 1],
-  ["lua/pi/commands/ui.lua:process_expanded", 1],
   ["lua/pi/ui/command_menu.lua:input_area", 4],
   ["lua/pi/ui/permission.lua:transcript_view", 1],
   ["lua/pi/ui/permission.lua:input_area", 1],
@@ -262,6 +286,7 @@ async function check(root) {
       name: moduleName(luaRoot, file),
       requires: requiresFrom(moduleTokens),
       leaks: chatLeaks(moduleTokens),
+      clientStateLeaks: clientStateLeaks(moduleTokens),
     });
   }
 
@@ -294,6 +319,9 @@ async function check(root) {
       if (!useRepositoryBaseline || !knownFacadeLeaks.has(key)) {
         failures.push(`${module.relative}:${leak.line}: Chat facade leak: chat.${leak.field}`);
       }
+    }
+    for (const leak of module.clientStateLeaks) {
+      failures.push(`${module.relative}:${leak.line}: Runtime-owned state leaked onto Client: client.${leak.field}`);
     }
   }
 

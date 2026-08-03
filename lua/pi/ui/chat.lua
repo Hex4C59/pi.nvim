@@ -303,6 +303,38 @@ end
 function Chat:retained_transcript_bytes()
   return self.transcript:retained_transcript_bytes()
 end
+
+function Chat:project_root()
+  return self.root
+end
+
+function Chat:has_active_permission_request()
+  return self.permission_area:active()
+end
+
+function Chat:current_layout()
+  return self.position or config.get().chat.position
+end
+
+function Chat:process_details_enabled()
+  return self.process_expanded == true
+end
+
+function Chat:display_state()
+  return {
+    layout = self:current_layout(),
+    process_expanded = self:process_details_enabled(),
+    permission_mode = self:permission_mode(),
+    permission_mode_label = self:permission_mode_label(),
+  }
+end
+
+function Chat:reset_session_projection()
+  self.transcript.history_loaded = false
+  self:clear()
+  self:update_stats({ tokens = {}, contextUsage = {}, cost = 0 })
+end
+
 function Chat:_invalidate_cached_item(item)
   self.transcript_view:invalidate_item(item)
 end

@@ -33,10 +33,10 @@ pi.ui.render
 `scripts/check-lua-architecture.mjs` tokenizes executable Lua while ignoring
 comments and strings. Its policy test rejects forbidden layer edges, unapproved
 literal-require cycles, and new direct access to private Chat component fields.
-The two existing late `require("pi")` UI action edges and the existing Chat
-facade leaks are explicit, count-bounded migration exceptions; Tasks 02 and 03
-in `docs/modular-architecture-plan.md` remove them rather than allowing the debt
-to grow.
+The two existing late `require("pi")` UI action edges and the remaining
+sibling-component Chat accesses are explicit, count-bounded migration
+exceptions. Task 02 removed the Runtime/command facade leaks; Task 03 removes
+the remaining internal UI exceptions rather than allowing that debt to grow.
 
 The temporary exception budget is:
 
@@ -44,7 +44,6 @@ The temporary exception budget is:
 | --- | ---: | --- |
 | `pi.ui.input -> pi` late action dispatch | 1 edge | Task 03 |
 | `pi.ui.transcript_view -> pi` late action dispatch | 1 edge | Task 03 |
-| Runtime/command access to private Chat state | 4 accesses | Task 02 |
 | CommandMenu/PermissionPanel access to sibling Chat components | 6 accesses | Task 03 |
 
 The checker requires the exact current count. Adding a matching access fails, and
@@ -70,10 +69,20 @@ removing one requires shrinking the reviewed budget in the same change.
 `Transcript` is a bounded Neovim display projection, not session storage.
 Releasing or clearing local bodies does not alter Pi's authoritative session.
 Runtime normally calls the `Chat` facade, whose mutation methods delegate to the
-transcript model. The remaining direct component accesses are documented policy
-exceptions with fixed occurrence budgets, not supported APIs. Runtime-owned
-orchestration values that are temporarily stored on Client records remain
-Runtime state and are migrated in the next architecture task.
+transcript model. Runtime and command modules use facade methods for permission
+activity, projection reset, layout, process detail, and display-state reads.
+`Chat.root` is initialized once as immutable composition identity; external
+callers use `Chat:project_root()` rather than treating the display context path
+as project identity. A display-state snapshot is detached from Chat, so changing
+the returned table cannot mutate UI state.
+
+Runtime keeps display correlation, discovered commands, stats refresh state,
+direct-RPC Bash identity, and the Client event unsubscriber in one internal
+per-project record tied to the current Client identity. These values are never
+attached to Client objects. Late events and callbacks from a replaced Client
+cannot project into the replacement Chat. The remaining direct component
+accesses are internal sibling-component exceptions with fixed occurrence
+budgets for Task 03, not supported external APIs.
 
 ## Rendering
 
@@ -123,6 +132,8 @@ continue to return a blocking response.
 | Transcript view and render cache | `regression/performance_spec.lua`, Chat UI specs |
 | Image preview/backend lifecycle | image Chat/backend lifecycle specs |
 | Component ownership and layout | Chat, layout, widget, and permission specs |
+| Chat facade contract | `tests/lua/ui/chat_facade_spec.lua` |
+| Runtime per-project orchestration | `tests/lua/runtime_spec.lua` |
 | RPC-to-UI integration | `tests/lua/integration/rpc_ui_spec.lua` |
 | Permission authority | Lua permission spec plus Extension policy tests |
 

@@ -4,8 +4,6 @@ local runtime = require("pi.runtime")
 
 local M = {}
 
-local notify_error = runtime.notify_error
-
 function M.ask(text, root)
   if not root then
     local path = vim.api.nvim_buf_get_name(0)
@@ -47,13 +45,7 @@ function M.buffer(text)
 end
 
 function M.abort(root)
-  local client = runtime.get_client(root)
-  local command = client.bash_running and "abort_bash" or "abort"
-  client:request(command, {}, function(success, _, err)
-    if not success then
-      notify_error(err)
-    end
-  end)
+  runtime.abort(root)
 end
 
 function M.copy_last_response(root)
@@ -65,28 +57,7 @@ function M.bash(command, root)
   if command == "" then
     return
   end
-  local client = runtime.get_client(root)
-  local chat = runtime.chat_for(client.root)
-  local request_id
-  request_id = client:request("bash", { command = command }, function(success, data, err)
-    client.bash_running = nil
-    if not request_id then
-      if not success then
-        notify_error(err or "Unable to start Bash command")
-      end
-      return
-    end
-    if not success then
-      chat:end_tool(request_id, { content = { { type = "text", text = err or "Bash failed" } } }, true)
-    else
-      data = data or {}
-      chat:end_bash(request_id, data, (data.exitCode or 0) ~= 0)
-    end
-  end, 0)
-  if request_id then
-    client.bash_running = request_id
-    chat:start_tool(request_id, "bash", { command = command })
-  end
+  runtime.run_bash(command, root)
 end
 
 return M

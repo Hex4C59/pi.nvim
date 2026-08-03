@@ -18,7 +18,7 @@ local function mode_guard(chat)
     )
     return false
   end
-  if chat.permission_area:active() then
+  if chat:has_active_permission_request() then
     notify_error("Finish the active permission prompt before changing permission mode")
     return false
   end
@@ -34,7 +34,7 @@ local function apply(chat, value)
   if not mode_guard(chat) then
     return false
   end
-  runtime.send_prompt("/permissions " .. mode, nil, chat.root)
+  runtime.send_prompt("/permissions " .. mode, nil, chat:project_root())
   return true
 end
 

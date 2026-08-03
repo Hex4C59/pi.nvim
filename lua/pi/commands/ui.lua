@@ -1,4 +1,3 @@
-local config = require("pi.config")
 local runtime = require("pi.runtime")
 local model_cmds = require("pi.commands.model")
 local permission_cmds = require("pi.commands.permission")
@@ -37,17 +36,18 @@ function M.settings(root)
   local client = runtime.get_client(root)
   local state = client.session or {}
   local chat = runtime.chat_for(client.root)
+  local display_state = chat:display_state()
   local options = {
     { label = "Model", value = state.model and state.model.id or "unknown", action = "model" },
     { label = "Thinking level", value = state.thinkingLevel or "off", action = "thinking" },
-    { label = "Permission mode", value = chat:permission_mode_label(), action = "permissions" },
+    { label = "Permission mode", value = display_state.permission_mode_label, action = "permissions" },
     { label = "Auto-compact", value = state.autoCompactionEnabled and "on" or "off", action = "compact" },
     { label = "Steering mode", value = state.steeringMode or "one-at-a-time", action = "steering" },
     { label = "Follow-up mode", value = state.followUpMode or "one-at-a-time", action = "followup" },
-    { label = "Workspace layout", value = chat.position or config.get().chat.position, action = "layout" },
+    { label = "Workspace layout", value = display_state.layout, action = "layout" },
     {
       label = "Transcript detail",
-      value = chat.process_expanded and "detailed" or "compact",
+      value = display_state.process_expanded and "detailed" or "compact",
       action = "details",
     },
   }

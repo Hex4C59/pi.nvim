@@ -8,9 +8,22 @@ local dialog = require("pi.ui.dialog")
 local M = {}
 local clients = {}
 local chats = {}
+local projects = {}
 
 local function client_is_current(client)
   return client and clients[client.root] == client
+end
+
+local function project_for_client(client)
+  local project = client and projects[client.root] or nil
+  if project and project.client == client then
+    return project
+  end
+  return nil
+end
+
+local function project_is_current(project)
+  return project and projects[project.client.root] == project and client_is_current(project.client)
 end
 
 local function notify_error(err)
@@ -46,13 +59,17 @@ local function chat_for(root)
 end
 
 local function refresh_commands(client)
+  local project = project_for_client(client)
+  if not project then
+    return
+  end
   client:request("get_commands", {}, function(success, data)
-    if client_is_current(client) and success and data then
+    if project_is_current(project) and success and data then
       local commands = data.commands or {}
-      client.commands_by_name = {}
+      project.commands_by_name = {}
       for _, command in ipairs(commands) do
         if command.name then
-          client.commands_by_name[command.name] = command
+          project.commands_by_name[command.name] = command
         end
       end
       chat_for(client.root):set_commands(commands)
@@ -60,14 +77,14 @@ local function refresh_commands(client)
   end)
 end
 
-local function pending_display(client, message, display, images)
+local function pending_display(project, message, display, images)
   if display ~= nil then
     return { text = display, images = images }
   end
 
   local command_name = message:match("^/([^%s]+)")
   if command_name then
-    local command = client.commands_by_name and client.commands_by_name[command_name] or nil
+    local command = project.commands_by_name[command_name]
     if not command or command.source == "extension" then
       return nil
     end
@@ -88,13 +105,14 @@ local function remove_pending_display(queue, entry)
 end
 
 local function refresh_stats(client)
-  if client.stats_pending then
+  local project = project_for_client(client)
+  if not project or project.stats_pending then
     return
   end
-  client.stats_pending = true
+  project.stats_pending = true
   client:request("get_session_stats", {}, function(success, data)
-    client.stats_pending = false
-    if client_is_current(client) and success and data then
+    project.stats_pending = false
+    if project_is_current(project) and success and data then
       chat_for(client.root):update_stats(data)
     end
   end)
@@ -111,9 +129,7 @@ end
 
 local function reload_session(client)
   local chat = chat_for(client.root)
-  chat.transcript.history_loaded = false
-  chat:clear()
-  chat:update_stats({ tokens = {}, contextUsage = {}, cost = 0 })
+  chat:reset_session_projection()
   refresh_state(client)
   refresh_stats(client)
   client:request("get_messages", {}, function(success, data)
@@ -124,11 +140,18 @@ local function reload_session(client)
 end
 
 local function attach(client)
-  local display_queue = {}
-  client.display_queue = display_queue
+  local project = {
+    client = client,
+    display_queue = {},
+    commands_by_name = {},
+    stats_pending = false,
+    direct_bash_request_id = nil,
+    unsubscribe = nil,
+  }
+  projects[client.root] = project
 
-  client.runtime_unsubscribe = client:on_event(function(event)
-    if not client_is_current(client) then
+  project.unsubscribe = client:on_event(function(event)
+    if not project_is_current(project) then
       return
     end
     local chat = chat_for(client.root)
@@ -148,7 +171,7 @@ local function attach(client)
       chat:render_history(event.messages)
     elseif event.type == "message_start" and event.message then
       if event.message.role == "user" then
-        local pending = table.remove(display_queue, 1)
+        local pending = table.remove(project.display_queue, 1)
         local display = pending and pending.text or text_content(event.message.content)
         local content = event.message.content
         if (type(content) ~= "table" or #content == 0) and pending and pending.images then
@@ -227,6 +250,7 @@ local function attach(client)
       chat:set_activity("error")
       notify_error(event.error)
     elseif event.type == "client_exit" then
+      project.direct_bash_request_id = nil
       dialog.discard(client)
       chat:reset_permission_mode()
       chat:clear_widgets()
@@ -270,6 +294,7 @@ end
 
 local function send_prompt(message, display, root, behavior, images)
   local client = get_client(root)
+  local project = project_for_client(client)
   local chat = chat_for(client.root)
   if type(images) == "table" and #images > 0 then
     local valid, validation_err = chat:validate_image_attachments(images)
@@ -278,9 +303,9 @@ local function send_prompt(message, display, root, behavior, images)
       return nil
     end
   end
-  local display_entry = pending_display(client, message, display, images)
+  local display_entry = pending_display(project, message, display, images)
   if display_entry then
-    table.insert(client.display_queue, display_entry)
+    table.insert(project.display_queue, display_entry)
   end
   local payload = { message = message }
   if type(images) == "table" and #images > 0 then
@@ -292,11 +317,11 @@ local function send_prompt(message, display, root, behavior, images)
     payload.streamingBehavior = "steer"
   end
   client:request("prompt", payload, function(success, _, err)
-    if not client_is_current(client) then
+    if not project_is_current(project) then
       return
     end
     if not success then
-      remove_pending_display(client.display_queue, display_entry)
+      remove_pending_display(project.display_queue, display_entry)
       if type(images) == "table" and #images > 0 then
         local _, restore_err = chat:restore_image_attachments(images)
         if restore_err then
@@ -312,15 +337,58 @@ local function send_prompt(message, display, root, behavior, images)
   chat:open(false)
 end
 
+local function abort(root)
+  local client = get_client(root)
+  local project = project_for_client(client)
+  local command = project and project.direct_bash_request_id and "abort_bash" or "abort"
+  client:request(command, {}, function(success, _, err)
+    if not success and project_is_current(project) then
+      notify_error(err)
+    end
+  end)
+end
+
+local function run_bash(command, root)
+  local client = get_client(root)
+  local project = project_for_client(client)
+  local chat = chat_for(client.root)
+  local request_id
+  request_id = client:request("bash", { command = command }, function(success, data, err)
+    if request_id and project.direct_bash_request_id == request_id then
+      project.direct_bash_request_id = nil
+    end
+    if not request_id then
+      if not success and project_is_current(project) then
+        notify_error(err or "Unable to start Bash command")
+      end
+      return
+    end
+    if not project_is_current(project) then
+      return
+    end
+    if not success then
+      chat:end_tool(request_id, { content = { { type = "text", text = err or "Bash failed" } } }, true)
+    else
+      data = data or {}
+      chat:end_bash(request_id, data, (data.exitCode or 0) ~= 0)
+    end
+  end, 0)
+  if request_id and project_is_current(project) then
+    project.direct_bash_request_id = request_id
+    chat:start_tool(request_id, "bash", { command = command })
+  end
+end
+
 local function stop(root)
   local client = clients[root]
+  local project = projects[root]
+  projects[root] = nil
   if client then
     clients[root] = nil
-    if type(client.runtime_unsubscribe) == "function" then
-      client.runtime_unsubscribe()
-      client.runtime_unsubscribe = nil
+    if project and project.client == client and type(project.unsubscribe) == "function" then
+      project.unsubscribe()
+      project.unsubscribe = nil
     end
-    client.display_queue = nil
     dialog.discard(client)
     client:stop()
   end
@@ -337,6 +405,9 @@ local function stop_all()
     roots[root] = true
   end
   for root in pairs(chats) do
+    roots[root] = true
+  end
+  for root in pairs(projects) do
     roots[root] = true
   end
   local ordered = vim.tbl_keys(roots)
@@ -359,6 +430,8 @@ M.reload_session = reload_session
 M.get_client = get_client
 M.with_prompt = with_prompt
 M.send_prompt = send_prompt
+M.abort = abort
+M.run_bash = run_bash
 M.stop = stop
 M.stop_all = stop_all
 

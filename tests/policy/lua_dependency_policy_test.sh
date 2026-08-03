@@ -35,7 +35,7 @@ expect_failure() {
 
 node "$checker" --root "$repo_root"
 
-for fixture in forbidden cycle leak comments; do
+for fixture in forbidden cycle leak client-state comments; do
   mkdir -p "$temporary_root/$fixture/lua/pi/commands" "$temporary_root/$fixture/lua/pi/ui"
 done
 
@@ -49,6 +49,14 @@ expect_failure cycle "$temporary_root/cycle" 'Lua require cycle: pi.a -> pi.b ->
 
 printf '%s\n' 'local chat = {}' 'return chat.transcript' > "$temporary_root/leak/lua/pi/commands/demo.lua"
 expect_failure leak "$temporary_root/leak" 'Chat facade leak: chat.transcript'
+
+printf '%s\n' 'local client = {}' 'client.display_queue = {}' 'return client' \
+  > "$temporary_root/client-state/lua/pi/runtime.lua"
+expect_failure client-state "$temporary_root/client-state" 'Runtime-owned state leaked onto Client: client.display_queue'
+printf '%s\n' 'local client = {}' 'client["display_queue"] = {}' 'return client' \
+  > "$temporary_root/client-state/lua/pi/runtime.lua"
+expect_failure client-state-bracket "$temporary_root/client-state" \
+  'Runtime-owned state leaked onto Client: client.display_queue'
 
 printf '%s\n' \
   '-- require("pi.ui.chat")' \

@@ -1,7 +1,7 @@
 # Modular Architecture Improvement Plan
 
-> Status: In progress. Task 01 was completed on 2026-08-04; Tasks 02 through 08
-> remain proposed.
+> Status: In progress. Tasks 01 and 02 were completed on 2026-08-04; Tasks 03
+> through 08 remain proposed.
 >
 > Scope: internal Lua frontend boundaries, bundled Extension policy modules,
 > test ownership, dependency enforcement, and durable architecture
@@ -36,9 +36,9 @@ This plan does not define excellence by a maximum line count. File size is a
 review signal only. Cohesion, dependency direction, state ownership, and focused
 verification are the acceptance criteria.
 
-## 2. Current Baseline
+## 2. Initial Baseline
 
-The current top-level ownership is sound:
+At the start of the plan, the top-level ownership was sound:
 
 ```text
 plugin/       Neovim command and autocmd registration
@@ -62,7 +62,7 @@ boundaries:
 | `tests/lua/ui/render_spec.lua` | 528 lines | Focused renderer modules are still verified through one broad facade spec |
 | `docs/testing-improvements/` | 21 task files; first 4 completed | Temporary planning material outweighs durable test guidance |
 
-Known facade leaks include:
+At the start of the plan, known facade leaks included:
 
 - `lua/pi/runtime.lua` mutating `chat.transcript.history_loaded`;
 - `lua/pi/commands/permission.lua` reading `chat.permission_area`;
@@ -247,7 +247,7 @@ transformation.
 | Task | Status | Purpose | Depends on |
 | --- | --- | --- | --- |
 | 01 | Completed | Record contracts and strengthen architecture policy coverage | none |
-| 02 | Proposed | Seal Chat and Runtime ownership boundaries | 01 |
+| 02 | Completed | Seal Chat and Runtime ownership boundaries | 01 |
 | 03 | Proposed | Decouple and split the Chat shell | 02 |
 | 04 | Proposed | Organize the image subsystem | 02 |
 | 05 | Proposed | Organize Transcript projection, retention, history, and view | 02, 04 |
@@ -359,6 +359,29 @@ component internals.
 - Client fields are declared and owned by Client; Runtime orchestration state is
   declared and owned by Runtime.
 - No visible behavior or RPC payload changes.
+
+### Implementation Record
+
+Completed on 2026-08-04 against Task 01 commit `e6ab4fc`.
+
+- Added Chat facade methods for immutable project identity, active permission
+  state, session projection reset, current layout, process detail, and a
+  detached display-state snapshot.
+- Migrated Runtime and command callers away from Chat component fields. The
+  architecture policy now has no Runtime/command Chat leak exceptions.
+- Added an internal Runtime per-project record for display correlation,
+  discovered commands, stats request de-duplication, direct Bash identity, and
+  Client event unsubscription. Runtime no longer attaches these values to
+  Client instances.
+- Moved direct Bash/abort orchestration behind Runtime APIs and guarded callbacks
+  by both project-record and Client identity, so an old Client cannot update a
+  replacement Chat.
+- Added `tests/lua/ui/chat_facade_spec.lua` and `tests/lua/runtime_spec.lua` for
+  every Task 02 facade and lifecycle requirement. Expanded the architecture
+  policy with failing dot- and bracket-field Client-state fixtures.
+- `make test`, `make format-check`, `make smoke`, and
+  `make ci-policy-check` passed after implementation. The smoke tests used the
+  installed Pi 0.83.0 process without a model call.
 
 ## 9. Task 03: Decouple And Split The Chat Shell
 
