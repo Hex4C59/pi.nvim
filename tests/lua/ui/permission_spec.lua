@@ -1,5 +1,6 @@
 local config = require("pi.config")
 local Chat = require("pi.ui.chat").Chat
+local PermissionPanel = require("pi.ui.permission").PermissionPanel
 local permission_mode = require("pi.permission_mode")
 local runtime = require("pi.runtime")
 
@@ -35,6 +36,40 @@ local function input_until(keys, predicate, message)
   vim.api.nvim_feedkeys(vim.keycode(keys), "tx", false)
   assert(vim.wait(500, predicate, 5), message)
 end
+
+local direct_actions = { layout = 0, render = 0, close_command_menu = 0 }
+local direct_panel = PermissionPanel.new({
+  root = vim.fs.joinpath(vim.fn.getcwd(), "direct-permission-project"),
+  main_window = function()
+    return nil
+  end,
+  transcript_buffer = function()
+    return nil
+  end,
+  input_window = function()
+    return nil
+  end,
+  actions = {
+    layout = function()
+      direct_actions.layout = direct_actions.layout + 1
+    end,
+    render = function()
+      direct_actions.render = direct_actions.render + 1
+    end,
+    close_command_menu = function()
+      direct_actions.close_command_menu = direct_actions.close_command_menu + 1
+    end,
+  },
+})
+local direct_decision
+direct_panel:show({ id = "direct", method = "confirm", title = "Confirm", message = "fixture" }, function(value)
+  direct_decision = value
+end)
+assert(direct_panel:active(), "PermissionPanel could not be constructed without Chat")
+assert(direct_actions.close_command_menu == 1, "PermissionPanel did not use its injected close action")
+direct_panel:destroy()
+direct_panel:destroy()
+assert(direct_decision == false, "independent PermissionPanel teardown did not fail closed")
 
 config.setup({
   chat = {

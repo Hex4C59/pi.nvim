@@ -9,6 +9,37 @@ local M = {}
 local clients = {}
 local chats = {}
 local projects = {}
+local ui_actions = {}
+
+local function invoke_ui_action(name, ...)
+  local callback = ui_actions[name]
+  if callback then
+    return callback(...)
+  end
+end
+
+local function chat_actions(root)
+  return {
+    submit = function(prompt, behavior, images)
+      return invoke_ui_action("submit", prompt, root, behavior, images)
+    end,
+    abort = function()
+      return invoke_ui_action("abort", root)
+    end,
+    select_model = function()
+      return invoke_ui_action("select_model", root)
+    end,
+    cycle_model = function()
+      return invoke_ui_action("cycle_model", root)
+    end,
+    cycle_permission_mode = function()
+      return invoke_ui_action("cycle_permission_mode", root)
+    end,
+    cycle_thinking_level = function()
+      return invoke_ui_action("cycle_thinking_level", root)
+    end,
+  }
+end
 
 local function client_is_current(client)
   return client and clients[client.root] == client
@@ -53,7 +84,7 @@ end
 
 local function chat_for(root)
   if not chats[root] then
-    chats[root] = Chat.new(root)
+    chats[root] = Chat.new(root, chat_actions(root))
   end
   return chats[root]
 end
@@ -417,6 +448,10 @@ local function stop_all()
   end
 end
 
+local function set_ui_actions(actions)
+  ui_actions = actions or {}
+end
+
 M.clients = clients
 M.chats = chats
 M.notify_error = notify_error
@@ -434,5 +469,6 @@ M.abort = abort
 M.run_bash = run_bash
 M.stop = stop
 M.stop_all = stop_all
+M.set_ui_actions = set_ui_actions
 
 return M

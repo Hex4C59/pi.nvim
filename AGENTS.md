@@ -422,7 +422,9 @@ lua/pi/message.lua            UI-independent Pi content-block text projection
 lua/pi/format.lua             Shared compact display formatting
 lua/pi/commands/              Native command adapters and selectors
 lua/pi/commands/catalog.lua   Native slash-command metadata and merging
-lua/pi/ui/chat.lua            Chat facade, top-level window, component layout
+lua/pi/ui/chat.lua            Chat facade, composition, event delegation
+lua/pi/ui/chat/registry.lua   Global UI autocmds, instances, welcome animation
+lua/pi/ui/chat/shell.lua      Top-level window lifecycle and responsive layout
 lua/pi/ui/transcript.lua      Bounded transcript display model
 lua/pi/ui/transcript_view.lua Transcript buffer, render cache, ranges, images
 lua/pi/ui/image_preview.lua   Temporary image preview buffer/window lifecycle

@@ -198,10 +198,12 @@ local function render_todo(lines, width)
   return rendered, marks
 end
 
-function WidgetArea.new(chat, deps)
+function WidgetArea.new(deps)
   return setmetatable({
-    chat = chat,
+    root = deps.root,
     namespace = deps.namespace,
+    main_window = deps.main_window,
+    actions = deps.actions,
     widgets = {},
     slots = {
       aboveEditor = { placement = "aboveEditor", buf = nil, win = nil },
@@ -215,13 +217,13 @@ function WidgetArea:_ensure_buffer(slot)
     return slot.buf
   end
   slot.buf = vim.api.nvim_create_buf(false, true)
-  local name = ("Pi Widgets %s · %s"):format(slot.placement, vim.fs.basename(self.chat.root))
+  local name = ("Pi Widgets %s · %s"):format(slot.placement, vim.fs.basename(self.root))
   if not pcall(vim.api.nvim_buf_set_name, slot.buf, name) then
-    vim.api.nvim_buf_set_name(slot.buf, name .. " · " .. vim.fn.sha256(self.chat.root):sub(1, 6))
+    vim.api.nvim_buf_set_name(slot.buf, name .. " · " .. vim.fn.sha256(self.root):sub(1, 6))
   end
   vim.b[slot.buf].pi_kind = "widget"
   vim.b[slot.buf].pi_widget_placement = slot.placement
-  vim.b[slot.buf].pi_root = self.chat.root
+  vim.b[slot.buf].pi_root = self.root
   vim.bo[slot.buf].buftype = "nofile"
   vim.bo[slot.buf].bufhidden = "hide"
   vim.bo[slot.buf].swapfile = false
@@ -238,12 +240,13 @@ function WidgetArea:_ensure_window(slot)
   if slot.win and vim.api.nvim_win_is_valid(slot.win) then
     return slot.win
   end
-  if not self.chat.win or not vim.api.nvim_win_is_valid(self.chat.win) then
+  local main_win = self.main_window()
+  if not main_win or not vim.api.nvim_win_is_valid(main_win) then
     return nil
   end
   slot.win = vim.api.nvim_open_win(self:_ensure_buffer(slot), false, {
     relative = "win",
-    win = self.chat.win,
+    win = main_win,
     row = 0,
     col = 0,
     width = 1,
@@ -291,9 +294,9 @@ function WidgetArea:set(key, lines, placement)
         clear_buffer(self.slots[previous.placement], self.namespace)
       end
     end
-    self.chat:_layout()
+    self.actions.layout()
     if TRANSCRIPT_WIDGETS[key] then
-      self.chat:_render_transcript()
+      self.actions.render()
     end
     return true
   end
@@ -321,9 +324,9 @@ function WidgetArea:set(key, lines, placement)
       placement = placement == "belowEditor" and "belowEditor" or "aboveEditor",
     }
   end
-  self.chat:_layout()
+  self.actions.layout()
   if TRANSCRIPT_WIDGETS[key] then
-    self.chat:_render_transcript()
+    self.actions.render()
   end
   return true
 end
@@ -437,7 +440,7 @@ function WidgetArea:_render(slot, width, height, row)
   end
   vim.api.nvim_win_set_config(win, {
     relative = "win",
-    win = self.chat.win,
+    win = self.main_window(),
     row = math.max(0, row),
     col = 0,
     width = math.max(1, width),
@@ -491,9 +494,9 @@ function WidgetArea:clear()
   for _, slot in pairs(self.slots) do
     clear_buffer(slot, self.namespace)
   end
-  self.chat:_layout()
+  self.actions.layout()
   if had_transcript_widget then
-    self.chat:_render_transcript()
+    self.actions.render()
   end
 end
 

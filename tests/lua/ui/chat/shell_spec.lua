@@ -86,5 +86,5 @@ assert(
   "bottom split height was not restored after confirmation"
 )
 
-chat:close()
-print("layout_spec: ok")
+chat:destroy()
+print("chat_shell_spec: ok")

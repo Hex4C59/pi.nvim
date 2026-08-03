@@ -108,6 +108,15 @@ function M.submit(text, root, behavior, images)
   end
 end
 
+runtime.set_ui_actions({
+  submit = M.submit,
+  abort = M.abort,
+  select_model = M.select_model,
+  cycle_model = M.cycle_model,
+  cycle_permission_mode = M.cycle_permission_mode,
+  cycle_thinking_level = M.cycle_thinking_level,
+})
+
 function M.track_buffer(bufnr)
   bufnr = bufnr or 0
   if not vim.api.nvim_buf_is_valid(bufnr) or vim.bo[bufnr].buftype ~= "" then

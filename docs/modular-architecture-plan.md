@@ -1,7 +1,7 @@
 # Modular Architecture Improvement Plan
 
-> Status: In progress. Tasks 01 and 02 were completed on 2026-08-04; Tasks 03
-> through 08 remain proposed.
+> Status: In progress. Tasks 01 through 03 were completed on 2026-08-04; Tasks
+> 04 through 08 remain proposed.
 >
 > Scope: internal Lua frontend boundaries, bundled Extension policy modules,
 > test ownership, dependency enforcement, and durable architecture
@@ -376,7 +376,7 @@ Completed on 2026-08-04 against Task 01 commit `e6ab4fc`.
 - Moved direct Bash/abort orchestration behind Runtime APIs and guarded callbacks
   by both project-record and Client identity, so an old Client cannot update a
   replacement Chat.
-- Added `tests/lua/ui/chat_facade_spec.lua` and `tests/lua/runtime_spec.lua` for
+- Added `tests/lua/ui/chat/facade_spec.lua` and `tests/lua/runtime_spec.lua` for
   every Task 02 facade and lifecycle requirement. Expanded the architecture
   policy with failing dot- and bracket-field Client-state fixtures.
 - `make test`, `make format-check`, `make smoke`, and
@@ -436,6 +436,31 @@ algorithm in the facade spec.
 - No child component reads a sibling component field.
 - `pi.ui.chat` exposes the same external behavior and owns composition only.
 - Global timers and autocmds have one owner and deterministic teardown.
+
+### Implementation Record
+
+Completed on 2026-08-04 against Task 02 commit `02668b3`.
+
+- Kept `pi.ui.chat` as the stable facade and composition root. Extracted the
+  process-wide instance registry, UI autocmds, namespace, colorscheme refresh,
+  and shared welcome animation into `pi.ui.chat.registry`.
+- Extracted main-window creation, position changes, styling, responsive layout,
+  and close/reset behavior into `pi.ui.chat.shell`. Shell is the sole mutable
+  owner of the top-level window and layout fields.
+- Replaced full-Chat constructor dependencies in InputArea, CommandMenu,
+  PermissionPanel, and WidgetArea with explicit immutable values, providers,
+  and named action tables. TranscriptView frontend actions are injected by
+  Runtime through Chat, so UI modules no longer load the top-level `pi` facade.
+- Removed every reviewed Lua require-cycle and sibling component-field
+  exception. The architecture checker now has zero exception budgets and a
+  failing policy fixture for UI-to-`pi` action dispatch.
+- Split Chat coverage into facade, shell, activity, interaction, lifecycle, and
+  registry specs. Added standalone InputArea and CommandMenu specs, plus
+  standalone construction and idempotent teardown coverage for PermissionPanel
+  and WidgetArea.
+- `make test`, `make format-check`, `make smoke`, and `make ci-policy-check`
+  passed after implementation. Smoke verification used the installed Pi 0.83.0
+  process without a model call.
 
 ## 10. Task 04: Organize The Image Subsystem
 

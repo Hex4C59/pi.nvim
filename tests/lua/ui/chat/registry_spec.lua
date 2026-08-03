@@ -1,0 +1,56 @@
+local Registry = require("pi.ui.chat.registry").Registry
+
+local setup_count = 0
+local refresh_count = 0
+local layout_count = 0
+local clamp_count = 0
+local current_window = vim.api.nvim_get_current_win()
+local registry = Registry.new({
+  group_name = "PiNvimRegistrySpec",
+  setup_highlights = function()
+    setup_count = setup_count + 1
+  end,
+  refresh_preview_highlights = function()
+    refresh_count = refresh_count + 1
+  end,
+  welcome_palette = function()
+    return { "#ff0000", "#00ff00", "#0000ff", "#ffffff" }, "#000000"
+  end,
+})
+
+registry:prepare()
+assert(setup_count == 1, "registry preparation did not initialize highlights")
+registry:register("registry-project", {
+  is_open = function()
+    return true
+  end,
+  layout = function()
+    layout_count = layout_count + 1
+  end,
+  window = function()
+    return current_window
+  end,
+  clamp = function()
+    clamp_count = clamp_count + 1
+  end,
+  clear_images = function() end,
+})
+
+vim.api.nvim_exec_autocmds("ColorScheme", {})
+assert(setup_count == 2 and refresh_count == 1, "registry did not own colorscheme refresh")
+vim.api.nvim_exec_autocmds("VimResized", {})
+assert(layout_count == 1, "registry did not route resize to the open Chat")
+vim.api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(current_window) })
+assert(clamp_count == 1, "registry did not clamp the scrolled Chat window")
+
+registry:sync_welcome_animation()
+assert(registry.welcome_animation_timer ~= nil, "registry did not own the shared welcome timer")
+registry:unregister("registry-project")
+assert(registry.welcome_animation_timer == nil, "registry retained the welcome timer without an open Chat")
+
+local group = registry.group
+registry:destroy()
+registry:destroy()
+assert(not pcall(vim.api.nvim_get_autocmds, { group = group }), "registry autocmd group survived destroy")
+
+print("chat_registry_spec: ok")

@@ -33,8 +33,8 @@ local function isolate_input_completion(buf)
   end
 end
 
-local function dispatch_left_mouse(chat)
-  if not chat:_handle_left_mouse() then
+local function dispatch_left_mouse(action)
+  if not action() then
     vim.api.nvim_feedkeys(vim.keycode("<LeftMouse>"), "n", false)
   end
 end
@@ -100,8 +100,8 @@ local permission_highlights = {
   plan = "PiStatusPermissionPlan",
 }
 
-local function permission_highlight(chat)
-  return permission_highlights[chat:permission_mode()] or "PiStatusPermission"
+local function permission_highlight(state)
+  return permission_highlights[state.permission_mode] or "PiStatusPermission"
 end
 
 local InputArea = {}
@@ -120,11 +120,14 @@ local function input_border(border_highlight, corner_highlight)
   }
 end
 
-function InputArea.new(chat, deps)
+function InputArea.new(deps)
   local self = setmetatable({
-    chat = chat,
+    root = deps.root,
     namespace = deps.namespace,
     ui_group = deps.ui_group,
+    state_provider = deps.state,
+    main_window = deps.main_window,
+    actions = deps.actions,
     input_line_count = nil,
     input_buf = nil,
     input_win = nil,
@@ -135,13 +138,13 @@ function InputArea.new(chat, deps)
 end
 
 function InputArea:frame(width)
-  local chat = self.chat
+  local state = self.state_provider()
   width = math.max(1, math.floor(width or 1))
-  local active = chat:_is_active()
-  local base_highlight = chat.activity == "error" and "PiInputBorderError"
+  local active = state.active
+  local base_highlight = state.activity == "error" and "PiInputBorderError"
     or active and "PiInputBorderMuted"
     or "PiInputBorder"
-  local corner_highlight = chat.activity == "error" and "PiInputCornerError"
+  local corner_highlight = state.activity == "error" and "PiInputCornerError"
     or active and "PiInputCornerMuted"
     or "PiInputCorner"
   local cell_highlights = {}
@@ -149,7 +152,7 @@ function InputArea:frame(width)
   if active and width > 1 then
     local travel = math.max(1, math.floor((width - 1) / 2))
     local period = travel * 2
-    local step = (chat.animation_frame or 0) * 2 % period
+    local step = (state.animation_frame or 0) * 2 % period
     local offset = step > travel and period - step or step
     local left = 1 + offset
     local right = width - offset
@@ -174,7 +177,7 @@ function InputArea:frame(width)
   end
 
   local top = line_chunks(1, width, "─")
-  local label = active and (" " .. chat:_activity_text() .. " ") or chat.activity == "error" and " Error " or nil
+  local label = active and (" " .. state.activity_text .. " ") or state.activity == "error" and " Error " or nil
   if not label then
     return top, line_chunks(1, width, "─"), base_highlight, corner_highlight
   end
@@ -183,7 +186,7 @@ function InputArea:frame(width)
   local label_width = vim.api.nvim_strwidth(label)
   local left_width = math.floor((width - label_width) / 2)
   local bottom = line_chunks(1, left_width, "─")
-  append_chunk(bottom, label, chat.activity == "error" and "PiInputBorderError" or "PiInputActivity")
+  append_chunk(bottom, label, state.activity == "error" and "PiInputBorderError" or "PiInputActivity")
   for index = left_width + label_width + 1, width do
     append_chunk(bottom, "─", cell_highlights[index])
   end
@@ -191,11 +194,10 @@ function InputArea:frame(width)
 end
 
 function InputArea:window_config(row, width, height)
-  local chat = self.chat
   local top, bottom, border_highlight, corner_highlight = self:frame(width)
   return {
     relative = "win",
-    win = chat.win,
+    win = self.main_window(),
     row = row,
     col = 0,
     width = width,
@@ -226,7 +228,6 @@ function InputArea:update_frame()
 end
 
 function InputArea:update_chrome()
-  local chat = self.chat
   if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then
     return
   end
@@ -244,14 +245,14 @@ function InputArea:update_chrome()
     "WinSeparator:PiPanelBorder",
     "FloatBorder:PiInputBorder",
   }, ",")
-  chat:_layout()
+  self.actions.layout()
 end
 
 function InputArea:status_text(width)
-  local chat = self.chat
-  local context_usage = chat.stats.contextUsage or {}
-  local steering = #(chat.queue.steering or {})
-  local follow_up = #(chat.queue.followUp or {})
+  local state = self.state_provider()
+  local context_usage = state.stats.contextUsage or {}
+  local steering = #(state.queue.steering or {})
+  local follow_up = #(state.queue.followUp or {})
   local right = "context " .. (format_percent(context_usage.percent) or "--")
   if steering > 0 or follow_up > 0 then
     local queued = {}
@@ -265,9 +266,9 @@ function InputArea:status_text(width)
   end
 
   local content_width = math.max(1, width - vim.api.nvim_strwidth(status_padding) * 2)
-  local permission = chat:permission_mode_label()
+  local permission = state.permission_mode_label
   local compact = content_width < 60
-  local left = compact and permission or (chat.model .. " · " .. chat.thinking)
+  local left = compact and permission or (state.model .. " · " .. state.thinking)
   if not compact then
     right = permission .. " · " .. right
   end
@@ -276,7 +277,7 @@ function InputArea:status_text(width)
 end
 
 function InputArea:render_status()
-  local chat = self.chat
+  local state = self.state_provider()
   if not self.status_buf or not vim.api.nvim_buf_is_valid(self.status_buf) then
     return
   end
@@ -303,8 +304,8 @@ function InputArea:render_status()
 
   local content_width = math.max(1, width - vim.api.nvim_strwidth(status_padding) * 2)
   local compact = content_width < 60
-  local permission_label = chat:permission_mode_label()
-  local permission_group = permission_highlight(chat)
+  local permission_label = state.permission_mode_label
+  local permission_group = permission_highlight(state)
   if compact then
     local permission_start = lines[1]:find(permission_label, #status_padding + 1, true)
     if permission_start then
@@ -312,9 +313,9 @@ function InputArea:render_status()
     end
   else
     highlight(0, #status_padding, math.min(right_starts[1], #lines[1]), "PiStatusModel")
-    local thinking_start = lines[1]:find(chat.thinking, #status_padding + 1, true)
+    local thinking_start = lines[1]:find(state.thinking, #status_padding + 1, true)
     if thinking_start then
-      highlight(0, thinking_start - 1, thinking_start - 1 + #chat.thinking, "PiStatusThinking", 130)
+      highlight(0, thinking_start - 1, thinking_start - 1 + #state.thinking, "PiStatusThinking", 130)
     end
     local permission_start = lines[1]:find(permission_label, right_starts[1] + 1, true)
     if permission_start then
@@ -323,10 +324,10 @@ function InputArea:render_status()
   end
 
   local right_highlight = "PiStatusContext"
-  if #(chat.queue.steering or {}) > 0 or #(chat.queue.followUp or {}) > 0 then
+  if #(state.queue.steering or {}) > 0 or #(state.queue.followUp or {}) > 0 then
     right_highlight = "PiStatusWorking"
   else
-    local percent = tonumber((chat.stats.contextUsage or {}).percent)
+    local percent = tonumber((state.stats.contextUsage or {}).percent)
     if percent and percent > 90 then
       right_highlight = "PiStatusError"
     elseif percent and percent > 70 then
@@ -343,7 +344,6 @@ function InputArea:desired_input_height()
 end
 
 function InputArea:resize()
-  local chat = self.chat
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
     return
   end
@@ -352,12 +352,11 @@ function InputArea:resize()
     return
   end
   self.input_line_count = line_count
-  chat:_layout()
+  self.actions.layout()
 end
 
 function InputArea:set_input(text)
-  local chat = self.chat
-  chat:_close_command_menu()
+  self.actions.close_command_menu()
   local buf = self:ensure_input_buffer()
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(text or "", "\n", { plain = true }))
   self:resize()
@@ -370,12 +369,11 @@ function InputArea:set_input(text)
 end
 
 function InputArea:render_attachments()
-  local chat = self.chat
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
     return
   end
   vim.api.nvim_buf_clear_namespace(self.input_buf, attachment_namespace, 0, -1)
-  local count = #(chat.pending_images or {})
+  local count = self.state_provider().pending_image_count
   if count == 0 then
     return
   end
@@ -397,7 +395,6 @@ function InputArea:focus()
 end
 
 function InputArea:ensure_input_buffer()
-  local chat = self.chat
   if self.input_buf and vim.api.nvim_buf_is_valid(self.input_buf) then
     isolate_input_completion(self.input_buf)
     return self.input_buf
@@ -405,7 +402,7 @@ function InputArea:ensure_input_buffer()
 
   self.input_buf = vim.api.nvim_create_buf(false, true)
   local input_buf = self.input_buf
-  name_buffer(input_buf, "prompt", chat.root)
+  name_buffer(input_buf, "prompt", self.root)
   vim.bo[input_buf].buftype = "nofile"
   vim.bo[input_buf].bufhidden = "hide"
   vim.bo[input_buf].swapfile = false
@@ -418,11 +415,11 @@ function InputArea:ensure_input_buffer()
       if event.event == "TextChangedI" then
         vim.schedule(function()
           if self.input_buf and vim.api.nvim_buf_is_valid(self.input_buf) then
-            chat:_update_command_menu()
+            self.actions.update_command_menu()
           end
         end)
       else
-        chat:_close_command_menu()
+        self.actions.close_command_menu()
       end
     end,
   })
@@ -430,22 +427,22 @@ function InputArea:ensure_input_buffer()
     group = self.ui_group,
     buffer = input_buf,
     callback = function()
-      chat:_close_command_menu()
+      self.actions.close_command_menu()
     end,
   })
 
   local function submit(behavior)
     local lines = vim.api.nvim_buf_get_lines(input_buf, 0, -1, false)
     local prompt = vim.trim(table.concat(lines, "\n"))
-    if prompt == "" and #(chat.pending_images or {}) == 0 then
+    if prompt == "" and self.state_provider().pending_image_count == 0 then
       return
     end
-    local images = chat:take_image_attachments()
-    chat:_close_command_menu()
+    local images = self.actions.take_image_attachments()
+    self.actions.close_command_menu()
     vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "" })
     self:resize()
     vim.api.nvim_win_set_cursor(self.input_win, { 1, 0 })
-    require("pi").submit(prompt, chat.root, behavior, images)
+    self.actions.submit(prompt, behavior, images)
   end
 
   local function feed(key)
@@ -455,7 +452,7 @@ function InputArea:ensure_input_buffer()
   local function paste_clipboard()
     local image, err = require("pi.clipboard").read_image()
     if image then
-      local added, attachment_err = chat:add_image_attachment(image)
+      local added, attachment_err = self.actions.add_image_attachment(image)
       if not added and attachment_err then
         vim.notify(attachment_err, vim.log.levels.WARN, { title = "Pi clipboard" })
       end
@@ -476,7 +473,7 @@ function InputArea:ensure_input_buffer()
     submit(nil)
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<CR>", function()
-    if chat:_accept_command_completion() then
+    if self.actions.accept_command_completion() then
       return
     end
     submit(nil)
@@ -486,12 +483,12 @@ function InputArea:ensure_input_buffer()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<C-j>", "<CR>", { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Tab>", function()
-    if chat:_command_menu_visible() then
-      chat:_select_command(1)
+    if self.actions.command_menu_visible() then
+      self.actions.select_command(1)
       return
     end
     local line = vim.api.nvim_get_current_line()
-    if line:match("^%s*/") and chat:_update_command_menu() then
+    if line:match("^%s*/") and self.actions.update_command_menu() then
       return
     end
     feed("<Tab>")
@@ -499,83 +496,83 @@ function InputArea:ensure_input_buffer()
   vim.keymap.set("i", "<C-v>", paste_clipboard, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<C-S-v>", paste_clipboard, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Down>", function()
-    if not chat:_select_command(1) then
+    if not self.actions.select_command(1) then
       feed("<Down>")
     end
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Up>", function()
-    if not chat:_select_command(-1) then
+    if not self.actions.select_command(-1) then
       feed("<Up>")
     end
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<C-n>", function()
-    if not chat:_select_command(1) then
+    if not self.actions.select_command(1) then
       feed("<C-n>")
     end
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("n", "q", function()
-    chat:close()
+    self.actions.close()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Esc>", function()
-    if chat:_command_menu_visible() then
-      chat:_close_command_menu()
+    if self.actions.command_menu_visible() then
+      self.actions.close_command_menu()
       return
     end
-    if chat.activity ~= "idle" and chat.activity ~= "starting" then
-      require("pi").abort(chat.root)
+    local activity = self.state_provider().activity
+    if activity ~= "idle" and activity ~= "starting" then
+      self.actions.abort()
       return
     end
     feed("<Esc>")
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-c>", function()
-    require("pi").abort(chat.root)
+    self.actions.abort()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-l>", function()
-    require("pi").select_model(chat.root)
+    self.actions.select_model()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("n", "<C-p>", function()
-    require("pi").cycle_model(chat.root)
+    self.actions.cycle_model()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<C-p>", function()
-    if chat:_select_command(-1) then
+    if self.actions.select_command(-1) then
       return
     end
-    require("pi").cycle_model(chat.root)
+    self.actions.cycle_model()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<M-p>", function()
-    require("pi").cycle_permission_mode(chat.root)
+    self.actions.cycle_permission_mode()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("n", "<S-Tab>", function()
-    require("pi").cycle_thinking_level(chat.root)
+    self.actions.cycle_thinking_level()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<S-Tab>", function()
-    if chat:_select_command(-1) then
+    if self.actions.select_command(-1) then
       return
     end
-    require("pi").cycle_thinking_level(chat.root)
+    self.actions.cycle_thinking_level()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-o>", function()
-    chat:toggle_tools()
+    self.actions.toggle_tools()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-t>", function()
-    chat:toggle_thinking()
+    self.actions.toggle_thinking()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-x>", function()
-    chat:copy_last_assistant()
+    self.actions.copy_last_assistant()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<LeftMouse>", function()
-    dispatch_left_mouse(chat)
+    dispatch_left_mouse(self.actions.left_mouse)
   end, { buffer = input_buf, silent = true })
   return input_buf
 end
 
 function InputArea:ensure_status_buffer()
-  local chat = self.chat
   if self.status_buf and vim.api.nvim_buf_is_valid(self.status_buf) then
     return self.status_buf
   end
   self.status_buf = vim.api.nvim_create_buf(false, true)
-  name_buffer(self.status_buf, "status", chat.root)
+  name_buffer(self.status_buf, "status", self.root)
   vim.bo[self.status_buf].buftype = "nofile"
   vim.bo[self.status_buf].bufhidden = "hide"
   vim.bo[self.status_buf].swapfile = false

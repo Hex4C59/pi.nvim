@@ -1,5 +1,6 @@
 local config = require("pi.config")
 local Chat = require("pi.ui.chat").Chat
+local WidgetArea = require("pi.ui.widget").WidgetArea
 
 local function has_highlight(buf, name)
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })) do
@@ -9,6 +10,31 @@ local function has_highlight(buf, name)
   end
   return false
 end
+
+local direct_calls = { layout = 0, render = 0 }
+local direct_widget = WidgetArea.new({
+  root = vim.fs.joinpath(vim.fn.getcwd(), "direct-widget-project"),
+  namespace = vim.api.nvim_create_namespace("pi.nvim.widget.direct-spec"),
+  main_window = function()
+    return vim.api.nvim_get_current_win()
+  end,
+  actions = {
+    layout = function()
+      direct_calls.layout = direct_calls.layout + 1
+    end,
+    render = function()
+      direct_calls.render = direct_calls.render + 1
+    end,
+  },
+})
+assert(direct_widget:set("fixture.widget", { "Standalone widget" }, "aboveEditor"), "standalone widget was rejected")
+direct_widget:layout(24, 8, 3, 1, 0)
+local direct_buffer = direct_widget:buffer("aboveEditor")
+assert(direct_buffer and direct_widget:owns_buffer(direct_buffer), "WidgetArea could not own a buffer without Chat")
+assert(direct_calls.layout == 1, "WidgetArea did not use its injected layout action")
+direct_widget:destroy()
+direct_widget:destroy()
+assert(not vim.api.nvim_buf_is_valid(direct_buffer), "independent WidgetArea buffer survived destroy")
 
 config.setup({
   chat = {

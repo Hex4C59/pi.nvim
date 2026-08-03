@@ -60,7 +60,14 @@ pi.submit = function(prompt, prompt_root)
 end
 pi.abort = function() end
 
-local chat = Chat.new(root)
+local chat = Chat.new(root, {
+  submit = function(prompt, behavior, images)
+    return pi.submit(prompt, root, behavior, images)
+  end,
+  abort = function()
+    return pi.abort(root)
+  end,
+})
 chat:open()
 assert(chat:is_open(), "chat windows were not created")
 assert(vim.b.pi_kind == "prompt", "prompt buffer was not focused")
@@ -458,118 +465,6 @@ end
 
 chat:_focus_input()
 
-local frame_before = chat.animation_frame
-chat:set_activity("working")
-local initial_active_title = vim.inspect(vim.api.nvim_win_get_config(chat.input_area:window()).title)
-assert(
-  vim.wait(500, function()
-    return chat.animation_frame ~= frame_before
-  end, 20),
-  "working frame animation did not advance"
-)
-input_config = vim.api.nvim_win_get_config(chat.input_area:window())
-local input_title = styled_text(input_config.title)
-local input_footer = styled_text(input_config.footer)
-assert(vim.inspect(input_config.title) ~= initial_active_title, "working highlight did not move across the frame")
-assert(has_highlight(input_config.title, "PiInputBorderPulse"), "working frame is missing its moving highlight")
-assert(input_footer:find("Thinking ·", 1, true), "working state is missing from the input frame")
-assert(not input_title:find("Thinking", 1, true), "activity label must appear only on the bottom border")
-assert(vim.api.nvim_strwidth(input_title) == input_config.width, "animated top border changed width")
-assert(vim.api.nvim_strwidth(input_footer) == input_config.width, "animated bottom border changed width")
-status = table.concat(vim.api.nvim_buf_get_lines(chat.input_area:status_buffer(), 0, -1, false), "\n")
-assert(not status:find("working", 1, true), "working state was duplicated in the footer")
-assert(not status:find("Thinking", 1, true), "activity label was duplicated in the footer")
-
-chat:start_assistant({ role = "assistant", content = {} })
-chat:update_assistant({ role = "assistant", content = {} }, { type = "thinking_start", contentIndex = 0 })
-chat:update_assistant({
-  role = "assistant",
-  content = { { type = "thinking", thinking = "**Assessing cohesion of Lua modules**" } },
-}, {
-  type = "thinking_delta",
-  contentIndex = 0,
-  delta = "**Assessing cohesion of Lua modules**",
-})
-input_config = vim.api.nvim_win_get_config(chat.input_area:window())
-input_footer = styled_text(input_config.footer)
-assert(
-  input_footer:find("Assessing cohesion of Lua modules", 1, true),
-  "reasoning header did not replace the generic activity label"
-)
-assert(not input_footer:find("Thinking ·", 1, true), "reasoning header was appended to the generic activity label")
-
-chat:update_assistant({
-  role = "assistant",
-  content = { { type = "thinking", thinking = "**Assessing cohesion of Lua modules**\n\n**Planning test" } },
-}, { type = "thinking_delta", contentIndex = 0, delta = "\n\n" })
-chat:update_assistant({
-  role = "assistant",
-  content = { { type = "thinking", thinking = "**Assessing cohesion of Lua modules**\n\n**Planning test" } },
-}, { type = "thinking_delta", contentIndex = 0, delta = "**Planning test" })
-input_footer = styled_text(vim.api.nvim_win_get_config(chat.input_area:window()).footer)
-assert(
-  input_footer:find("Assessing cohesion of Lua modules", 1, true),
-  "partial next header replaced the current reasoning stage too early"
-)
-chat:update_assistant({
-  role = "assistant",
-  content = {
-    {
-      type = "thinking",
-      thinking = "**Assessing cohesion of Lua modules**\n\n**Planning test and format checks**",
-    },
-  },
-}, { type = "thinking_delta", contentIndex = 0, delta = " and format checks**" })
-input_footer = styled_text(vim.api.nvim_win_get_config(chat.input_area:window()).footer)
-assert(input_footer:find("Planning test and format checks", 1, true), "new reasoning stage did not replace the old one")
-assert(not input_footer:find("Assessing cohesion", 1, true), "old reasoning stage accumulated in the input frame")
-chat:_render_transcript()
-transcript = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
-assert(not transcript:find("Assessing cohesion", 1, true), "live reasoning header leaked into the transcript")
-assert(
-  not transcript:find("Planning test and format checks", 1, true),
-  "live reasoning stage leaked into the transcript"
-)
-
-local live_message = {
-  role = "assistant",
-  content = {
-    {
-      type = "thinking",
-      thinking = "**Assessing cohesion of Lua modules**\n\n**Planning test and format checks**",
-    },
-    { type = "text", text = "Live public update" },
-  },
-}
-chat:update_assistant(live_message, { type = "text_delta", contentIndex = 1, delta = "Live public update" })
-input_footer = styled_text(vim.api.nvim_win_get_config(chat.input_area:window()).footer)
-assert(not input_footer:find("Planning test", 1, true), "reasoning header remained after public output started")
-chat:end_assistant(vim.tbl_extend("force", {}, live_message, { stopReason = "stop" }))
-chat:set_activity("idle")
-assert(chat.animation_timer == nil, "working animation did not stop")
-input_config = vim.api.nvim_win_get_config(chat.input_area:window())
-assert(not styled_text(input_config.footer):find("Thinking", 1, true), "idle frame retained the activity label")
-assert_input_border(input_config, "PiInputBorder", "PiInputCorner", "idle frame did not restore cyan")
-status = table.concat(vim.api.nvim_buf_get_lines(chat.input_area:status_buffer(), 0, -1, false), "\n")
-assert(not status:find("idle", 1, true), "idle state should disappear from the footer")
-
-chat:set_activity("error")
-input_config = vim.api.nvim_win_get_config(chat.input_area:window())
-assert(styled_text(input_config.footer):find("Error", 1, true), "error label is missing from the input frame")
-assert_input_border(
-  input_config,
-  "PiInputBorderError",
-  "PiInputCornerError",
-  "error frame did not switch to its semantic color"
-)
-assert(chat.animation_timer == nil, "error state must not keep the frame animation alive")
-chat:set_activity("idle")
-
-chat:set_queue({ steering = { "one" }, followUp = { "two" } })
-status = table.concat(vim.api.nvim_buf_get_lines(chat.input_area:status_buffer(), 0, -1, false), "\n")
-assert(status:find("steer 1", 1, true), "steering queue is missing")
-assert(status:find("next 1", 1, true), "follow-up queue is missing")
-
 assert(vim.api.nvim_win_get_height(chat.input_area:window()) == 3, "empty prompt should retain vertical padding")
 vim.api.nvim_buf_set_lines(0, 0, -1, false, { "first line", "second line" })
 chat.input_area:resize()
@@ -586,16 +481,5 @@ assert(submitted == "first line\nsecond line", "submitted prompt did not preserv
 assert(submitted_root == root, "prompt was not bound to the chat project")
 assert(vim.api.nvim_buf_get_lines(chat.input_area:buffer(), 0, -1, false)[1] == "", "prompt was not cleared")
 
-chat:close()
-local partial = Chat.new(root .. "/partial-lifecycle")
-local partial_input = partial.input_area:ensure_input_buffer()
-local partial_command = partial.command_menu:ensure_buffer()
-assert(
-  partial:owns_buffer(partial_input) and partial:owns_buffer(partial_command),
-  "child buffer ownership was not exposed"
-)
-assert(not partial:owns_buffer(nil), "nil was incorrectly reported as an owned buffer")
-partial:destroy()
-assert(not vim.api.nvim_buf_is_valid(partial_input), "partial InputArea buffer survived Chat.destroy")
-assert(not vim.api.nvim_buf_is_valid(partial_command), "partial CommandMenu buffer survived Chat.destroy")
-print("chat_spec: ok")
+chat:destroy()
+print("chat_interaction_spec: ok")

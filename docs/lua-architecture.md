@@ -21,6 +21,7 @@ pi.commands.*
   -> pi.message / pi.format / pi.commands.catalog
 
 pi.ui.chat
+  -> pi.ui.chat.registry / pi.ui.chat.shell
   -> pi.ui.transcript
   -> pi.ui.transcript_view -> pi.ui.render
   -> pi.ui.image_preview
@@ -31,23 +32,15 @@ pi.ui.render
 ```
 
 `scripts/check-lua-architecture.mjs` tokenizes executable Lua while ignoring
-comments and strings. Its policy test rejects forbidden layer edges, unapproved
-literal-require cycles, and new direct access to private Chat component fields.
-The two existing late `require("pi")` UI action edges and the remaining
-sibling-component Chat accesses are explicit, count-bounded migration
-exceptions. Task 02 removed the Runtime/command facade leaks; Task 03 removes
-the remaining internal UI exceptions rather than allowing that debt to grow.
+comments and strings. Its policy test rejects forbidden layer edges, UI modules
+that load the top-level `pi` facade for action dispatch, literal-require cycles,
+direct access to private Chat component fields, and Runtime-owned state placed
+on Client objects. There are no reviewed cycle or facade-leak exceptions.
 
-The temporary exception budget is:
-
-| Exception | Current budget | Removal task |
-| --- | ---: | --- |
-| `pi.ui.input -> pi` late action dispatch | 1 edge | Task 03 |
-| `pi.ui.transcript_view -> pi` late action dispatch | 1 edge | Task 03 |
-| CommandMenu/PermissionPanel access to sibling Chat components | 6 accesses | Task 03 |
-
-The checker requires the exact current count. Adding a matching access fails, and
-removing one requires shrinking the reviewed budget in the same change.
+Frontend actions flow from `pi.init` into Runtime, which binds them to a project
+root and passes them to the Chat composition root. Chat then supplies named
+callbacks to InputArea and TranscriptView. UI modules do not discover actions
+through a late top-level require.
 
 ## State Ownership
 
@@ -58,7 +51,9 @@ removing one requires shrinking the reviewed budget in the same change.
 | Display correlation queue, discovered-command map, refresh flags, direct-RPC Bash request | `pi.runtime` |
 | Bounded display items, tool correlation, retention counters | `pi.ui.transcript` |
 | Transcript buffer, render cache/timer, semantic ranges, image placements | `pi.ui.transcript_view` |
-| Layout choice, top-level chat window, display mirrors, coordination | `pi.ui.chat` |
+| UI namespace, Chat registry, global UI autocmds, shared welcome timer | `pi.ui.chat.registry` |
+| Layout choice, top-level chat window, responsive geometry | `pi.ui.chat.shell` |
+| Component composition, display mirrors, activity state, frontend delegation | `pi.ui.chat` |
 | Prompt and footer buffers/windows | `pi.ui.input` |
 | Command-menu buffer/window/matches/selection | `pi.ui.command_menu` |
 | Permission queue, inline projection, focus trap | `pi.ui.permission` |
@@ -80,9 +75,12 @@ Runtime keeps display correlation, discovered commands, stats refresh state,
 direct-RPC Bash identity, and the Client event unsubscriber in one internal
 per-project record tied to the current Client identity. These values are never
 attached to Client objects. Late events and callbacks from a replaced Client
-cannot project into the replacement Chat. The remaining direct component
-accesses are internal sibling-component exceptions with fixed occurrence
-budgets for Task 03, not supported external APIs.
+cannot project into the replacement Chat.
+
+Chat is the only composition root that knows all child components. InputArea,
+CommandMenu, PermissionPanel, and WidgetArea receive explicit dependency tables
+and never read a sibling field. Shell receives window, buffer, state, and action
+providers from Chat; it does not own component behavior.
 
 ## Rendering
 
@@ -110,12 +108,14 @@ Extmarks, and terminal image synchronization.
 
 ## Lifecycle
 
-Closing a Chat stops its activity animation, closes the image preview, clears
-transcript image placements, cancels permission requests fail-closed, closes
-component windows, and closes the top-level window. Destroying additionally
-stops the transcript render timer, deletes owned scratch buffers, releases
-transcript images and counters, clears component state, and unregisters the
-project instance. Component `destroy()` operations are idempotent.
+Closing a Chat delegates window reset to Shell: it stops the per-Chat activity
+animation, closes the image preview, clears transcript image placements,
+cancels permission requests fail-closed, closes component windows, and closes
+the top-level window. Destroying additionally stops the transcript render timer,
+deletes owned scratch buffers, releases transcript images and counters, clears
+component state, and unregisters the project from Registry. The shared welcome
+timer stops when no registered Chat is open. Chat, Registry, and component
+`destroy()` operations are idempotent.
 
 Permission decisions remain in the bundled permission Extension. The Lua
 permission panel only displays structured requests, validates interaction,
@@ -129,10 +129,15 @@ continue to return a blocking response.
 | Shared message/format/catalog helpers | `tests/lua/shared_owners_spec.lua` |
 | Renderer facade and focused renderers | `tests/lua/ui/render_spec.lua`, image/Markdown specs |
 | Transcript model | `tests/lua/ui/transcript_spec.lua`, `regression/output_budget_spec.lua` |
-| Transcript view and render cache | `regression/performance_spec.lua`, Chat UI specs |
+| Transcript view and render cache | `regression/performance_spec.lua`, Chat interaction specs |
 | Image preview/backend lifecycle | image Chat/backend lifecycle specs |
-| Component ownership and layout | Chat, layout, widget, and permission specs |
-| Chat facade contract | `tests/lua/ui/chat_facade_spec.lua` |
+| Chat registry/global lifecycle | `tests/lua/ui/chat/registry_spec.lua` |
+| Chat shell and responsive layout | `tests/lua/ui/chat/shell_spec.lua` |
+| Chat activity and interaction | `tests/lua/ui/chat/activity_spec.lua`, `interaction_spec.lua` |
+| Chat/component lifecycle | `tests/lua/ui/chat/lifecycle_spec.lua` |
+| Input and command-menu ownership | `tests/lua/ui/input_spec.lua`, `command_menu_spec.lua` |
+| Widget and permission ownership | `tests/lua/ui/widget_spec.lua`, `permission_spec.lua` |
+| Chat facade contract | `tests/lua/ui/chat/facade_spec.lua` |
 | Runtime per-project orchestration | `tests/lua/runtime_spec.lua` |
 | RPC-to-UI integration | `tests/lua/integration/rpc_ui_spec.lua` |
 | Permission authority | Lua permission spec plus Extension policy tests |

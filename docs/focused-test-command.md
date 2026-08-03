@@ -63,11 +63,12 @@ The existing suite has several important strengths:
 - Each Lua spec starts in a separate Neovim process, which prevents state from
   leaking between files.
 
-The known quality gaps are:
+The remaining known quality gaps are:
 
-- Broad files such as `tests/lua/ui/chat_spec.lua` and
-  `tests/lua/ui/render_spec.lua` contain several independently owned behaviors,
-  so file-level focused execution is still coarse.
+- `tests/lua/ui/render_spec.lua` still contains several independently owned
+  behaviors, so renderer-focused file execution remains coarse. Chat coverage
+  was split below `tests/lua/ui/chat/` by facade, shell, activity, interaction,
+  registry, and lifecycle ownership.
 - Top-level Lua assertions stop at the first failure in a file and provide no
   test-case-level summary beyond the assertion message.
 - The repository has no coverage report or maintained map showing which tests
@@ -269,10 +270,10 @@ Initial candidates are:
   `tests/lua/ui/render/` for welcome rendering, Markdown/message rendering, tool
   rendering, and process rendering. Keep a facade-level render spec when it
   protects cross-module composition.
-- Split `tests/lua/ui/chat_spec.lua` into focused specs below
-  `tests/lua/ui/chat/` for component/window construction, command-menu and input
-  interaction, status presentation, transcript interaction, and lifecycle.
-  Keep cross-component behavior in a smaller facade-level chat spec.
+- Chat coverage is split below `tests/lua/ui/chat/` for facade, shell, activity,
+  interaction, registry, and lifecycle behavior. InputArea and CommandMenu have
+  standalone specs, while PermissionPanel and WidgetArea retain focused owner
+  specs with independent-construction coverage.
 
 This split must follow the ownership and test map in
 `docs/lua-architecture.md`. A behavior assigned to `pi.ui.transcript`,

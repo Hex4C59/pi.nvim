@@ -1,13 +1,14 @@
 local M = {}
 local catalog = require("pi.commands.catalog")
 
-function M.commands(instances)
-  local root = vim.b.pi_root
-  local chat = root and instances[root] or nil
-  return catalog.merge(chat and chat.commands or {})
+function M.commands(commands)
+  if type(commands) == "function" then
+    commands = commands()
+  end
+  return catalog.merge(commands or {})
 end
 
-function M.complete(instances, findstart, base)
+function M.complete(commands, findstart, base)
   if findstart == 1 then
     local line = vim.api.nvim_get_current_line()
     local cursor_col = vim.api.nvim_win_get_cursor(0)[2]
@@ -20,7 +21,7 @@ function M.complete(instances, findstart, base)
   end
 
   local query = base:gsub("^/", ""):lower()
-  local commands = M.commands(instances)
+  commands = M.commands(commands)
   local ranked = {}
 
   if query == "" then
@@ -69,13 +70,16 @@ end
 local CommandMenu = {}
 CommandMenu.__index = CommandMenu
 
-function CommandMenu.new(chat, deps)
+function CommandMenu.new(deps)
   local self = setmetatable({
-    chat = chat,
+    root = deps.root,
     namespace = deps.namespace,
     name_buffer = deps.name_buffer,
     truncate_display = deps.truncate_display,
-    instances = deps.instances,
+    commands_provider = deps.commands,
+    main_window = deps.main_window,
+    input_buffer = deps.input_buffer,
+    input_window = deps.input_window,
     buf = nil,
     win = nil,
     matches = {},
@@ -88,24 +92,24 @@ function CommandMenu.new(chat, deps)
 end
 
 function CommandMenu:completion_context()
-  local chat = self.chat
-  local input = chat.input_area
-  if not input:buffer() or not vim.api.nvim_buf_is_valid(input:buffer()) then
+  local input_buf = self.input_buffer()
+  local input_win = self.input_window()
+  if not input_buf or not vim.api.nvim_buf_is_valid(input_buf) then
     return nil
   end
-  if not input:window() or not vim.api.nvim_win_is_valid(input:window()) then
+  if not input_win or not vim.api.nvim_win_is_valid(input_win) then
     return nil
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(input:window())
-  local line = vim.api.nvim_buf_get_lines(input:buffer(), cursor[1] - 1, cursor[1], false)[1] or ""
+  local cursor = vim.api.nvim_win_get_cursor(input_win)
+  local line = vim.api.nvim_buf_get_lines(input_buf, cursor[1] - 1, cursor[1], false)[1] or ""
   local before_cursor = line:sub(1, cursor[2])
   local leading, base = before_cursor:match("^(%s*)(/[%w:_-]*)$")
   if not base or line:sub(cursor[2] + 1):match("%S") then
     return nil
   end
 
-  local matches = M.complete(self.instances, 0, base)
+  local matches = M.complete(self.commands_provider, 0, base)
   if #matches == 0 then
     return nil
   end
@@ -113,22 +117,20 @@ function CommandMenu:completion_context()
 end
 
 function CommandMenu:complete(findstart, base)
-  return M.complete(self.instances, findstart, base)
+  return M.complete(self.commands_provider, findstart, base)
 end
 
 function CommandMenu:visible()
-  local chat = self.chat
   return self.win ~= nil and vim.api.nvim_win_is_valid(self.win)
 end
 
 function CommandMenu:ensure_buffer()
-  local chat = self.chat
   if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
     return self.buf
   end
 
   self.buf = vim.api.nvim_create_buf(false, true)
-  self.name_buffer(self.buf, "commands", chat.root)
+  self.name_buffer(self.buf, "commands", self.root)
   vim.bo[self.buf].buftype = "nofile"
   vim.bo[self.buf].bufhidden = "hide"
   vim.bo[self.buf].swapfile = false
@@ -138,7 +140,6 @@ function CommandMenu:ensure_buffer()
 end
 
 function CommandMenu:close()
-  local chat = self.chat
   if self:visible() then
     vim.api.nvim_win_close(self.win, true)
   end
@@ -151,7 +152,6 @@ function CommandMenu:close()
 end
 
 function CommandMenu:render(width, height, first)
-  local chat = self.chat
   local buf = self:ensure_buffer()
   local marker_width = 2
   local content_width = math.max(1, width - marker_width)
@@ -251,21 +251,21 @@ function CommandMenu:render(width, height, first)
 end
 
 function CommandMenu:layout()
-  local chat = self.chat
-  local input = chat.input_area
+  local main_win = self.main_window()
+  local input_win = self.input_window()
   if not self:visible() or #self.matches == 0 then
     return false
   end
-  if not chat.win or not vim.api.nvim_win_is_valid(chat.win) then
+  if not main_win or not vim.api.nvim_win_is_valid(main_win) then
     self:close()
     return false
   end
-  if not input:window() or not vim.api.nvim_win_is_valid(input:window()) then
+  if not input_win or not vim.api.nvim_win_is_valid(input_win) then
     self:close()
     return false
   end
 
-  local input_config = vim.api.nvim_win_get_config(input:window())
+  local input_config = vim.api.nvim_win_get_config(input_win)
   local input_row = math.floor(tonumber(input_config.row) or 0)
   local available_height = math.max(0, input_row)
   local height = math.min(#self.matches, 12, available_height)
@@ -284,10 +284,10 @@ function CommandMenu:layout()
   end
   self.first = first
 
-  local width = math.max(1, vim.api.nvim_win_get_width(chat.win))
+  local width = math.max(1, vim.api.nvim_win_get_width(main_win))
   vim.api.nvim_win_set_config(self.win, {
     relative = "win",
-    win = chat.win,
+    win = main_win,
     row = input_row - height,
     col = 0,
     width = width,
@@ -301,12 +301,15 @@ function CommandMenu:layout()
 end
 
 function CommandMenu:open()
-  local chat = self.chat
+  local main_win = self.main_window()
+  if not main_win or not vim.api.nvim_win_is_valid(main_win) then
+    return false
+  end
   if not self:visible() then
     local buf = self:ensure_buffer()
     self.win = vim.api.nvim_open_win(buf, false, {
       relative = "win",
-      win = chat.win,
+      win = main_win,
       row = 0,
       col = 0,
       width = 1,
@@ -335,8 +338,7 @@ function CommandMenu:open()
 end
 
 function CommandMenu:update()
-  local chat = self.chat
-  if vim.api.nvim_get_current_win() ~= chat.input_area:window() then
+  if vim.api.nvim_get_current_win() ~= self.input_window() then
     self:close()
     return false
   end
@@ -372,7 +374,6 @@ function CommandMenu:show()
 end
 
 function CommandMenu:select(delta)
-  local chat = self.chat
   if not self:visible() or #self.matches == 0 then
     return false
   end
@@ -383,8 +384,8 @@ function CommandMenu:select(delta)
 end
 
 function CommandMenu:accept()
-  local chat = self.chat
-  local input = chat.input_area
+  local input_win = self.input_window()
+  local input_buf = self.input_buffer()
   if not self:visible() then
     return false
   end
@@ -394,16 +395,12 @@ function CommandMenu:accept()
     return false
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(input:window())
-  vim.api.nvim_buf_set_text(
-    input:buffer(),
-    cursor[1] - 1,
-    start_col - 1,
-    cursor[1] - 1,
-    cursor[2],
-    { match.word .. " " }
-  )
-  vim.api.nvim_win_set_cursor(input:window(), { cursor[1], start_col - 1 + #match.word + 1 })
+  if not input_win or not input_buf then
+    return false
+  end
+  local cursor = vim.api.nvim_win_get_cursor(input_win)
+  vim.api.nvim_buf_set_text(input_buf, cursor[1] - 1, start_col - 1, cursor[1] - 1, cursor[2], { match.word .. " " })
+  vim.api.nvim_win_set_cursor(input_win, { cursor[1], start_col - 1 + #match.word + 1 })
   self:close()
   return true
 end

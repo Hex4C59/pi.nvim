@@ -35,13 +35,17 @@ expect_failure() {
 
 node "$checker" --root "$repo_root"
 
-for fixture in forbidden cycle leak client-state comments; do
+for fixture in forbidden ui-action cycle leak shell-leak client-state comments; do
   mkdir -p "$temporary_root/$fixture/lua/pi/commands" "$temporary_root/$fixture/lua/pi/ui"
 done
+mkdir -p "$temporary_root/shell-leak/lua/pi/ui/chat"
 
 printf '%s\n' 'return require("pi.ui.chat")' > "$temporary_root/forbidden/lua/pi/commands/demo.lua"
 printf '%s\n' 'return {}' > "$temporary_root/forbidden/lua/pi/ui/chat.lua"
 expect_failure forbidden "$temporary_root/forbidden" 'command modules must use runtime'
+
+printf '%s\n' 'return require("pi")' > "$temporary_root/ui-action/lua/pi/ui/demo.lua"
+expect_failure ui-action "$temporary_root/ui-action" 'UI modules must receive frontend actions'
 
 printf '%s\n' 'return require("pi.b")' > "$temporary_root/cycle/lua/pi/a.lua"
 printf '%s\n' 'return require("pi.a")' > "$temporary_root/cycle/lua/pi/b.lua"
@@ -49,6 +53,9 @@ expect_failure cycle "$temporary_root/cycle" 'Lua require cycle: pi.a -> pi.b ->
 
 printf '%s\n' 'local chat = {}' 'return chat.transcript' > "$temporary_root/leak/lua/pi/commands/demo.lua"
 expect_failure leak "$temporary_root/leak" 'Chat facade leak: chat.transcript'
+
+printf '%s\n' 'local chat = {}' 'return chat.input_area' > "$temporary_root/shell-leak/lua/pi/ui/chat/shell.lua"
+expect_failure shell-leak "$temporary_root/shell-leak" 'Chat facade leak: chat.input_area'
 
 printf '%s\n' 'local client = {}' 'client.display_queue = {}' 'return client' \
   > "$temporary_root/client-state/lua/pi/runtime.lua"

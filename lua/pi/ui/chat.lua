@@ -1,26 +1,41 @@
 local config = require("pi.config")
 local renderer = require("pi.ui.render")
-local highlights = require("pi.ui.highlights")
 local command_menu = require("pi.ui.command_menu")
 local input_area = require("pi.ui.input")
 local permission_panel = require("pi.ui.permission")
 local widget_panel = require("pi.ui.widget")
 local permission_modes = require("pi.permission_mode")
-local image_data = require("pi.ui.image")
 local image_backend = require("pi.ui.image_backend")
 local text_content = require("pi.message").text_content
 local Transcript = require("pi.ui.transcript").Transcript
 local TranscriptView = require("pi.ui.transcript_view").TranscriptView
 local ImagePreview = require("pi.ui.image_preview").ImagePreview
+local registry = require("pi.ui.chat.registry").default()
+local Shell = require("pi.ui.chat.shell").Shell
 
 local M = {}
 local Chat = {}
-Chat.__index = Chat
+local shell_fields = {
+  win = true,
+  position = true,
+  title = true,
+  permission_restore_height = true,
+  overlay_height = true,
+}
 
-local namespace = vim.api.nvim_create_namespace("pi.nvim")
-local instances = setmetatable({}, { __mode = "v" })
-local welcome_animation_timer = nil
-local welcome_animation_frame = 0
+Chat.__index = function(self, key)
+  local value = Chat[key]
+  if value ~= nil then
+    return value
+  end
+  local shell = rawget(self, "shell")
+  if shell and shell_fields[key] then
+    return shell[key]
+  end
+end
+
+local namespace = registry.namespace
+local ui_group = registry.group
 
 local function initial_permission_mode()
   local security_mode = (config.get().security or {}).mode
@@ -30,114 +45,14 @@ local function initial_permission_mode()
   return permission_modes.default_for_security(security_mode)
 end
 
-local function update_welcome_logo_highlights()
-  local welcome_logo_palette, welcome_logo_background = highlights.welcome_palette()
-  if #welcome_logo_palette == 0 then
-    return
-  end
-
-  for index = 1, 4 do
-    local palette_index = (index + welcome_animation_frame - 2) % #welcome_logo_palette + 1
-    vim.api.nvim_set_hl(0, "PiWelcomeLogo" .. index, {
-      fg = welcome_logo_palette[palette_index],
-      bg = welcome_logo_background,
-      bold = true,
-    })
-  end
+local function action(actions, name)
+  return type(actions) == "table" and type(actions[name]) == "function" and actions[name] or function() end
 end
 
-local function has_open_chat()
-  for _, chat in pairs(instances) do
-    if chat.is_open and chat:is_open() then
-      return true
-    end
-  end
-  return false
-end
-
-local function stop_welcome_animation()
-  if welcome_animation_timer then
-    welcome_animation_timer:stop()
-    welcome_animation_timer:close()
-    welcome_animation_timer = nil
-  end
-end
-
-local function sync_welcome_animation()
-  if not has_open_chat() then
-    stop_welcome_animation()
-    return
-  end
-  if welcome_animation_timer then
-    return
-  end
-
-  welcome_animation_timer = vim.uv.new_timer()
-  welcome_animation_timer:start(
-    360,
-    360,
-    vim.schedule_wrap(function()
-      if not has_open_chat() then
-        stop_welcome_animation()
-        return
-      end
-      local welcome_logo_palette = highlights.welcome_palette()
-      welcome_animation_frame = (welcome_animation_frame + 1) % math.max(1, #welcome_logo_palette)
-      update_welcome_logo_highlights()
-    end)
-  )
-end
-
-local ui_group = vim.api.nvim_create_augroup("PiNvimUI", { clear = true })
-vim.api.nvim_create_autocmd("ColorScheme", {
-  group = ui_group,
-  callback = function()
-    highlights.setup()
-    image_data.refresh_preview_highlights()
-    update_welcome_logo_highlights()
-  end,
-})
-vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
-  group = ui_group,
-  callback = function()
-    for _, chat in pairs(instances) do
-      if chat:is_open() then
-        chat:_layout()
-      end
-    end
-  end,
-})
-vim.api.nvim_create_autocmd("WinScrolled", {
-  group = ui_group,
-  callback = function(event)
-    local win = tonumber(event.match)
-    for _, chat in pairs(instances) do
-      if chat.win == win and chat._clamp_transcript_view then
-        chat:_clamp_transcript_view()
-        break
-      end
-    end
-  end,
-})
-vim.api.nvim_create_autocmd("VimLeavePre", {
-  group = ui_group,
-  callback = function()
-    stop_welcome_animation()
-    for _, chat in pairs(instances) do
-      if chat.image_backend then
-        chat.image_backend:clear()
-      end
-    end
-  end,
-})
-
-function Chat.new(root)
-  highlights.setup()
-  update_welcome_logo_highlights()
+function Chat.new(root, frontend_actions)
+  registry:prepare()
   local chat = setmetatable({
     root = root,
-    win = nil,
-    permission_restore_height = nil,
     pending_images = {},
     tools_expanded = false,
     hide_thinking = true,
@@ -149,7 +64,6 @@ function Chat.new(root)
     activity_started_at = nil,
     path = root,
     activity = "starting",
-    title = "pi",
     model = "loading",
     thinking = "-",
     reported_permission_mode = initial_permission_mode(),
@@ -160,21 +74,131 @@ function Chat.new(root)
       cost = 0,
     },
   }, Chat)
-  chat.command_menu = command_menu.CommandMenu.new(chat, {
+  chat.command_menu = command_menu.CommandMenu.new({
+    root = root,
     namespace = namespace,
     name_buffer = input_area.name_buffer,
     truncate_display = input_area.truncate_display,
-    instances = instances,
+    commands = function()
+      return chat.commands
+    end,
+    main_window = function()
+      return chat.shell and chat.shell:window() or nil
+    end,
+    input_buffer = function()
+      return chat.input_area and chat.input_area:buffer() or nil
+    end,
+    input_window = function()
+      return chat.input_area and chat.input_area:window() or nil
+    end,
   })
-  chat.input_area = input_area.InputArea.new(chat, {
+  chat.input_area = input_area.InputArea.new({
+    root = root,
     namespace = namespace,
     ui_group = ui_group,
+    main_window = function()
+      return chat.shell and chat.shell:window() or nil
+    end,
+    state = function()
+      return {
+        active = chat:_is_active(),
+        activity = chat.activity,
+        activity_text = chat:_activity_text(),
+        animation_frame = chat.animation_frame,
+        stats = chat.stats,
+        queue = chat.queue,
+        permission_mode = chat:permission_mode(),
+        permission_mode_label = chat:permission_mode_label(),
+        model = chat.model,
+        thinking = chat.thinking,
+        pending_image_count = #chat.pending_images,
+      }
+    end,
+    actions = {
+      layout = function()
+        chat:_layout()
+      end,
+      close_command_menu = function()
+        chat:_close_command_menu()
+      end,
+      update_command_menu = function()
+        return chat:_update_command_menu()
+      end,
+      command_menu_visible = function()
+        return chat:_command_menu_visible()
+      end,
+      select_command = function(delta)
+        return chat:_select_command(delta)
+      end,
+      accept_command_completion = function()
+        return chat:_accept_command_completion()
+      end,
+      take_image_attachments = function()
+        return chat:take_image_attachments()
+      end,
+      add_image_attachment = function(image)
+        return chat:add_image_attachment(image)
+      end,
+      submit = action(frontend_actions, "submit"),
+      abort = action(frontend_actions, "abort"),
+      select_model = action(frontend_actions, "select_model"),
+      cycle_model = action(frontend_actions, "cycle_model"),
+      cycle_permission_mode = action(frontend_actions, "cycle_permission_mode"),
+      cycle_thinking_level = action(frontend_actions, "cycle_thinking_level"),
+      close = function()
+        chat:close()
+      end,
+      toggle_tools = function()
+        chat:toggle_tools()
+      end,
+      toggle_thinking = function()
+        chat:toggle_thinking()
+      end,
+      copy_last_assistant = function()
+        chat:copy_last_assistant()
+      end,
+      left_mouse = function()
+        return chat:_handle_left_mouse()
+      end,
+    },
   })
-  chat.permission_area = permission_panel.PermissionPanel.new(chat, {
-    namespace = namespace,
+  chat.permission_area = permission_panel.PermissionPanel.new({
+    root = root,
+    main_window = function()
+      return chat.shell and chat.shell:window() or nil
+    end,
+    transcript_buffer = function()
+      return chat.transcript_view and chat.transcript_view:buffer() or nil
+    end,
+    input_window = function()
+      return chat.input_area:window()
+    end,
+    actions = {
+      render = function()
+        chat:_render_transcript()
+      end,
+      layout = function()
+        chat:_layout()
+      end,
+      close_command_menu = function()
+        chat:_close_command_menu()
+      end,
+    },
   })
-  chat.widget_area = widget_panel.WidgetArea.new(chat, {
+  chat.widget_area = widget_panel.WidgetArea.new({
+    root = root,
     namespace = namespace,
+    main_window = function()
+      return chat.shell and chat.shell:window() or nil
+    end,
+    actions = {
+      render = function()
+        chat:_render_transcript()
+      end,
+      layout = function()
+        chat:_layout()
+      end,
+    },
   })
   chat.image_backend = image_backend.new({
     on_change = function()
@@ -247,11 +271,17 @@ function Chat.new(root)
         chat:copy_last_assistant()
       end,
       left_mouse = function()
-        input_area.dispatch_left_mouse(chat)
+        input_area.dispatch_left_mouse(function()
+          return chat:_handle_left_mouse()
+        end)
       end,
       open_image_preview = function(descriptor)
         return chat:_open_image_preview(descriptor)
       end,
+      abort = action(frontend_actions, "abort"),
+      select_model = action(frontend_actions, "select_model"),
+      cycle_model = action(frontend_actions, "cycle_model"),
+      cycle_thinking_level = action(frontend_actions, "cycle_thinking_level"),
     },
   })
   chat.transcript = Transcript.new({
@@ -296,7 +326,120 @@ function Chat.new(root)
       chat.transcript:release_image(block)
     end,
   })
-  instances[root] = chat
+  chat.shell = Shell.new({
+    input_window = function()
+      return chat.input_area:window()
+    end,
+    status_window = function()
+      return chat.input_area:status_window()
+    end,
+    input_window_config = function(row, width, height)
+      return chat.input_area:window_config(row, width, height)
+    end,
+    desired_input_height = function()
+      return chat.input_area:desired_input_height()
+    end,
+    set_input_windows = function(input_win, status_win)
+      chat.input_area:set_windows(input_win, status_win)
+    end,
+    ensure_input_buffer = function()
+      return chat.input_area:ensure_input_buffer()
+    end,
+    ensure_status_buffer = function()
+      return chat.input_area:ensure_status_buffer()
+    end,
+    close_input_windows = function()
+      chat.input_area:close_windows()
+    end,
+    update_input_chrome = function()
+      chat.input_area:update_chrome()
+    end,
+    render_status = function()
+      chat.input_area:render_status()
+    end,
+    permission_active = function()
+      return chat.permission_area:active()
+    end,
+    set_permission_height = function(height)
+      chat.permission_area:set_available_height(height)
+    end,
+    cancel_permissions = function()
+      chat.permission_area:cancel_all()
+    end,
+    command_menu_visible = function()
+      return chat.command_menu:visible()
+    end,
+    layout_command_menu = function()
+      return chat.command_menu:layout()
+    end,
+    close_command_menu = function()
+      chat.command_menu:close()
+    end,
+    measure_widgets = function(width, available)
+      return chat.widget_area:measure(width, available)
+    end,
+    layout_widgets = function(width, input_row, input_height, above_height, below_height)
+      chat.widget_area:layout(width, input_row, input_height, above_height, below_height)
+    end,
+    close_widget_windows = function()
+      chat.widget_area:close_windows()
+    end,
+    ensure_transcript_buffer = function()
+      return chat.transcript_view:ensure_buffer()
+    end,
+    update_transcript_width = function(width)
+      return chat.transcript_view:update_layout_width(width)
+    end,
+    reset_transcript_width = function()
+      chat.transcript_view:reset_layout_width()
+    end,
+    clear_transcript_images = function()
+      chat.transcript_view:clear_images()
+    end,
+    render_transcript = function()
+      chat:_render_transcript()
+    end,
+    set_transcript_title = function(title)
+      chat.transcript_view:set_title(title)
+    end,
+    sync_image_backends = function()
+      chat.transcript_view:set_image_backend(chat.image_backend)
+      chat.image_preview:set_backend(chat.image_backend)
+    end,
+    close_image_preview = function()
+      chat:_close_image_preview()
+    end,
+    stop_activity_animation = function()
+      chat:_stop_animation()
+    end,
+    sync_activity_animation = function()
+      chat:_sync_animation()
+    end,
+    sync_welcome_animation = function()
+      registry:sync_welcome_animation()
+    end,
+    focus_input = function()
+      chat:_focus_input()
+    end,
+  })
+  chat.registry_entry = {
+    is_open = function()
+      return chat:is_open()
+    end,
+    layout = function()
+      chat:_layout()
+    end,
+    window = function()
+      return chat.shell:window()
+    end,
+    clamp = function()
+      chat:_clamp_transcript_view()
+    end,
+    clear_images = function()
+      chat.image_backend:clear()
+    end,
+  }
+  registry:register(root, chat.registry_entry)
   return chat
 end
 
@@ -313,7 +456,7 @@ function Chat:has_active_permission_request()
 end
 
 function Chat:current_layout()
-  return self.position or config.get().chat.position
+  return self.shell:current_layout()
 end
 
 function Chat:process_details_enabled()
@@ -339,12 +482,7 @@ function Chat:_invalidate_cached_item(item)
   self.transcript_view:invalidate_item(item)
 end
 function Chat:is_open()
-  return self.win ~= nil
-    and vim.api.nvim_win_is_valid(self.win)
-    and self.input_area:window() ~= nil
-    and vim.api.nvim_win_is_valid(self.input_area:window())
-    and self.input_area:status_window() ~= nil
-    and vim.api.nvim_win_is_valid(self.input_area:status_window())
+  return self.shell:is_open()
 end
 
 function Chat:owns_buffer(bufnr)
@@ -428,25 +566,13 @@ function Chat:_sync_animation()
 end
 
 function Chat:close()
-  self:_stop_animation()
-  self:_close_image_preview()
-  if self.image_backend then
-    self.transcript_view:clear_images()
-  end
-  self.permission_area:cancel_all()
-  self.command_menu:close()
-  self.widget_area:close_windows()
-  self.input_area:close_windows()
-  if self.win and vim.api.nvim_win_is_valid(self.win) then
-    vim.api.nvim_win_close(self.win, true)
-  end
-  self.permission_restore_height = nil
-  self.win = nil
-  self.transcript_view:reset_layout_width()
-  sync_welcome_animation()
+  self.shell:close()
 end
 
 function Chat:destroy()
+  if self.destroyed then
+    return
+  end
   self.destroying = true
   self:close()
   self.transcript:destroy()
@@ -457,7 +583,9 @@ function Chat:destroy()
   self.command_menu:destroy()
   self.input_area:destroy()
   self.permission_area:destroy()
-  instances[self.root] = nil
+  registry:unregister(self.root)
+  self.registry_entry = nil
+  self.destroyed = true
 end
 
 function Chat:set_path(path)
@@ -619,14 +747,7 @@ function Chat:clear_widgets()
 end
 
 function Chat:set_title(title)
-  title = tostring(title or ""):gsub("[\r\n].*$", "")
-  title = vim.trim(title)
-  if title == "" then
-    title = "pi"
-  end
-  self.title = vim.fn.strcharpart(title, 0, 80)
-  self.transcript_view:set_title(self.title)
-  self:_layout_main()
+  return self.shell:set_title(title)
 end
 
 function Chat:_update_input_chrome()
@@ -642,99 +763,10 @@ function Chat:_desired_input_height()
   return self.input_area:desired_input_height()
 end
 function Chat:_layout_main()
-  if self.position ~= "float" or not self.win or not vim.api.nvim_win_is_valid(self.win) then
-    return
-  end
-  local options = config.get().chat.float or {}
-  local available_width = math.max(42, vim.o.columns - 4)
-  local available_height = math.max(12, vim.o.lines - vim.o.cmdheight - 4)
-  local width = math.min(available_width, math.max(42, math.floor(vim.o.columns * (options.width or 0.84))))
-  local height = math.min(available_height, math.max(12, math.floor(vim.o.lines * (options.height or 0.86))))
-  vim.api.nvim_win_set_config(self.win, {
-    relative = "editor",
-    row = math.max(0, math.floor((vim.o.lines - height) / 2) - 1),
-    col = math.max(0, math.floor((vim.o.columns - width) / 2)),
-    width = width,
-    height = height,
-    style = "minimal",
-    border = options.border or "rounded",
-    title = { { (" %s "):format(self.title or "pi"), "PiPanelTitle" } },
-    title_pos = "center",
-    zindex = 40,
-  })
+  return self.shell:layout_main()
 end
 function Chat:_layout()
-  self:_layout_main()
-  if not self.win or not vim.api.nvim_win_is_valid(self.win) then
-    return
-  end
-  local input_win = self.input_area:window()
-  local status_win = self.input_area:status_window()
-  if not input_win or not vim.api.nvim_win_is_valid(input_win) then
-    return
-  end
-  if not status_win or not vim.api.nvim_win_is_valid(status_win) then
-    return
-  end
-
-  local permission_active = self.permission_area:active()
-  if self.position == "bottom" then
-    if permission_active then
-      if not self.permission_restore_height then
-        self.permission_restore_height = vim.api.nvim_win_get_height(self.win)
-      end
-      local maximum = math.max(10, vim.o.lines - vim.o.cmdheight - 3)
-      pcall(vim.api.nvim_win_set_height, self.win, math.min(16, maximum))
-    elseif self.permission_restore_height then
-      pcall(vim.api.nvim_win_set_height, self.win, self.permission_restore_height)
-      self.permission_restore_height = nil
-    end
-  end
-
-  local width = vim.api.nvim_win_get_width(self.win)
-  local height = vim.api.nvim_win_get_height(self.win)
-  local transcript_width_changed = self.transcript_view:update_layout_width(width)
-  local footer_height = 1
-  local widget_hidden = permission_active or self:_command_menu_visible()
-  local widget_width = width
-  local widget_budget = widget_hidden and 0 or math.max(0, height - footer_height - 7)
-  local above_widget_height, below_widget_height = self.widget_area:measure(widget_width, widget_budget)
-  local widget_height = above_widget_height + below_widget_height
-  local available_input = math.max(1, height - footer_height - 4 - widget_height)
-  local input_height = math.min(self:_desired_input_height(), available_input)
-  if permission_active then
-    input_height = math.min(input_height, 3)
-  end
-  local input_row = math.max(0, height - footer_height - below_widget_height - input_height - 2)
-  local footer_row = math.max(0, height - footer_height)
-  self.permission_area:set_available_height(input_row)
-
-  local input_config = self:_input_window_config(input_row, math.max(1, width - 2), input_height)
-  input_config.focusable = not permission_active
-  vim.api.nvim_win_set_config(input_win, input_config)
-  vim.api.nvim_win_set_config(status_win, {
-    relative = "win",
-    win = self.win,
-    row = footer_row,
-    col = 0,
-    width = width,
-    height = footer_height,
-    style = "minimal",
-    focusable = false,
-    zindex = 51,
-  })
-  if self:_command_menu_visible() then
-    self:_layout_command_menu()
-  end
-
-  self.widget_area:layout(widget_width, input_row, input_height, above_widget_height, below_widget_height)
-  local overlay_height = input_height + footer_height + 2 + widget_height
-  local overlay_changed = self.overlay_height ~= overlay_height
-  self.overlay_height = overlay_height
-  self:_render_status()
-  if overlay_changed or transcript_width_changed then
-    self:_render_transcript()
-  end
+  return self.shell:layout()
 end
 function Chat:set_input(text)
   self.input_area:set_input(text)
@@ -760,23 +792,6 @@ function Chat:select_permission(request, callback)
   self:open(false)
   self.permission_area:show(request, callback)
 end
-local function style_window(win, normal_group)
-  vim.wo[win].wrap = true
-  vim.wo[win].linebreak = true
-  vim.wo[win].breakindent = true
-  vim.wo[win].list = false
-  vim.wo[win].number = false
-  vim.wo[win].relativenumber = false
-  vim.wo[win].signcolumn = "no"
-  vim.wo[win].foldcolumn = "0"
-  vim.wo[win].fillchars = "eob: "
-  vim.wo[win].winhighlight = ("Normal:%s,NormalNC:%s,EndOfBuffer:%s,WinSeparator:PiPanelBorder,FloatBorder:PiPanelBorder"):format(
-    normal_group,
-    normal_group,
-    normal_group
-  )
-end
-
 function Chat:_close_image_preview()
   self.image_preview:set_backend(self.image_backend)
   self.image_preview:close()
@@ -788,97 +803,11 @@ function Chat:_open_image_preview(descriptor)
 end
 
 function Chat:set_position(position)
-  if not vim.tbl_contains({ "right", "bottom", "tab", "float" }, position) then
-    error("pi.nvim: layout must be right, bottom, tab, or float")
-  end
-  local reopen = self:is_open()
-  if reopen then
-    self:close()
-  end
-  self.position = position
-  if reopen then
-    self:open()
-  end
+  return self.shell:set_position(position)
 end
 
 function Chat:open(focus_input)
-  self.transcript_view:set_image_backend(self.image_backend)
-  self.image_preview:set_backend(self.image_backend)
-  local buf = self.transcript_view:ensure_buffer()
-  local input_buf = self.input_area:ensure_input_buffer()
-  local status_buf = self.input_area:ensure_status_buffer()
-  if self:is_open() then
-    if focus_input ~= false then
-      self:_focus_input()
-    end
-    return
-  end
-
-  self:close()
-  local chat = config.get().chat
-  self.position = self.position or chat.position
-  if self.position == "tab" then
-    vim.cmd("tabnew")
-    self.win = vim.api.nvim_get_current_win()
-  elseif self.position == "float" then
-    local width = math.max(1, vim.o.columns - 4)
-    local height = math.max(1, vim.o.lines - vim.o.cmdheight - 4)
-    self.win = vim.api.nvim_open_win(buf, true, {
-      relative = "editor",
-      row = 1,
-      col = 2,
-      width = width,
-      height = height,
-      style = "minimal",
-      border = (chat.float or {}).border or "rounded",
-      zindex = 40,
-    })
-  elseif self.position == "bottom" then
-    vim.cmd("botright new")
-    self.win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_height(self.win, math.max(10, math.floor(vim.o.lines * chat.height)))
-  elseif self.position == "right" then
-    vim.cmd("botright vnew")
-    self.win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_width(self.win, math.max(42, math.floor(vim.o.columns * chat.width)))
-  else
-    error("pi.nvim: chat.position must be 'right', 'bottom', 'tab', or 'float'")
-  end
-  vim.api.nvim_win_set_buf(self.win, buf)
-  style_window(self.win, "PiCanvasNormal")
-  vim.wo[self.win].cursorline = false
-  vim.wo[self.win].winbar = ""
-
-  local width = vim.api.nvim_win_get_width(self.win)
-  local input_win = vim.api.nvim_open_win(input_buf, false, self:_input_window_config(0, math.max(1, width - 2), 3))
-  style_window(input_win, "PiInputNormal")
-  vim.wo[input_win].cursorline = false
-  vim.wo[input_win].spell = false
-  vim.wo[input_win].winblend = 0
-  vim.wo[input_win].winbar = " "
-
-  local status_win = vim.api.nvim_open_win(status_buf, false, {
-    relative = "win",
-    win = self.win,
-    row = 0,
-    col = 0,
-    width = width,
-    height = 1,
-    style = "minimal",
-    focusable = false,
-    zindex = 51,
-  })
-  style_window(status_win, "PiStatusNormal")
-  vim.wo[status_win].wrap = false
-  vim.wo[status_win].winbar = ""
-  self.input_area:set_windows(input_win, status_win)
-
-  self:_update_input_chrome()
-  self:_sync_animation()
-  sync_welcome_animation()
-  if focus_input ~= false then
-    self:_focus_input()
-  end
+  return self.shell:open(focus_input)
 end
 
 function Chat:_clamp_transcript_view()

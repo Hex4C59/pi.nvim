@@ -208,9 +208,13 @@ local function presentation(request)
   return title:gsub("%?$", ""), "", "", false
 end
 
-function PermissionPanel.new(chat)
+function PermissionPanel.new(deps)
   return setmetatable({
-    chat = chat,
+    root = deps.root,
+    main_window = deps.main_window,
+    transcript_buffer = deps.transcript_buffer,
+    input_window = deps.input_window,
+    actions = deps.actions,
     queue = {},
     current = nil,
     selected = 1,
@@ -221,7 +225,7 @@ function PermissionPanel.new(chat)
     available_height = MAX_COMPACT_HEIGHT,
     return_win = nil,
     return_mode = nil,
-    key_namespace = vim.api.nvim_create_namespace("pi.nvim.permission.keys." .. vim.fn.sha256(chat.root):sub(1, 12)),
+    key_namespace = vim.api.nvim_create_namespace("pi.nvim.permission.keys." .. vim.fn.sha256(deps.root):sub(1, 12)),
   }, PermissionPanel)
 end
 
@@ -235,7 +239,7 @@ function PermissionPanel:_select(delta)
   end
   local option_count = #options_for(self.current.request)
   self.selected = (self.selected - 1 + delta) % math.max(1, option_count) + 1
-  self.chat:_render_transcript()
+  self.actions.render()
 end
 
 function PermissionPanel:_resolve_selected()
@@ -255,7 +259,7 @@ end
 function PermissionPanel:_toggle_expanded()
   self.expanded = not self.expanded
   self.body_offset = 1
-  self.chat:_render_transcript()
+  self.actions.render()
 end
 
 function PermissionPanel:_handle_key(raw_key)
@@ -303,12 +307,13 @@ function PermissionPanel:_deactivate()
 end
 
 function PermissionPanel:_focus()
-  local chat = self.chat
-  if not chat.win or not vim.api.nvim_win_is_valid(chat.win) then
+  local main_win = self.main_window()
+  local transcript_buf = self.transcript_buffer()
+  if not main_win or not vim.api.nvim_win_is_valid(main_win) or not transcript_buf then
     return
   end
-  vim.api.nvim_set_current_win(chat.win)
-  vim.api.nvim_win_set_cursor(chat.win, { vim.api.nvim_buf_line_count(chat.transcript_view:buffer()), 0 })
+  vim.api.nvim_set_current_win(main_win)
+  vim.api.nvim_win_set_cursor(main_win, { vim.api.nvim_buf_line_count(transcript_buf), 0 })
   self:_install_key_capture()
   vim.cmd("stopinsert")
 end
@@ -322,7 +327,7 @@ end
 function PermissionPanel:show(request, callback)
   table.insert(self.queue, { request = request, callback = callback })
   if self.current then
-    self.chat:_render_transcript()
+    self.actions.render()
     return
   end
 
@@ -338,15 +343,15 @@ function PermissionPanel:_advance()
   self.body_offset = 1
   if not self.current then
     self:_deactivate()
-    self.chat:_layout()
-    self.chat:_render_transcript()
+    self.actions.layout()
+    self.actions.render()
     self:_restore_focus()
     return
   end
 
-  self.chat:_close_command_menu()
-  self.chat:_layout()
-  self.chat:_render_transcript()
+  self.actions.close_command_menu()
+  self.actions.layout()
+  self.actions.render()
   self:_focus()
 end
 
@@ -359,7 +364,7 @@ function PermissionPanel:_restore_focus()
     return
   end
   vim.api.nvim_set_current_win(win)
-  if win == self.chat.input_area:window() and mode and mode:sub(1, 1) == "i" then
+  if win == self.input_window() and mode and mode:sub(1, 1) == "i" then
     vim.cmd("startinsert")
   end
 end
@@ -368,9 +373,10 @@ function PermissionPanel:exit_to_normal()
   if not self:active() then
     return
   end
-  local target = self.chat.win and vim.api.nvim_win_is_valid(self.chat.win) and self.chat.win or self.return_win
+  local main_win = self.main_window()
+  local target = main_win and vim.api.nvim_win_is_valid(main_win) and main_win or self.return_win
   self:cancel_all(true, target)
-  self.chat:_layout()
+  self.actions.layout()
   if target and vim.api.nvim_win_is_valid(target) then
     vim.api.nvim_set_current_win(target)
     vim.cmd("stopinsert")
@@ -407,8 +413,8 @@ function PermissionPanel:cancel_all(force_normal, target_win)
       item.callback(false)
     end
   end
-  self.chat:_layout()
-  self.chat:_render_transcript()
+  self.actions.layout()
+  self.actions.render()
   local return_win = target_win or self.return_win
   if force_normal and return_win and vim.api.nvim_win_is_valid(return_win) then
     vim.api.nvim_set_current_win(return_win)
@@ -429,7 +435,7 @@ function PermissionPanel:_scroll(delta)
   local next_offset = math.max(1, math.min(maximum, self.body_offset + delta))
   if next_offset ~= self.body_offset then
     self.body_offset = next_offset
-    self.chat:_render_transcript()
+    self.actions.render()
   end
 end
 
@@ -447,7 +453,7 @@ function PermissionPanel:_body(width)
     body = { "No additional details" }
   end
   if shell then
-    local cwd = vim.fn.fnamemodify(self.chat.root, ":~")
+    local cwd = vim.fn.fnamemodify(self.root, ":~")
     table.insert(body, 1, "cwd  " .. cwd)
   end
   return body, shell

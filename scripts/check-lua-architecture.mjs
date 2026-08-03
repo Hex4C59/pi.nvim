@@ -216,6 +216,9 @@ function hasPrefix(value, prefix) {
 }
 
 function dependencyViolation(source, dependency) {
+  if (hasPrefix(source, "pi.ui") && dependency === "pi") {
+    return "UI modules must receive frontend actions instead of requiring pi";
+  }
   if (hasPrefix(source, "pi.protocol") && ["pi.client", "pi.runtime", "pi.commands", "pi.ui"].some((prefix) => hasPrefix(dependency, prefix))) {
     return "protocol must remain a transport-independent leaf";
   }
@@ -231,19 +234,11 @@ function dependencyViolation(source, dependency) {
   return undefined;
 }
 
-// These are function-local action dispatches that run only after pi has loaded.
-// Task 03 replaces them with injected actions, so new cycle exceptions are not
-// accepted here.
-const knownCycleEdges = new Set(["pi.ui.input->pi", "pi.ui.transcript_view->pi"]);
-
-// This is a shrinking debt budget, not a general allowlist. Task 02 removed the
-// Runtime/command leaks; Task 03 removes sibling-component reach-through. Exact
-// counts make additions and stale entries fail the policy immediately.
-const knownFacadeLeaks = new Map([
-  ["lua/pi/ui/command_menu.lua:input_area", 4],
-  ["lua/pi/ui/permission.lua:transcript_view", 1],
-  ["lua/pi/ui/permission.lua:input_area", 1],
-]);
+// Reviewed exceptions are represented here rather than silently excluded. The
+// list is intentionally empty after Task 03 removed the remaining cycles and
+// Chat component-field leaks.
+const knownCycleEdges = new Set();
+const knownFacadeLeaks = new Map();
 
 function findCycle(adjacency) {
   const state = new Map();
@@ -311,7 +306,7 @@ async function check(root) {
 
   const leakCounts = new Map();
   for (const module of modules) {
-    const compositionFile = module.relative === "lua/pi/ui/chat.lua" || module.relative.startsWith("lua/pi/ui/chat/");
+    const compositionFile = module.relative === "lua/pi/ui/chat.lua";
     if (compositionFile) continue;
     for (const leak of module.leaks) {
       const key = `${module.relative}:${leak.field}`;
