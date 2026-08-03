@@ -1,8 +1,9 @@
 # Focused Test Command and Test Quality Plan
 
-> Status: In progress. Phase 1 was implemented and verified on 2026-08-04;
-> Phases 2 through 4 remain proposed and are coordinated by
-> `docs/modular-architecture-plan.md`.
+> Status: In progress. Phase 1 was implemented and verified on 2026-08-04.
+> Phase 2 is underway: Chat ownership specs and direct Transcript model,
+> projection, retention, and history specs are complete; the remaining renderer
+> and UI-owner splits are still tracked by `docs/modular-architecture-plan.md`.
 >
 > Scope: local test invocation, test-infrastructure regression coverage, test
 > failure granularity, and coverage visibility in pi.nvim. This proposal does
@@ -57,6 +58,9 @@ The existing suite has several important strengths:
 
 - Lua unit, command, UI, integration, and regression tests are separated by
   responsibility.
+- Transcript projection, retention order, history reconstruction, and bounded
+  model lifecycles have direct owner-level specs; cross-owner memory and RPC
+  ordering remain protected by regression and integration specs.
 - Bundled Extension policy is tested in Node at the authoritative layer.
 - The fake RPC process provides deterministic end-to-end event coverage, while
   smoke tests verify the installed Pi process without calling a model.
