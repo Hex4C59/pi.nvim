@@ -133,6 +133,8 @@ and descriptions retain distinct semantic highlighting. Commands implemented by 
 frontend include `/settings`, `/model`, `/copy`, `/name`, `/session`, `/hotkeys`,
 `/fork`, `/clone`, `/tree`, `/new`, `/compact`, `/resume`, `/export`, and `/quit`.
 pi.nvim also provides `/thinking`, `/layout`, `/commands`, `/abort`, and `/clear`.
+Both `/new` and `/clear` start a fresh Pi session, so `/clear` resets the model
+conversation and context usage instead of only hiding the rendered transcript.
 Pi TUI commands that RPC 0.83 does not expose remain searchable and report the
 limitation instead of being sent to the model. Input beginning
 with `!` runs through Pi's RPC bash command. Unknown slash commands pass through

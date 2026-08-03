@@ -303,7 +303,7 @@ function M.submit(text, root, behavior)
   elseif command == "abort" then
     M.abort(root)
   elseif command == "clear" then
-    chat_for(root):clear()
+    M.new_session(root)
   elseif command == "quit" then
     chat_for(root):close()
   elseif command and rpc_unavailable_commands[command] then

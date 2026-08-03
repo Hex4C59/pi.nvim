@@ -121,8 +121,8 @@ local canvas_surface = vim.api.nvim_get_hl(0, { name = "PiCanvasNormal", link = 
 assert(input_border.bg == input_surface.bg, "gray input surface must fill the straight edge cells")
 assert(input_surface.bold, "prompt text must remain visually prominent while composing input")
 assert(
-  input_cursor.fg == input_surface.bg and input_cursor.bg == input_surface.fg,
-  "IME preedit text must explicitly reverse the prompt foreground and surface"
+  input_cursor.fg == input_surface.fg and input_cursor.bg == 0x000000,
+  "IME preedit reverse rendering must produce black text on a light surface"
 )
 assert(input_cursor.bold and input_cursor.nocombine, "IME cursor contrast must not inherit a weaker text style")
 assert(input_corner.bg == canvas_surface.bg, "chamfered corners must not leak gray outside the frame")

@@ -189,7 +189,9 @@ local function setup_highlights()
     PiInputCornerError = { fg = error_color, bg = canvas, bold = true },
     PiInputActivity = { fg = warning, bg = input_bg, bold = true },
     PiInputNormal = { fg = foreground, bg = input_bg, bold = true },
-    PiInputCursor = { fg = input_bg, bg = foreground, bold = true, nocombine = true },
+    -- Kitty reverses the cursor SGR when drawing IME preedit text, so this
+    -- background becomes the preedit foreground.
+    PiInputCursor = { fg = foreground, bg = 0x000000, bold = true, nocombine = true },
     PiCommandMenu = { fg = muted, bg = canvas },
     PiCommandSelected = { bg = blend(accent, canvas, 0.075) },
     PiCommandMarker = { fg = accent, bold = true },
@@ -386,7 +388,7 @@ local builtin_commands = {
   { name = "layout", description = "Change the Pi workspace layout", argument_hint = "<layout>" },
   { name = "commands", description = "Browse available commands" },
   { name = "abort", description = "Abort the active operation" },
-  { name = "clear", description = "Clear the transcript view" },
+  { name = "clear", description = "Clear the conversation and start a fresh session" },
 }
 
 local status_padding = "  "

@@ -152,6 +152,18 @@ assert(notification:find("Cache read: 20 (66.7% hit)", 1, true), "session detail
 assert(notification:find("Cost: $0.0010", 1, true), "session details are missing cost")
 assert(notification:find("Auto-compact: on", 1, true), "session details are missing compaction state")
 
+pi.submit("/clear", root)
+assert(
+  vim.wait(3000, function()
+    local cleared_transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+    local cleared_status = table.concat(vim.api.nvim_buf_get_lines(status_buf, 0, -1, false), "\n")
+    return not cleared_transcript:find("history question", 1, true)
+      and not cleared_transcript:find("hello from fixture", 1, true)
+      and cleared_status:find("context 0%", 1, true) ~= nil
+  end, 20),
+  "/clear did not reset the Pi session transcript and context usage"
+)
+
 pi.stop_all()
 
 print("rpc_ui_spec: ok")

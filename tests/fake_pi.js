@@ -19,6 +19,7 @@ const assistant = {
   stopReason: "stop",
 };
 let delayedPrompt;
+let freshSession = false;
 
 const runPrompt = (request, userText = request.message) => {
   respond(request);
@@ -50,13 +51,15 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     });
   } else if (request.type === "get_messages") {
     respondToRequest({
-      messages: [
+      messages: freshSession ? [] : [
         { role: "user", content: [{ type: "text", text: "history question" }] },
         { role: "assistant", content: [{ type: "text", text: "history answer" }], stopReason: "stop" },
       ],
     });
   } else if (request.type === "get_session_stats") {
-    respondToRequest({ tokens: { input: 10, output: 5, cacheRead: 20 }, contextUsage: { tokens: 35, contextWindow: 100000, percent: 0.035 }, cost: 0.001 });
+    respondToRequest(freshSession
+      ? { tokens: { input: 0, output: 0, cacheRead: 0 }, contextUsage: { tokens: 0, contextWindow: 100000, percent: 0 }, cost: 0 }
+      : { tokens: { input: 10, output: 5, cacheRead: 20 }, contextUsage: { tokens: 35, contextWindow: 100000, percent: 0.035 }, cost: 0.001 });
   } else if (request.type === "get_commands") {
     respondToRequest({ commands: [
       { name: "fixture", description: "Fixture command", source: "extension" },
@@ -91,6 +94,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (request.type === "abort") {
     respondToRequest();
     send({ type: "agent_settled" });
+  } else if (request.type === "new_session") {
+    freshSession = true;
+    respondToRequest({ cancelled: false });
   } else {
     respondToRequest();
   }

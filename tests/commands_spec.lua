@@ -58,6 +58,9 @@ end
 pi.copy_last_response = function(value)
   calls.copy = value
 end
+pi.new_session = function(value)
+  calls.new_session = value
+end
 
 pi.submit("/model openai/gpt-test", root)
 pi.submit("/thinking high", root)
@@ -66,6 +69,7 @@ pi.submit("/layout float", root)
 pi.submit("/compact focus on tools", root)
 pi.submit("/tree", root)
 pi.submit("/copy", root)
+pi.submit("/clear", root)
 pi.submit("!printf hello", root)
 
 assert(calls.model == root, "model command was not routed")
@@ -77,6 +81,7 @@ assert(calls.layout[1] == "float" and calls.layout[2] == root, "layout command w
 assert(calls.compact[1] == "focus on tools" and calls.compact[2] == root, "compact arguments were lost")
 assert(calls.tree == root, "tree command was not routed")
 assert(calls.copy == root, "copy command was not routed")
+assert(calls.new_session == root, "clear command did not start a fresh session")
 assert(calls.bash[1] == "printf hello" and calls.bash[2] == root, "bash command was not routed")
 
 local warning = nil
