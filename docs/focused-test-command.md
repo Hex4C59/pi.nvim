@@ -3,8 +3,8 @@
 > Status: In progress. Phase 1 was implemented and verified on 2026-08-04.
 > Phase 2 is underway: Chat ownership specs and direct Transcript model,
 > projection, retention, history, TranscriptView, renderer text, welcome,
-> message, and Markdown specs are complete; the remaining renderer and UI-owner
-> splits are tracked by `docs/modular-architecture-plan.md`.
+> message, Markdown, and tool specs are complete; the remaining renderer and
+> UI-owner splits are tracked by `docs/modular-architecture-plan.md`.
 >
 > Scope: local test invocation, test-infrastructure regression coverage, test
 > failure granularity, and coverage visibility in pi.nvim. This proposal does
@@ -73,11 +73,10 @@ The existing suite has several important strengths:
 
 The remaining known quality gaps are:
 
-- `tests/lua/ui/render_spec.lua` still contains tool, process, and facade
-  composition behaviors. Text, welcome, message, and Markdown rendering now
-  have independent owner specs below `tests/lua/ui/render/`; Chat coverage is
-  split by facade, shell, activity, interaction, registry, and lifecycle
-  ownership.
+- `tests/lua/ui/render_spec.lua` still contains process and facade composition
+  behaviors. Text, welcome, message, Markdown, and tool rendering now have
+  independent owner specs below `tests/lua/ui/render/`; Chat coverage is split
+  by facade, shell, activity, interaction, registry, and lifecycle ownership.
 - Top-level Lua assertions stop at the first failure in a file and provide no
   test-case-level summary beyond the assertion message.
 - The repository has no coverage report or maintained map showing which tests
@@ -275,9 +274,9 @@ reason to split a test.
 
 Current ownership work is:
 
-- Text, welcome, message, and Markdown rendering are split below
-  `tests/lua/ui/render/`. Continue with tool and process rendering, while
-  retaining a facade-level spec for cross-module composition.
+- Text, welcome, message, Markdown, and tool rendering are split below
+  `tests/lua/ui/render/`. Continue with process rendering, while retaining a
+  facade-level spec for cross-module composition.
 - Chat coverage is split below `tests/lua/ui/chat/` for facade, shell, activity,
   interaction, registry, and lifecycle behavior. InputArea and CommandMenu have
   standalone specs, while PermissionPanel and WidgetArea retain focused owner

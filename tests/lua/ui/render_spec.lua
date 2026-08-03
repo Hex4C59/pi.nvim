@@ -1,11 +1,5 @@
 local renderer = require("pi.ui.render")
 
-local lua_parser_available = pcall(function()
-  local parser = vim.treesitter.get_string_parser("local value = true", "lua")
-  assert(parser:parse()[1])
-  assert(vim.treesitter.query.get("lua", "highlights"))
-end)
-
 local bash_lines = {}
 for index = 1, 12 do
   table.insert(bash_lines, "line " .. index)
@@ -57,42 +51,6 @@ local items = {
     result = { content = { { type = "text", text = "<p>raw file content</p>\nsecond line" } } },
   },
 }
-
-local lines, marks, tool_ranges = renderer.render(items, {
-  hide_thinking = true,
-  tools_expanded = false,
-  width = 80,
-})
-local text = table.concat(lines, "\n")
-assert(text:find("Actions", 1, true), "tool group label is missing")
-assert(text:find("├─ ✓ Edited", 1, true), "tool timeline did not connect its first action")
-assert(text:find("╰─ ✓ Read", 1, true), "tool timeline did not terminate its last action")
-assert(text:find("Edited  lua/example.lua", 1, true), "edit title is missing")
-assert(text:find("+1 -1", 1, true), "edit title is missing its diff statistics")
-assert(text:find("- local old = true", 1, true), "deleted diff line is missing")
-assert(text:find("+ local new = true", 1, true), "added diff line is missing")
-assert(text:find("Ran  printf hello", 1, true), "bash title is missing")
-assert(text:find("line 1", 1, true) and text:find("line 12", 1, true), "bash preview must keep its head and tail")
-assert(not text:find("line 6", 1, true), "bash preview did not collapse its middle")
-assert(text:find("lines hidden · Ctrl-O expand", 1, true), "bash collapse hint is missing")
-assert(text:find("Read  README.md:1", 1, true), "read title is missing")
-assert(text:find("2 lines · Ctrl-O expand", 1, true), "read summary is missing")
-assert(not text:find("raw file content", 1, true), "collapsed read leaked file contents")
-assert(#tool_ranges == 3 and tool_ranges[1].first <= tool_ranges[1].last, "tool row ranges are missing")
-
-local highlights = {}
-for _, mark in ipairs(marks) do
-  if mark.highlight then
-    highlights[mark.highlight] = true
-  end
-end
-assert(highlights.PiDiffDelete and highlights.PiDiffAdd, "diff semantic highlights are missing")
-assert(highlights.PiDiffDeleteLine and highlights.PiDiffAddLine, "diff line surfaces are missing")
-assert(highlights.PiToolVerb and highlights.PiToolSuccess, "tool header highlights are missing")
-assert(highlights.PiToolGutter and highlights.PiToolOutput, "tool output highlights are missing")
-assert(highlights.PiToolGroupLabel and highlights.PiToolSubject, "tool hierarchy highlights are missing")
-assert(highlights.PiToolSurface, "tool output surface is missing")
-assert(highlights.PiToolOmitted, "collapsed output highlight is missing")
 
 local compact_lines, compact_marks, compact_tool_ranges, compact_process_ranges = renderer.render(items, {
   collapse_processes = true,
@@ -271,44 +229,6 @@ assert(detailed_text:find("reasoning", 1, true), "completed process details did 
 assert(detailed_text:find("raw file content", 1, true), "expanded process did not reveal tool output")
 assert(#detailed_tool_ranges == 3, "expanded process tool ranges are missing")
 
-local expanded_code_lines, expanded_code_marks, expanded_code_ranges = renderer.render({
-  {
-    type = "tool",
-    id = "read-lua",
-    name = "read",
-    state = "done",
-    expanded = true,
-    args = { path = "lua/example.lua", offset = 1 },
-    result = { content = { { type = "text", text = "local value = true\nreturn value" } } },
-  },
-}, { width = 80 })
-assert(table.concat(expanded_code_lines, "\n"):find("local value = true", 1, true), "expanded Lua read is missing")
-local expanded_code_range = assert(expanded_code_ranges[1], "expanded Lua read range is missing")
-local expanded_code_highlights = {}
-for _, mark in ipairs(expanded_code_marks) do
-  local row = mark.row + 1
-  if row >= expanded_code_range.first and row <= expanded_code_range.last and mark.highlight then
-    expanded_code_highlights[mark.highlight] = true
-  end
-end
-if lua_parser_available then
-  assert(expanded_code_highlights["@keyword.lua"], "expanded Lua read is missing keyword highlighting")
-  assert(expanded_code_highlights["@boolean.lua"], "expanded Lua read is missing boolean highlighting")
-end
-
-local narrow_tool_lines = renderer.render({ items[3] }, {
-  hide_thinking = true,
-  tools_expanded = false,
-  width = 42,
-})
-local narrow_tool_text = table.concat(narrow_tool_lines, "\n")
-assert(narrow_tool_text:find("Edited  example.lua", 1, true), "narrow edit header did not collapse its path")
-assert(narrow_tool_text:find("+1 -1", 1, true), "narrow edit header lost its diff statistics")
-assert(not narrow_tool_text:find("12.0s", 1, true), "narrow edit header should drop secondary duration metadata")
-for _, line in ipairs(narrow_tool_lines) do
-  assert(vim.api.nvim_strwidth(line) <= 42, "narrow tool timeline overflowed the window")
-end
-
 local branded_lines = renderer.render({ items[1] }, {
   width = 80,
   welcome = {
@@ -328,10 +248,5 @@ assert(
   branded_text:find("████████████", 1, true) < branded_text:find("Review this", 1, true),
   "welcome card must precede the conversation"
 )
-
-items[#items].expanded = true
-lines = renderer.render(items, { hide_thinking = true, tools_expanded = false, width = 80 })
-text = table.concat(lines, "\n")
-assert(text:find("raw file content", 1, true), "expanded read output is missing")
 
 print("render_spec: ok")
