@@ -248,7 +248,7 @@ transformation.
 | --- | --- | --- | --- |
 | 01 | Completed | Record contracts and strengthen architecture policy coverage | none |
 | 02 | Completed | Seal Chat and Runtime ownership boundaries | 01 |
-| 03 | Proposed | Decouple and split the Chat shell | 02 |
+| 03 | Completed | Decouple and split the Chat shell | 02 |
 | 04 | Proposed | Organize the image subsystem | 02 |
 | 05 | Proposed | Organize Transcript projection, retention, history, and view | 02, 04 |
 | 06 | Proposed | Split bundled security policy owners | 01 |
