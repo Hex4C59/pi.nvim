@@ -24,7 +24,7 @@ local function choice_kind(label)
   return "allow"
 end
 
-local function highlight_shell_line(buf, namespace, row, line)
+local function highlight_shell_line(row, line, marks)
   local prompt_start = line:find("$ ", 1, true)
   local source_start
   if prompt_start then
@@ -43,9 +43,11 @@ local function highlight_shell_line(buf, namespace, row, line)
     if end_col < start_col then
       return
     end
-    vim.api.nvim_buf_set_extmark(buf, namespace, row, base + start_col - 1, {
+    table.insert(marks, {
+      row = row,
+      start_col = base + start_col - 1,
       end_col = base + end_col,
-      hl_group = group,
+      highlight = group,
       priority = 175,
     })
   end
@@ -206,84 +208,9 @@ local function presentation(request)
   return title:gsub("%?$", ""), "", "", false
 end
 
-local function isolate_buffer(buf)
-  local options = vim.bo[buf]
-  options.buftype = "nofile"
-  options.bufhidden = "hide"
-  options.swapfile = false
-  options.filetype = "pi_permission"
-  options.syntax = ""
-  options.modifiable = false
-  options.completefunc = ""
-  options.omnifunc = ""
-  options.tagfunc = ""
-  options.formatexpr = ""
-  options.indentexpr = ""
-  options.formatoptions = ""
-  options.textwidth = 0
-  vim.b[buf].pi_permission_owned = true
-  vim.b[buf].did_ftplugin = 1
-  vim.b[buf].completion = false
-  vim.b[buf].cmp_enabled = false
-  vim.b[buf].coc_enabled = false
-  vim.b[buf].illuminate_disable = true
-end
-
-local function isolate_window(win)
-  local options = vim.wo[win]
-  options.wrap = false
-  options.number = false
-  options.relativenumber = false
-  options.signcolumn = "no"
-  options.foldcolumn = "0"
-  options.cursorline = false
-  options.cursorcolumn = false
-  options.colorcolumn = ""
-  options.spell = false
-  options.diff = false
-  options.foldmethod = "manual"
-  options.foldenable = false
-  options.conceallevel = 0
-  options.concealcursor = ""
-  options.virtualedit = ""
-  options.statuscolumn = ""
-  options.winbar = ""
-  pcall(function()
-    options.winfixbuf = true
-  end)
-  options.winhighlight = table.concat({
-    "Normal:PiPermissionNormal",
-    "NormalNC:PiPermissionNormal",
-    "EndOfBuffer:PiPermissionNormal",
-    "Cursor:PiPermissionCursor",
-    "lCursor:PiPermissionCursor",
-    "CursorLine:PiPermissionNormal",
-    "CursorColumn:PiPermissionNormal",
-    "ColorColumn:PiPermissionNormal",
-    "SignColumn:PiPermissionNormal",
-    "FoldColumn:PiPermissionNormal",
-    "LineNr:PiPermissionNormal",
-    "CursorLineNr:PiPermissionNormal",
-    "Visual:PiPermissionVisual",
-    "Search:PiPermissionNormal",
-    "IncSearch:PiPermissionNormal",
-    "CurSearch:PiPermissionNormal",
-    "MatchParen:PiPermissionNormal",
-    "Pmenu:PiPermissionNormal",
-    "PmenuSel:PiPermissionSelected",
-    "PmenuSbar:PiPermissionNormal",
-    "PmenuThumb:PiPermissionNormal",
-    "StatusLine:PiPermissionNormal",
-    "StatusLineNC:PiPermissionNormal",
-    "WinSeparator:PiPermissionNormal",
-    "FloatBorder:PiPermissionNormal",
-  }, ",")
-end
-
-function PermissionPanel.new(chat, deps)
+function PermissionPanel.new(chat)
   return setmetatable({
     chat = chat,
-    namespace = deps.namespace,
     queue = {},
     current = nil,
     selected = 1,
@@ -291,9 +218,9 @@ function PermissionPanel.new(chat, deps)
     body_offset = 1,
     body_lines = {},
     body_budget = 1,
+    available_height = MAX_COMPACT_HEIGHT,
     return_win = nil,
     return_mode = nil,
-    return_guicursor = nil,
     key_namespace = vim.api.nvim_create_namespace("pi.nvim.permission.keys." .. vim.fn.sha256(chat.root):sub(1, 12)),
   }, PermissionPanel)
 end
@@ -308,7 +235,7 @@ function PermissionPanel:_select(delta)
   end
   local option_count = #options_for(self.current.request)
   self.selected = (self.selected - 1 + delta) % math.max(1, option_count) + 1
-  self:_render()
+  self.chat:_render_transcript()
 end
 
 function PermissionPanel:_resolve_selected()
@@ -328,7 +255,7 @@ end
 function PermissionPanel:_toggle_expanded()
   self.expanded = not self.expanded
   self.body_offset = 1
-  self.chat:_layout()
+  self.chat:_render_transcript()
 end
 
 function PermissionPanel:_handle_key(raw_key)
@@ -360,9 +287,6 @@ function PermissionPanel:_install_key_capture()
     if not self:active() or typed == "" then
       return
     end
-    if self.chat.permission_win and vim.api.nvim_win_is_valid(self.chat.permission_win) then
-      pcall(vim.api.nvim_set_current_win, self.chat.permission_win)
-    end
     self:_handle_key(typed)
     -- The permission panel is a focus trap. Unrecognized typed keys are ignored
     -- instead of leaking into Normal mode or another plugin.
@@ -374,112 +298,17 @@ function PermissionPanel:_remove_key_capture()
   vim.on_key(nil, self.key_namespace)
 end
 
-function PermissionPanel:_install_mappings(buf)
-  local function map(modes, keys, callback)
-    for _, key in ipairs(keys) do
-      vim.keymap.set(modes, key, callback, {
-        buffer = buf,
-        silent = true,
-        nowait = true,
-        noremap = true,
-      })
-    end
-  end
-
-  -- These mappings are a fallback for generated/non-typed input. Real user
-  -- input is captured by vim.on_key so later plugin mappings cannot steal it.
-  map({ "n", "i" }, { "k", "<Up>" }, function()
-    self:_select(-1)
-  end)
-  map({ "n", "i" }, { "j", "<Down>" }, function()
-    self:_select(1)
-  end)
-  map({ "n", "i" }, { "<Esc>" }, function()
-    self:_block()
-  end)
-  map({ "n", "i" }, { "<CR>" }, function()
-    self:_resolve_selected()
-  end)
-  map({ "n", "i" }, { "<C-q>" }, function()
-    self:exit_to_normal()
-  end)
-  map({ "n", "i" }, { "e" }, function()
-    self:_toggle_expanded()
-  end)
-  map({ "n", "i" }, { "<C-d>", "<PageDown>" }, function()
-    self:_scroll(math.max(1, math.floor(self.body_budget / 2)))
-  end)
-  map({ "n", "i" }, { "<C-u>", "<PageUp>" }, function()
-    self:_scroll(-math.max(1, math.floor(self.body_budget / 2)))
-  end)
-end
-
-function PermissionPanel:_ensure_buffer()
-  local chat = self.chat
-  if chat.permission_buf and vim.api.nvim_buf_is_valid(chat.permission_buf) then
-    return chat.permission_buf
-  end
-
-  chat.permission_buf = vim.api.nvim_create_buf(false, true)
-  local ok = pcall(vim.api.nvim_buf_set_name, chat.permission_buf, "Pi Permission · " .. vim.fs.basename(chat.root))
-  if not ok then
-    vim.api.nvim_buf_set_name(chat.permission_buf, "Pi Permission · " .. vim.fn.sha256(chat.root):sub(1, 6))
-  end
-  vim.b[chat.permission_buf].pi_kind = "permission"
-  vim.b[chat.permission_buf].pi_root = chat.root
-  isolate_buffer(chat.permission_buf)
-  self:_install_mappings(chat.permission_buf)
-  return chat.permission_buf
-end
-
-function PermissionPanel:_ensure_window()
-  local chat = self.chat
-  if chat.permission_win and vim.api.nvim_win_is_valid(chat.permission_win) then
-    return chat.permission_win
-  end
-  if not chat.win or not vim.api.nvim_win_is_valid(chat.win) then
-    return nil
-  end
-
-  local buf = self:_ensure_buffer()
-  chat.permission_win = vim.api.nvim_open_win(buf, false, {
-    relative = "win",
-    win = chat.win,
-    row = 0,
-    col = 0,
-    width = math.max(1, vim.api.nvim_win_get_width(chat.win)),
-    height = 1,
-    style = "minimal",
-    focusable = true,
-    zindex = 60,
-  })
-  isolate_window(chat.permission_win)
-  vim.wo[chat.permission_win].fillchars = "eob: "
-  vim.wo[chat.permission_win].winblend = 0
-  return chat.permission_win
-end
-
-function PermissionPanel:_close_window()
-  local chat = self.chat
+function PermissionPanel:_deactivate()
   self:_remove_key_capture()
-  if chat.permission_win and vim.api.nvim_win_is_valid(chat.permission_win) then
-    vim.api.nvim_win_close(chat.permission_win, true)
-  end
-  chat.permission_win = nil
 end
 
 function PermissionPanel:_focus()
-  local win = self:_ensure_window()
-  if not win then
+  local chat = self.chat
+  if not chat.win or not vim.api.nvim_win_is_valid(chat.win) then
     return
   end
-  isolate_buffer(self.chat.permission_buf)
-  isolate_window(win)
-  vim.o.guicursor = "a:PiPermissionCursor"
-  vim.api.nvim_set_current_win(win)
-  -- Window-enter plugins have run by this point, so reassert ownership of the
-  -- picker keys after they had a chance to install buffer-local mappings.
-  self:_install_mappings(self.chat.permission_buf)
+  vim.api.nvim_set_current_win(chat.win)
+  vim.api.nvim_win_set_cursor(chat.win, { vim.api.nvim_buf_line_count(chat.transcript_view:buffer()), 0 })
   self:_install_key_capture()
   vim.cmd("stopinsert")
 end
@@ -493,13 +322,12 @@ end
 function PermissionPanel:show(request, callback)
   table.insert(self.queue, { request = request, callback = callback })
   if self.current then
-    self:_render()
+    self.chat:_render_transcript()
     return
   end
 
   self.return_win = vim.api.nvim_get_current_win()
   self.return_mode = vim.api.nvim_get_mode().mode
-  self.return_guicursor = vim.o.guicursor
   self:_advance()
 end
 
@@ -509,33 +337,29 @@ function PermissionPanel:_advance()
   self.expanded = false
   self.body_offset = 1
   if not self.current then
-    self:_close_window()
+    self:_deactivate()
     self.chat:_layout()
+    self.chat:_render_transcript()
     self:_restore_focus()
     return
   end
 
   self.chat:_close_command_menu()
-  self:_ensure_window()
   self.chat:_layout()
+  self.chat:_render_transcript()
   self:_focus()
 end
 
 function PermissionPanel:_restore_focus()
   local win = self.return_win
   local mode = self.return_mode
-  local guicursor = self.return_guicursor
   self.return_win = nil
   self.return_mode = nil
-  self.return_guicursor = nil
-  if guicursor ~= nil then
-    vim.o.guicursor = guicursor
-  end
   if not win or not vim.api.nvim_win_is_valid(win) then
     return
   end
   vim.api.nvim_set_current_win(win)
-  if win == self.chat.input_win and mode and mode:sub(1, 1) == "i" then
+  if win == self.chat.input_area:window() and mode and mode:sub(1, 1) == "i" then
     vim.cmd("startinsert")
   end
 end
@@ -567,7 +391,7 @@ end
 
 function PermissionPanel:cancel_all(force_normal, target_win)
   if not self.current and #self.queue == 0 then
-    self:_close_window()
+    self:_deactivate()
     return
   end
   local pending = {}
@@ -577,16 +401,14 @@ function PermissionPanel:cancel_all(force_normal, target_win)
   vim.list_extend(pending, self.queue)
   self.current = nil
   self.queue = {}
-  self:_close_window()
+  self:_deactivate()
   for _, item in ipairs(pending) do
     if item.callback then
       item.callback(false)
     end
   end
-  if self.return_guicursor ~= nil then
-    vim.o.guicursor = self.return_guicursor
-    self.return_guicursor = nil
-  end
+  self.chat:_layout()
+  self.chat:_render_transcript()
   local return_win = target_win or self.return_win
   if force_normal and return_win and vim.api.nvim_win_is_valid(return_win) then
     vim.api.nvim_set_current_win(return_win)
@@ -596,12 +418,18 @@ function PermissionPanel:cancel_all(force_normal, target_win)
   self.return_mode = nil
 end
 
+function PermissionPanel:destroy()
+  self:cancel_all()
+  self.body_lines = {}
+  self.body_marks = {}
+end
+
 function PermissionPanel:_scroll(delta)
   local maximum = math.max(1, #self.body_lines - self.body_budget + 1)
   local next_offset = math.max(1, math.min(maximum, self.body_offset + delta))
   if next_offset ~= self.body_offset then
     self.body_offset = next_offset
-    self:_render()
+    self.chat:_render_transcript()
   end
 end
 
@@ -641,14 +469,11 @@ function PermissionPanel:_compose(width, height)
       kind = kind,
       start_col = extra and extra.start_col or 0,
       end_col = #text,
-      selected_start = extra and extra.selected_start,
-      selected_end = extra and extra.selected_end,
       marker_start = extra and extra.marker_start,
       marker_end = extra and extra.marker_end,
       detail_start = extra and extra.detail_start,
       detail_end = extra and extra.detail_end,
       detail_highlight = extra and extra.detail_highlight,
-      selected_highlight = extra and extra.selected_highlight,
       marker_highlight = extra and extra.marker_highlight,
     })
     return row
@@ -705,21 +530,15 @@ function PermissionPanel:_compose(width, height)
     local selected_highlight = kind == "block" and "PiPermissionBlockSelected"
       or kind == "session" and "PiPermissionSessionSelected"
       or "PiPermissionAllowSelected"
-    local row = add(line, "choice", {
+    add(line, "choice", {
       start_col = 1,
-      selected_start = selected and 0 or nil,
-      selected_end = selected and #line or nil,
       marker_start = selected and 1 or nil,
       marker_end = selected and (1 + #marker) or nil,
       detail_start = 1 + #marker + 1,
       detail_end = #line,
       detail_highlight = selected and selected_highlight or choice_highlight,
-      selected_highlight = selected_highlight,
       marker_highlight = selected_highlight,
     })
-    if selected then
-      self.selected_row = row + 1
-    end
   end
 
   local can_scroll = #self.body_lines > self.body_budget
@@ -751,106 +570,51 @@ function PermissionPanel:_compose(width, height)
   return lines, marks
 end
 
-function PermissionPanel:_render(width, height)
-  if not self.current then
-    return
-  end
-  local chat = self.chat
-  local win = self:_ensure_window()
-  if not win then
-    return
-  end
-  width = width or vim.api.nvim_win_get_width(win)
-  height = height or vim.api.nvim_win_get_height(win)
-  local lines, marks = self:_compose(width, height)
-  local buf = self:_ensure_buffer()
-  isolate_buffer(buf)
-  vim.api.nvim_buf_clear_namespace(buf, -1, 0, -1)
-  vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].modifiable = false
-
-  for _, mark in ipairs(marks) do
-    local selected_line = mark.selected_start ~= nil and mark.selected_end ~= nil
-    vim.api.nvim_buf_set_extmark(buf, self.namespace, mark.row, 0, {
-      line_hl_group = selected_line and (mark.selected_highlight or "PiPermissionSelected") or "PiPermissionNormal",
-      priority = selected_line and 145 or 80,
-    })
-    local groups = {
-      rule = "PiPermissionRule",
-      title = "PiPermissionTitle",
-      body = "PiPermissionBody",
-      command = "PiPermissionCommand",
-      meta = "PiPermissionHint",
-      question = "PiPermissionQuestion",
-      choice = "PiPermissionChoice",
-      hint = "PiPermissionHint",
-    }
-    local group = groups[mark.kind]
-    if group and mark.end_col > mark.start_col then
-      vim.api.nvim_buf_set_extmark(buf, self.namespace, mark.row, mark.start_col, {
-        end_col = mark.end_col,
-        hl_group = group,
-        priority = 130,
-      })
-    end
-    if mark.selected_start ~= nil and mark.selected_end ~= nil then
-      vim.api.nvim_buf_set_extmark(buf, self.namespace, mark.row, mark.selected_start, {
-        end_col = mark.selected_end,
-        hl_group = mark.selected_highlight or "PiPermissionSelected",
-        priority = 150,
-      })
-    end
-    if mark.detail_start and mark.detail_end and mark.detail_end > mark.detail_start then
-      vim.api.nvim_buf_set_extmark(buf, self.namespace, mark.row, mark.detail_start, {
-        end_col = mark.detail_end,
-        hl_group = mark.detail_highlight,
-        priority = 155,
-      })
-    end
-    if mark.marker_start and mark.marker_end then
-      vim.api.nvim_buf_set_extmark(buf, self.namespace, mark.row, mark.marker_start, {
-        end_col = mark.marker_end,
-        hl_group = mark.marker_highlight or "PiPermissionMarker",
-        priority = 160,
-      })
-    end
-    if mark.kind == "command" then
-      highlight_shell_line(buf, self.namespace, mark.row, lines[mark.row + 1] or "")
-    end
-  end
-
-  if vim.api.nvim_win_is_valid(win) then
-    vim.api.nvim_win_set_cursor(win, { math.max(1, self.selected_row or (#lines - 1)), 1 })
-  end
+function PermissionPanel:set_available_height(height)
+  self.available_height = math.max(1, height or MAX_COMPACT_HEIGHT)
 end
 
-function PermissionPanel:layout(width, input_row)
+function PermissionPanel:transcript_content(width)
   if not self.current then
-    return 0
+    return {}, {}
   end
-  local available = math.max(1, input_row)
+  local available = self.available_height or MAX_COMPACT_HEIGHT
   local desired = self.expanded and available or math.min(MAX_COMPACT_HEIGHT, available)
   local body_lines = self:_body(width)
   local natural = math.max(MIN_HEIGHT, 9 + #body_lines)
   local height = math.max(1, math.min(desired, natural))
-  local win = self:_ensure_window()
-  if not win then
-    return 0
+  local lines, specs = self:_compose(width, height)
+  local marks = {}
+  local groups = {
+    rule = "PiPermissionRule",
+    title = "PiPermissionTitle",
+    body = "PiPermissionBody",
+    command = "PiPermissionCommand",
+    meta = "PiPermissionHint",
+    question = "PiPermissionQuestion",
+    choice = "PiPermissionChoice",
+    hint = "PiPermissionHint",
+  }
+  local function add_mark(row, start_col, end_col, highlight, priority)
+    if highlight and end_col and start_col and end_col > start_col then
+      table.insert(marks, {
+        row = row,
+        start_col = start_col,
+        end_col = end_col,
+        highlight = highlight,
+        priority = priority,
+      })
+    end
   end
-  vim.api.nvim_win_set_config(win, {
-    relative = "win",
-    win = self.chat.win,
-    row = math.max(0, input_row - height),
-    col = 0,
-    width = math.max(1, width),
-    height = height,
-    style = "minimal",
-    focusable = true,
-    zindex = 60,
-  })
-  self:_render(width, height)
-  return height
+  for _, spec in ipairs(specs) do
+    add_mark(spec.row, spec.start_col, spec.end_col, groups[spec.kind], 130)
+    add_mark(spec.row, spec.detail_start, spec.detail_end, spec.detail_highlight, 155)
+    add_mark(spec.row, spec.marker_start, spec.marker_end, spec.marker_highlight or "PiPermissionMarker", 160)
+    if spec.kind == "command" then
+      highlight_shell_line(spec.row, lines[spec.row + 1] or "", marks)
+    end
+  end
+  return lines, marks
 end
 
 M.PermissionPanel = PermissionPanel

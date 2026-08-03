@@ -29,20 +29,48 @@ assert(
   }, "aboveEditor"),
   "valid todo widget was rejected"
 )
-assert(chat.widget_win and vim.api.nvim_win_is_valid(chat.widget_win), "above-editor widget window was not created")
-assert(chat.widget_buf and vim.api.nvim_buf_is_valid(chat.widget_buf), "above-editor widget buffer was not created")
-assert(vim.b[chat.widget_buf].pi_kind == "widget", "widget buffer kind is missing")
-assert(vim.bo[chat.widget_buf].modifiable == false, "widget buffer must stay read-only")
-local widget = vim.api.nvim_win_get_config(chat.widget_win)
-local input = vim.api.nvim_win_get_config(chat.input_win)
-assert(widget.relative == "win" and widget.win == chat.win, "widget is not attached to the chat canvas")
-assert(widget.focusable == false, "widget must not steal prompt focus")
-assert(widget.col == 0 and widget.width == vim.api.nvim_win_get_width(chat.win), "widget is not full width")
-assert(widget.row + widget.height <= input.row, "above-editor widget overlaps the prompt")
-assert(has_highlight(chat.widget_buf, "PiWidgetTitle"), "widget title is not highlighted")
-assert(has_highlight(chat.widget_buf, "PiWidgetActive"), "active todo is not highlighted")
-assert(has_highlight(chat.widget_buf, "PiWidgetPending"), "pending todo is not highlighted")
-assert(has_highlight(chat.widget_buf, "PiWidgetCompleted"), "completed todo is not highlighted")
+assert(
+  chat.widget_area:window("aboveEditor") == nil and chat.widget_area:buffer("aboveEditor") == nil,
+  "todo must not create a separate widget window or buffer"
+)
+local transcript_lines = vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false)
+local transcript = table.concat(transcript_lines, "\n")
+assert(transcript:find("Implement widget support", 1, true), "todo was not rendered in the chat transcript")
+assert(vim.tbl_contains(transcript_lines, "• Plan · 1/3 complete"), "todo title is not a transcript history row")
+assert(vim.tbl_contains(transcript_lines, "  └ ◐ #2 Implement widget support"), "first todo lost its branch indent")
+assert(vim.tbl_contains(transcript_lines, "    ○ #3 Run tests"), "pending todo lost its transcript indent")
+assert(vim.tbl_contains(transcript_lines, "    ✓ #1 Inspect Pi API"), "completed todo lost its transcript indent")
+assert(has_highlight(chat.transcript_view.buf, "PiPlanTitle"), "todo title is not highlighted")
+assert(has_highlight(chat.transcript_view.buf, "PiPlanActive"), "active todo is not highlighted")
+assert(has_highlight(chat.transcript_view.buf, "PiPlanPending"), "pending todo is not highlighted")
+assert(has_highlight(chat.transcript_view.buf, "PiPlanCompleted"), "completed todo is not highlighted")
+for _, extmark in ipairs(vim.api.nvim_buf_get_extmarks(chat.transcript_view.buf, -1, 0, -1, { details = true })) do
+  local details = extmark[4] or {}
+  if type(details.hl_group) == "string" and vim.startswith(details.hl_group, "PiPlan") then
+    assert(details.line_hl_group == nil, "inline todo still paints a separate full-width surface")
+  end
+end
+assert(
+  vim.api.nvim_get_hl(0, { name = "PiPlanTitle", link = false }).bg == nil,
+  "inline todo title has a panel background"
+)
+for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+  assert(vim.b[bufnr].pi_kind ~= "widget", "todo unexpectedly allocated a widget buffer")
+end
+
+chat:set_widget("pi.todo", {
+  "Plan · 0/1 complete",
+  "◐ #1 检查中文任务换行仍与内容边界对齐",
+}, "aboveEditor")
+local wrapped_lines, wrapped_marks = chat.widget_area:transcript_content(24)
+assert(wrapped_lines[2]:find("^  └ ◐ "), "wrapped todo lost its first-line transcript indent")
+assert(wrapped_lines[3]:find("^      "), "wrapped todo continuation is not aligned below its text")
+for _, line in ipairs(wrapped_lines) do
+  assert(vim.fn.strdisplaywidth(line) <= 24, "wrapped todo crossed the transcript's right edge")
+end
+for _, mark in ipairs(wrapped_marks) do
+  assert(mark.line_highlight == nil, "wrapped todo requested a full-line background")
+end
 
 chat:set_widget("pi.todo", {
   "Plan · 0/6 complete",
@@ -53,22 +81,33 @@ chat:set_widget("pi.todo", {
   "○ #5 Fifth",
   "○ #6 Sixth",
 }, "aboveEditor")
-widget = vim.api.nvim_win_get_config(chat.widget_win)
-local lines = vim.api.nvim_buf_get_lines(chat.widget_buf, 0, -1, false)
-assert(widget.height == 4 and #lines == 4, "widget did not respect chat.max_widget_height")
-assert(lines[4]:find("more", 1, true), "bounded widget did not report omitted rows")
-assert(has_highlight(chat.widget_buf, "PiWidgetMuted"), "widget overflow summary is not muted")
+transcript = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
+assert(transcript:find("… 4 more", 1, true), "inline todo did not respect chat.max_widget_height")
+assert(not transcript:find("#6 Sixth", 1, true), "inline todo leaked rows beyond its height limit")
+assert(not transcript:find("Implement widget support", 1, true), "todo update retained stale transcript rows")
+assert(has_highlight(chat.transcript_view.buf, "PiPlanMuted"), "todo overflow summary is not muted")
 assert(not chat:set_widget("invalid", { "ok", false }, "aboveEditor"), "non-string widget lines were accepted")
 
 chat:set_widget("pi.todo", nil)
-assert(chat.widget_win == nil, "cleared above-editor widget window remained open")
-assert(vim.api.nvim_buf_get_lines(chat.widget_buf, 0, -1, false)[1] == "", "cleared widget retained stale text")
+transcript = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
+assert(not transcript:find("Plan ·", 1, true), "cleared todo retained stale transcript text")
+chat:set_widget("fixture.above", { "Above the editor" }, "aboveEditor")
+assert(
+  chat.widget_area:window("aboveEditor") and vim.api.nvim_win_is_valid(chat.widget_area:window("aboveEditor")),
+  "generic above-editor widget lost its window"
+)
+assert(
+  chat.widget_area:buffer("aboveEditor") and vim.api.nvim_buf_is_valid(chat.widget_area:buffer("aboveEditor")),
+  "generic above-editor widget lost its buffer"
+)
+assert(vim.b[chat.widget_area:buffer("aboveEditor")].pi_kind == "widget", "generic widget buffer kind is missing")
+chat:set_widget("fixture.above", nil)
 chat:set_widget("fixture.below", { "Below the editor" }, "belowEditor")
-local below = chat.widget_area.slots.belowEditor
-assert(below.win and vim.api.nvim_win_is_valid(below.win), "below-editor widget window was not created")
-local below_config = vim.api.nvim_win_get_config(below.win)
-input = vim.api.nvim_win_get_config(chat.input_win)
-local footer = vim.api.nvim_win_get_config(chat.status_win)
+local below_win = chat.widget_area:window("belowEditor")
+assert(below_win and vim.api.nvim_win_is_valid(below_win), "below-editor widget window was not created")
+local below_config = vim.api.nvim_win_get_config(below_win)
+local input = vim.api.nvim_win_get_config(chat.input_area:window())
+local footer = vim.api.nvim_win_get_config(chat.input_area:status_window())
 assert(
   below_config.col == 0 and below_config.width == vim.api.nvim_win_get_width(chat.win),
   "below-editor widget is not full width"
@@ -79,20 +118,24 @@ assert(below_config.row + below_config.height <= footer.row, "below-editor widge
 chat:set_widget("fixture.below", nil)
 chat:set_widget("pi.todo", { "Plan · 0/1 complete", "○ #1 Stay visible" }, "aboveEditor")
 chat:confirm({ id = "widget-permission", method = "confirm", title = "Confirm", message = "command" }, function() end)
-assert(chat.widget_win == nil, "widget must yield to the permission surface")
+transcript = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
+assert(transcript:find("Stay visible", 1, true), "todo disappeared while the permission surface was open")
 chat.permission_area:_resolve(false)
-assert(chat.widget_win and vim.api.nvim_win_is_valid(chat.widget_win), "widget did not return after permission closed")
+assert(chat.widget_area:window("aboveEditor") == nil, "todo created a widget window after permission closed")
 
 chat:set_input("/mo")
 assert(chat:_update_command_menu(), "command menu did not open for widget overlap test")
-assert(chat.widget_win == nil, "widget must yield to slash-command completion")
+transcript = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
+assert(transcript:find("Stay visible", 1, true), "todo disappeared while slash-command completion was open")
 chat:_close_command_menu()
-assert(
-  chat.widget_win and vim.api.nvim_win_is_valid(chat.widget_win),
-  "widget did not return after command menu closed"
-)
+assert(chat.widget_area:window("aboveEditor") == nil, "todo created a widget window after command completion closed")
 
 chat:clear_widgets()
-assert(chat.widget_win == nil and next(chat.widget_area.widgets) == nil, "widget state did not clear")
+transcript = table.concat(vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false), "\n")
+assert(not transcript:find("Stay visible", 1, true), "cleared todo remained in the transcript")
+assert(
+  chat.widget_area:window("aboveEditor") == nil and next(chat.widget_area.widgets) == nil,
+  "widget state did not clear"
+)
 chat:close()
 print("widget_spec: ok")

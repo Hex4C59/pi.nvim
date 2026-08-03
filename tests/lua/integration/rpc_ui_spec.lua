@@ -38,19 +38,14 @@ assert(
 )
 assert(
   vim.wait(3000, function()
-    local widget = find_buffer("widget")
-    if not widget then
-      return false
-    end
-    local text = table.concat(vim.api.nvim_buf_get_lines(widget, 0, -1, false), "\n")
+    local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
     return text:find("Run RPC tests", 1, true) ~= nil
   end, 20),
-  "Extension setWidget event was not rendered"
+  "Extension todo setWidget event was not rendered in the transcript"
 )
-local widget_buf = assert(find_buffer("widget"), "widget buffer was not created")
 local chat = require("pi.runtime").chat_for(root)
-assert(chat.widget_win and vim.api.nvim_win_is_valid(chat.widget_win), "widget window was not created")
-assert(vim.api.nvim_win_get_config(chat.widget_win).focusable == false, "RPC widget can steal prompt focus")
+assert(find_buffer("widget") == nil, "todo setWidget event created a separate buffer")
+assert(chat.widget_area:window("aboveEditor") == nil, "todo setWidget event created a separate window")
 
 pi.select_permission_mode(root, "auto")
 assert(
@@ -63,7 +58,7 @@ assert(
 
 assert(
   vim.wait(3000, function()
-    return #require("pi.ui.chat").complete(0, "/fixture-noop") == 1
+    return #chat.command_menu:complete(0, "/fixture-noop") == 1
   end, 20),
   "extension command catalog was not loaded"
 )
@@ -123,7 +118,7 @@ end
 assert(not transcript:find("Edited  example.lua", 1, true), "settled RPC task leaked its edit tool")
 assert(not transcript:find("- local old = true", 1, true), "settled RPC task leaked its diff")
 assert(not transcript:find("final output", 1, true), "collapsed read leaked its output")
-local completions = require("pi.ui.chat").complete(0, "/fix")
+local completions = chat.command_menu:complete(0, "/fix")
 assert(#completions >= 1 and completions[1].word:find("/fixture", 1, true), "dynamic commands were not loaded")
 
 pi.submit("/fixture-template concise", root)
@@ -199,11 +194,12 @@ assert(
     return not cleared_transcript:find("history question", 1, true)
       and not cleared_transcript:find("hello from fixture", 1, true)
       and cleared_status:find("context 0%", 1, true) ~= nil
-      and chat.widget_win == nil
+      and chat.widget_area:window("aboveEditor") == nil
   end, 20),
   "/clear did not reset the Pi session transcript and context usage"
 )
-assert(vim.api.nvim_buf_is_valid(widget_buf), "clearing a session unexpectedly destroyed the reusable widget buffer")
+local cleared_transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+assert(not cleared_transcript:find("Run RPC tests", 1, true), "clearing a session retained stale todo content")
 
 pi.stop_all()
 

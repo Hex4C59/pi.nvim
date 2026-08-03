@@ -1,12 +1,12 @@
 local runtime = require("pi.runtime")
 local session_file = require("pi.session_file")
-local chat_ui = require("pi.ui.chat")
+local text_content = require("pi.message").text_content
+local compact_count = require("pi.format").compact_count
+local catalog = require("pi.commands.catalog")
 
 local M = {}
 
 local notify_error = runtime.notify_error
-local text_content = chat_ui.text_content
-local builtin_commands = chat_ui.builtin_commands
 
 function M.new_session(root)
   local client = runtime.get_client(root)
@@ -44,9 +44,9 @@ function M.status(root)
     local output = tonumber(tokens.output) or 0
     local cache_read = tonumber(tokens.cacheRead) or 0
     local cache_hit = input + cache_read > 0 and (cache_read / (input + cache_read) * 100) or nil
-    local context_window = tonumber(usage.contextWindow) and chat_ui.format_count(usage.contextWindow) or "n/a"
+    local context_window = tonumber(usage.contextWindow) and compact_count(usage.contextWindow) or "n/a"
     local auto_compaction = client.session and client.session.autoCompactionEnabled
-    local cache_detail = chat_ui.format_count(cache_read)
+    local cache_detail = compact_count(cache_read)
     if cache_hit then
       cache_detail = cache_detail .. (" (%.1f%% hit)"):format(cache_hit)
     end
@@ -56,8 +56,8 @@ function M.status(root)
         "Session: " .. (data.sessionId or "ephemeral"),
         ("Messages: %d"):format(data.totalMessages or 0),
         ("Tools: %d"):format(data.toolCalls or 0),
-        "Input tokens: " .. chat_ui.format_count(input),
-        "Output tokens: " .. chat_ui.format_count(output),
+        "Input tokens: " .. compact_count(input),
+        "Output tokens: " .. compact_count(output),
         "Cache read: " .. cache_detail,
         ("Context: %s%% of %s"):format(usage.percent or "n/a", context_window),
         ("Cost: $%.4f"):format(data.cost or 0),
@@ -270,17 +270,7 @@ function M.commands(root)
       notify_error(err)
       return
     end
-    local commands = {}
-    local seen = {}
-    for _, command in ipairs(builtin_commands) do
-      table.insert(commands, command)
-      seen[command.name] = true
-    end
-    for _, command in ipairs(data.commands or {}) do
-      if not seen[command.name] then
-        table.insert(commands, command)
-      end
-    end
+    local commands = catalog.merge(data.commands)
     vim.ui.select(commands, {
       prompt = "Pi commands",
       format_item = function(command)

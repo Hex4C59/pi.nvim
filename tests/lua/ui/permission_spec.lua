@@ -3,12 +3,8 @@ local Chat = require("pi.ui.chat").Chat
 local permission_mode = require("pi.permission_mode")
 local runtime = require("pi.runtime")
 
-local function mapping(buf, lhs, mode)
-  for _, item in ipairs(vim.api.nvim_buf_get_keymap(buf, mode or "n")) do
-    if item.lhs:lower() == lhs:lower() then
-      return item.callback
-    end
-  end
+local function handle(panel, key)
+  assert(panel:_handle_key(vim.keycode(key)), "permission panel did not handle " .. key)
 end
 
 local function content(buf)
@@ -60,7 +56,7 @@ assert(mode_options[3].description:find("without confirmation", 1, true), "Auto 
 assert(mode_options[4].description:find("read/grep/find/ls/todo", 1, true), "Plan mode description hides its tool set")
 local chat = Chat.new(root)
 chat:open()
-local input_win = chat.input_win
+local input_win = chat.input_area:window()
 local original_guicursor = vim.o.guicursor
 
 local decisions = {}
@@ -79,73 +75,58 @@ chat:select_permission({
 end)
 
 assert(chat.permission_area:active(), "permission panel did not become active")
-assert(chat.permission_win and vim.api.nvim_win_is_valid(chat.permission_win), "permission window was not created")
-assert(vim.api.nvim_get_current_win() == chat.permission_win, "permission panel did not trap focus")
+assert(chat.permission_win == nil and chat.permission_buf == nil, "permission UI created a separate window or buffer")
+assert(vim.api.nvim_get_current_win() == chat.win, "inline permission UI did not trap focus in the chat content")
 assert(vim.api.nvim_get_mode().mode == "n", "permission picker did not enter Normal mode")
-assert(vim.o.guicursor == "a:PiPermissionCursor", "permission panel did not hide the native cursor")
+assert(vim.o.guicursor == original_guicursor, "inline permission UI changed the native cursor style")
 assert(
-  vim.api.nvim_win_get_cursor(chat.permission_win)[2] == 1,
-  "permission cursor is not aligned with the selection marker"
+  vim.api.nvim_win_get_cursor(chat.win)[1] == vim.api.nvim_buf_line_count(chat.transcript_view.buf),
+  "inline permission focus is not parked behind the input overlay"
 )
-assert(vim.b[chat.permission_buf].pi_kind == "permission", "permission buffer is missing its UI identity")
-local permission_config = vim.api.nvim_win_get_config(chat.permission_win)
-local input_config = vim.api.nvim_win_get_config(chat.input_win)
-assert(
-  permission_config.relative == "win" and permission_config.win == chat.win,
-  "permission panel is not attached to the chat canvas"
-)
-assert(
-  permission_config.col == 0 and permission_config.width == vim.api.nvim_win_get_width(chat.win),
-  "panel is not full width"
-)
+local input_config = vim.api.nvim_win_get_config(chat.input_area:window())
 assert(input_config.col == 0, "prompt and permission panel do not share the left edge")
-assert(input_config.width + 2 == permission_config.width, "prompt and permission panel do not share the right edge")
-assert(permission_config.height <= 15, "compact permission panel exceeded its height budget")
-assert(
-  permission_config.row + permission_config.height <= input_config.row,
-  "permission panel overlaps the prompt instead of reserving its own rows"
-)
+assert(input_config.width + 2 == vim.api.nvim_win_get_width(chat.win), "prompt lost the chat content width")
 assert(input_config.focusable == false, "prompt remained focusable behind the permission panel")
 assert(input_config.hide == false, "prompt was hidden instead of remaining visible below the permission panel")
-assert(vim.wo[chat.permission_win].winhighlight:find("Normal:PiPermissionNormal", 1, true), "panel surface is missing")
 assert(
-  vim.wo[chat.permission_win].winhighlight:find("CursorLine:PiPermissionNormal", 1, true),
-  "permission panel inherited the editor cursor-line highlight"
+  vim.bo[chat.transcript_view.buf].modifiable == false,
+  "chat buffer must remain read-only during permission input"
 )
+assert(has_extmark_highlight(chat.transcript_view.buf, "PiPermissionRule"), "permission divider is missing")
+assert(has_extmark_highlight(chat.transcript_view.buf, "PiPermissionPath"), "working directory path is not highlighted")
 assert(
-  vim.wo[chat.permission_win].winhighlight:find("Pmenu:PiPermissionNormal", 1, true),
-  "permission panel inherited the completion menu highlight"
+  has_extmark_highlight(chat.transcript_view.buf, "PiPermissionCommandPrompt"),
+  "command prompt is not highlighted"
 )
-assert(vim.bo[chat.permission_buf].modifiable == false, "permission buffer must remain read-only")
-assert(vim.bo[chat.permission_buf].completefunc == "", "permission buffer must disable completion")
-assert(vim.bo[chat.permission_buf].omnifunc == "", "permission buffer must disable omnifunc")
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionRule"), "permission divider is missing")
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionPath"), "working directory path is not highlighted")
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionCommandPrompt"), "command prompt is not highlighted")
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionShellCommand"), "shell command is not highlighted")
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionShellOption"), "shell option is not highlighted")
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionShellOperator"), "shell operator is not highlighted")
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionShellString"), "shell string is not highlighted")
+assert(has_extmark_highlight(chat.transcript_view.buf, "PiPermissionShellCommand"), "shell command is not highlighted")
+assert(has_extmark_highlight(chat.transcript_view.buf, "PiPermissionShellOption"), "shell option is not highlighted")
 assert(
-  has_extmark_highlight(chat.permission_buf, "PiPermissionBlockSelected"),
+  has_extmark_highlight(chat.transcript_view.buf, "PiPermissionShellOperator"),
+  "shell operator is not highlighted"
+)
+assert(has_extmark_highlight(chat.transcript_view.buf, "PiPermissionShellString"), "shell string is not highlighted")
+assert(
+  has_extmark_highlight(chat.transcript_view.buf, "PiPermissionBlockSelected"),
   "selected block action is not highlighted"
 )
 assert(
-  has_line_highlight(chat.permission_buf, "PiPermissionBlockSelected"),
-  "selected block action does not highlight the complete row"
+  not has_line_highlight(chat.transcript_view.buf, "PiPermissionBlockSelected"),
+  "selected block action still highlights the complete row"
 )
-assert(has_extmark_highlight(chat.permission_buf, "PiPermissionAllow"), "allow action has no success color")
+assert(
+  has_extmark_highlight(chat.transcript_view.buf, "PiPermissionAllow"),
+  "unselected allow action is not highlighted"
+)
 local permission_surface = vim.api.nvim_get_hl(0, { name = "PiPermissionNormal", link = false })
 local canvas_surface = vim.api.nvim_get_hl(0, { name = "PiCanvasNormal", link = false })
 local block_choice = vim.api.nvim_get_hl(0, { name = "PiPermissionBlock", link = false })
-local allow_choice = vim.api.nvim_get_hl(0, { name = "PiPermissionAllow", link = false })
 local block_selected = vim.api.nvim_get_hl(0, { name = "PiPermissionBlockSelected", link = false })
-assert(permission_surface.bg ~= canvas_surface.bg, "permission UI has no distinct highlighted surface")
-assert(block_choice.fg ~= allow_choice.fg, "block and allow actions must use distinct semantic colors")
-assert(block_choice.ctermfg ~= allow_choice.ctermfg, "block and allow actions need distinct ANSI colors")
-assert(block_selected.bg ~= canvas_surface.bg, "selected action has no visible surface")
+assert(permission_surface.bg == canvas_surface.bg, "inline permission UI uses a separate background surface")
+assert(block_choice.fg ~= block_selected.fg, "selected action does not change the text color")
+assert(block_choice.ctermfg ~= block_selected.ctermfg, "selected action does not change the ANSI text color")
+assert(block_selected.bg == nil and block_selected.ctermbg == nil, "selected action still paints a background")
 
-local panel = content(chat.permission_buf)
+local panel = content(chat.transcript_view.buf)
 assert(panel:find("Bash command", 1, true), "permission action type is missing")
 assert(panel:find("cwd  ", 1, true), "shell working directory is missing")
 assert(panel:find("$ git status", 1, true), "shell command is not displayed as command content")
@@ -157,70 +138,59 @@ assert(not panel:find("Permission required", 1, true), "redundant permission hea
 assert(not panel:find("[ Block ]", 1, true), "permission UI still uses bracket-shaped buttons")
 assert(not panel:find("2/2", 1, true), "picker result count leaked into the permission UI")
 assert(panel:find("e expand", 1, true), "long permission content cannot be expanded")
-for _, line in ipairs(vim.api.nvim_buf_get_lines(chat.permission_buf, 0, -1, false)) do
+local permission_lines = chat.permission_area:transcript_content(vim.api.nvim_win_get_width(chat.win))
+for _, line in ipairs(permission_lines) do
   assert(
-    vim.api.nvim_strwidth(line) <= permission_config.width,
+    vim.api.nvim_strwidth(line) <= vim.api.nvim_win_get_width(chat.win),
     ("permission row overflowed its window: %s"):format(line)
   )
 end
 
-for _, lhs in ipairs({ "<Esc>", "<CR>", "<C-q>", "<Up>", "<Down>", "e", "j", "k", "<C-d>", "<C-u>" }) do
-  assert(mapping(chat.permission_buf, lhs), "permission panel is missing mapping " .. lhs)
-  assert(mapping(chat.permission_buf, lhs, "i"), "permission panel is missing insert mapping " .. lhs)
-end
-for _, lhs in ipairs({ "1", "2", "3" }) do
-  assert(not mapping(chat.permission_buf, lhs), "permission panel still exposes numeric selection " .. lhs)
-  assert(not mapping(chat.permission_buf, lhs, "i"), "permission panel still exposes insert numeric selection " .. lhs)
-end
-assert(vim.b[chat.permission_buf].pi_permission_owned, "permission panel did not enter Pi-owned input mode")
-
-local compact_height = permission_config.height
-mapping(chat.permission_buf, "e")()
-permission_config = vim.api.nvim_win_get_config(chat.permission_win)
-assert(permission_config.height > compact_height, "expanded permission panel did not reveal more context")
-input_config = vim.api.nvim_win_get_config(chat.input_win)
-assert(
-  permission_config.row + permission_config.height <= input_config.row,
-  "expanded permission details overlap the prompt"
-)
+local compact_height = #permission_lines
+handle(chat.permission_area, "e")
+permission_lines = chat.permission_area:transcript_content(vim.api.nvim_win_get_width(chat.win))
+assert(#permission_lines > compact_height, "expanded permission panel did not reveal more context")
 local offset = chat.permission_area.body_offset
-mapping(chat.permission_buf, "<C-d>")()
+handle(chat.permission_area, "<C-d>")
 assert(chat.permission_area.body_offset > offset, "long permission body did not scroll")
 
 input_until("<Down>", function()
-  return content(chat.permission_buf):find("❯ Allow once", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Allow once", 1, true) ~= nil
 end, "real Down input did not select allow once")
 input_until("<Up>", function()
-  return content(chat.permission_buf):find("❯ Block", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Block", 1, true) ~= nil
 end, "real Up input did not select block")
 local stolen_j = false
 vim.keymap.set({ "n", "i" }, "j", function()
   stolen_j = true
-end, { buffer = chat.permission_buf, silent = true, nowait = true })
+end, { buffer = chat.transcript_view.buf, silent = true, nowait = true })
 input_until("j", function()
-  return content(chat.permission_buf):find("❯ Allow once", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Allow once", 1, true) ~= nil
 end, "real j input did not select allow once")
 assert(not stolen_j, "a later plugin mapping stole j from the permission focus trap")
 input_until("k", function()
-  return content(chat.permission_buf):find("❯ Block", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Block", 1, true) ~= nil
 end, "real k input did not select block")
 input_until("<Down>", function()
-  return content(chat.permission_buf):find("❯ Allow once", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Allow once", 1, true) ~= nil
 end, "second real Down input did not select allow once")
 assert(
-  has_extmark_highlight(chat.permission_buf, "PiPermissionAllowSelected"),
+  has_extmark_highlight(chat.transcript_view.buf, "PiPermissionAllowSelected"),
   "selected allow action lost its success color"
 )
 assert(
-  has_line_highlight(chat.permission_buf, "PiPermissionAllowSelected"),
-  "selected allow action does not highlight the complete row"
+  not has_line_highlight(chat.transcript_view.buf, "PiPermissionAllowSelected"),
+  "selected allow action still highlights the complete row"
 )
 input_until("<CR>", function()
   return #decisions == 1
 end, "real Enter input did not resolve the selected permission")
 assert(#decisions == 1 and decisions[1].allowed == "Allow once", "permission panel did not return the raw choice")
 assert(not chat.permission_area:active(), "resolved permission remained active")
-assert(not chat.permission_win, "resolved permission window was not removed")
+assert(
+  not content(chat.transcript_view.buf):find("Do you want to proceed?", 1, true),
+  "resolved permission remained in the transcript"
+)
 assert(vim.api.nvim_win_get_config(input_win).focusable == true, "prompt did not regain focusability")
 assert(vim.o.guicursor == original_guicursor, "permission panel did not restore the native cursor style")
 
@@ -236,22 +206,22 @@ chat:select_permission(session_request, function(choice)
   table.insert(session_decisions, choice)
 end)
 input_until("j", function()
-  return content(chat.permission_buf):find("❯ Allow once", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Allow once", 1, true) ~= nil
 end, "session picker did not move to allow once")
 input_until("j", function()
-  return content(chat.permission_buf):find("❯ Allow for session", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Allow for session", 1, true) ~= nil
 end, "session picker did not move to allow for session")
 assert(
-  has_extmark_highlight(chat.permission_buf, "PiPermissionSessionSelected"),
+  has_extmark_highlight(chat.transcript_view.buf, "PiPermissionSessionSelected"),
   "selected session action lost its accent color"
 )
-mapping(chat.permission_buf, "<CR>")()
+handle(chat.permission_area, "<CR>")
 assert(session_decisions[1] == "Allow for session", "session option was not returned verbatim to the Extension")
 chat:select_permission(session_request, function(choice)
   table.insert(session_decisions, choice)
 end)
 assert(chat.permission_area:active(), "Lua cached an Extension-owned session approval")
-mapping(chat.permission_buf, "<Esc>")()
+handle(chat.permission_area, "<Esc>")
 assert(session_decisions[2] == "Block", "Escape did not return the safe option")
 
 assert(chat:permission_mode() == nil, "confirm mode guessed a permission mode before Extension status")
@@ -290,11 +260,11 @@ chat:confirm({ id = "generic-confirm", method = "confirm", title = "Confirm?", m
   generic_decision = allowed
 end)
 assert(
-  not content(chat.permission_buf):find("Allow for session", 1, true),
+  not content(chat.transcript_view.buf):find("Allow for session", 1, true),
   "generic confirm invented a session approval"
 )
-mapping(chat.permission_buf, "j")()
-mapping(chat.permission_buf, "<CR>")()
+handle(chat.permission_area, "j")
+handle(chat.permission_area, "<CR>")
 assert(generic_decision == true, "generic confirmation did not return its boolean choice")
 
 local ctrl_q_decision
@@ -302,7 +272,7 @@ chat:confirm({ id = "permission-ctrl-q", method = "confirm", title = "Confirm?",
   ctrl_q_decision = allowed
 end)
 assert(chat.permission_area:active(), "Ctrl-Q test permission did not open")
-mapping(chat.permission_buf, "<C-q>")()
+handle(chat.permission_area, "<C-q>")
 assert(ctrl_q_decision == false, "Ctrl-Q must fail closed instead of approving a request")
 assert(not chat.permission_area:active(), "Ctrl-Q did not close the permission panel")
 assert(vim.api.nvim_get_current_win() == chat.win, "Ctrl-Q did not return focus to the Pi canvas")
@@ -320,15 +290,15 @@ chat:confirm(
     table.insert(decisions, { id = "permission-3", allowed = allowed })
   end
 )
-assert(content(chat.permission_buf):find("1 pending", 1, true), "queued permission count is missing")
-mapping(chat.permission_buf, "<Esc>")()
+assert(content(chat.transcript_view.buf):find("1 pending", 1, true), "queued permission count is missing")
+handle(chat.permission_area, "<Esc>")
 assert(#decisions == 2 and decisions[2].allowed == false, "Escape did not fail closed")
 assert(chat.permission_area:active(), "next queued permission was not shown")
-assert(content(chat.permission_buf):find("File edit", 1, true), "permission queue advanced to the wrong request")
+assert(content(chat.transcript_view.buf):find("File edit", 1, true), "permission queue advanced to the wrong request")
 input_until("j", function()
-  return content(chat.permission_buf):find("❯ Allow once", 1, true) ~= nil
+  return content(chat.transcript_view.buf):find("❯ Allow once", 1, true) ~= nil
 end, "queued permission did not move to allow once")
-mapping(chat.permission_buf, "<CR>")()
+handle(chat.permission_area, "<CR>")
 assert(#decisions == 3 and decisions[3].allowed == true, "direct allow shortcut returned the wrong decision")
 
 chat:confirm({ id = "permission-4", method = "confirm", title = "Confirm?", message = "one" }, function(allowed)

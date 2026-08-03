@@ -7,6 +7,17 @@ WidgetArea.__index = WidgetArea
 local MAX_WIDGETS = 16
 local MAX_LINES_PER_WIDGET = 100
 local MAX_LINE_CHARS = 2048
+local TRANSCRIPT_WIDGETS = {
+  ["pi.todo"] = true,
+}
+
+local function maximum_height()
+  local configured = tonumber((config.get().chat or {}).max_widget_height) or 8
+  if configured ~= configured or configured == math.huge or configured == -math.huge then
+    configured = 8
+  end
+  return math.max(0, math.floor(configured))
+end
 
 local function close_window(slot)
   if slot.win and vim.api.nvim_win_is_valid(slot.win) then
@@ -55,6 +66,49 @@ local function truncate_display(text, width)
   return result .. "..."
 end
 
+local function wrap_display(text, width)
+  width = math.max(1, math.floor(width or 1))
+  local characters = {}
+  for index = 0, vim.fn.strchars(text) - 1 do
+    table.insert(characters, vim.fn.strcharpart(text, index, 1))
+  end
+  if #characters == 0 then
+    return { "" }
+  end
+
+  local lines = {}
+  local first = 1
+  while first <= #characters do
+    local used = 0
+    local last = first - 1
+    local last_space = nil
+    while last < #characters do
+      local character = characters[last + 1]
+      local character_width = vim.fn.strdisplaywidth(character)
+      if last >= first and used + character_width > width then
+        break
+      end
+      last = last + 1
+      used = used + character_width
+      if character:match("%s") then
+        last_space = last
+      end
+    end
+
+    local next_first = last + 1
+    if last < #characters and last_space and last_space > first then
+      last = last_space - 1
+      next_first = last_space + 1
+      while next_first <= #characters and characters[next_first]:match("%s") do
+        next_first = next_first + 1
+      end
+    end
+    table.insert(lines, table.concat(characters, "", first, last))
+    first = next_first
+  end
+  return lines
+end
+
 local function line_highlight(key, index, line)
   if index == 1 then
     return "PiWidgetTitle"
@@ -72,6 +126,76 @@ local function line_highlight(key, index, line)
     return "PiWidgetMuted"
   end
   return "PiWidgetText"
+end
+
+local function todo_highlight(line)
+  if vim.startswith(line, "◐ ") then
+    return "PiPlanActive"
+  elseif vim.startswith(line, "○ ") then
+    return "PiPlanPending"
+  elseif vim.startswith(line, "✓ ") then
+    return "PiPlanCompleted"
+  elseif vim.startswith(line, "… ") then
+    return "PiPlanMuted"
+  end
+  return "PiPlanText"
+end
+
+local function todo_marker(line)
+  for _, marker in ipairs({ "◐ ", "○ ", "✓ ", "… " }) do
+    if vim.startswith(line, marker) then
+      return marker
+    end
+  end
+  return ""
+end
+
+local function add_text_mark(marks, row, start_col, end_col, highlight)
+  if end_col <= start_col then
+    return
+  end
+  table.insert(marks, {
+    row = row,
+    start_col = start_col,
+    end_col = end_col,
+    highlight = highlight,
+    priority = 100,
+  })
+end
+
+local function render_todo(lines, width)
+  width = math.max(1, math.floor(width or 1))
+  local rendered = {}
+  local marks = {}
+  local title = lines[1]
+  if not title then
+    return rendered, marks
+  end
+
+  local title_prefix = "• "
+  local title_line = truncate_display(title_prefix .. title, width)
+  table.insert(rendered, title_line)
+  add_text_mark(marks, 0, 0, math.min(#title_prefix, #title_line), "PiPlanMarker")
+  add_text_mark(marks, 0, math.min(#title_prefix, #title_line), #title_line, "PiPlanTitle")
+
+  for index = 2, #lines do
+    local line = lines[index]
+    local marker = todo_marker(line)
+    local text = marker ~= "" and line:sub(#marker + 1) or line
+    local branch = index == 2 and "  └ " or "    "
+    local first_prefix = branch .. marker
+    local continuation_prefix = string.rep(" ", vim.fn.strdisplaywidth(first_prefix))
+    local content_width = math.max(1, width - vim.fn.strdisplaywidth(first_prefix))
+    local group = todo_highlight(line)
+    for wrapped_index, wrapped in ipairs(wrap_display(text, content_width)) do
+      local prefix = wrapped_index == 1 and first_prefix or continuation_prefix
+      local rendered_line = prefix .. wrapped
+      local row = #rendered
+      table.insert(rendered, rendered_line)
+      add_text_mark(marks, row, 0, #rendered_line, group)
+    end
+  end
+  return rendered, marks
 end
 
 function WidgetArea.new(chat, deps)
@@ -107,9 +231,6 @@ function WidgetArea:_ensure_buffer(slot)
   vim.bo[slot.buf].completefunc = ""
   vim.bo[slot.buf].omnifunc = ""
   vim.bo[slot.buf].modifiable = false
-  if slot.placement == "aboveEditor" then
-    self.chat.widget_buf = slot.buf
-  end
   return slot.buf
 end
 
@@ -151,9 +272,6 @@ function WidgetArea:_ensure_window(slot)
     "EndOfBuffer:PiWidgetNormal",
     "WinSeparator:PiWidgetNormal",
   }, ",")
-  if slot.placement == "aboveEditor" then
-    self.chat.widget_win = slot.win
-  end
   return slot.win
 end
 
@@ -164,16 +282,19 @@ function WidgetArea:set(key, lines, placement)
   if lines == nil or (type(lines) == "table" and #lines == 0) then
     local previous = self.widgets[key]
     self.widgets[key] = nil
-    if previous then
+    if previous and not TRANSCRIPT_WIDGETS[key] then
       local still_used = false
-      for _, widget in pairs(self.widgets) do
-        still_used = still_used or widget.placement == previous.placement
+      for widget_key, widget in pairs(self.widgets) do
+        still_used = still_used or (not TRANSCRIPT_WIDGETS[widget_key] and widget.placement == previous.placement)
       end
       if not still_used then
         clear_buffer(self.slots[previous.placement], self.namespace)
       end
     end
     self.chat:_layout()
+    if TRANSCRIPT_WIDGETS[key] then
+      self.chat:_render_transcript()
+    end
     return true
   end
   if type(lines) ~= "table" then
@@ -201,17 +322,21 @@ function WidgetArea:set(key, lines, placement)
     }
   end
   self.chat:_layout()
+  if TRANSCRIPT_WIDGETS[key] then
+    self.chat:_render_transcript()
+  end
   return true
 end
 
-function WidgetArea:_content(placement, width)
+function WidgetArea:_content(placement, width, transcript)
   local keys = vim.tbl_keys(self.widgets)
   table.sort(keys)
   local lines = {}
   local highlights = {}
   for _, key in ipairs(keys) do
     local widget = self.widgets[key]
-    if widget.placement == placement then
+    local is_transcript = TRANSCRIPT_WIDGETS[key] == true
+    if is_transcript == (transcript == true) and (is_transcript or widget.placement == placement) then
       if #lines > 0 then
         table.insert(lines, "")
         table.insert(highlights, "PiWidgetNormal")
@@ -225,12 +350,57 @@ function WidgetArea:_content(placement, width)
   return lines, highlights
 end
 
-function WidgetArea:measure(width, available)
-  local configured = tonumber((config.get().chat or {}).max_widget_height) or 8
-  if configured ~= configured or configured == math.huge or configured == -math.huge then
-    configured = 8
+local function bounded_content(lines, groups, height)
+  if #lines <= height then
+    return lines, groups
   end
-  local budget = math.max(0, math.min(math.floor(configured), math.floor(available or 0)))
+  if height < 1 then
+    return {}, {}
+  end
+
+  local omitted = #lines - height
+  lines = vim.list_slice(lines, 1, height)
+  groups = vim.list_slice(groups, 1, height)
+  if height > 1 then
+    lines[height] = ("… %d more"):format(omitted + 1)
+    groups[height] = "PiWidgetMuted"
+  end
+  return lines, groups
+end
+
+function WidgetArea:transcript_content(width)
+  local widget = self.widgets["pi.todo"]
+  if not widget then
+    return {}, {}
+  end
+
+  local lines, marks = render_todo(widget.lines, width)
+  local height = maximum_height()
+  if #lines <= height then
+    return lines, marks
+  end
+  if height < 1 then
+    return {}, {}
+  end
+
+  local omitted = #lines - height + 1
+  lines = vim.list_slice(lines, 1, height)
+  local retained_marks = {}
+  local replaced_row = height > 1 and height - 1 or height
+  for _, mark in ipairs(marks) do
+    if mark.row < replaced_row then
+      table.insert(retained_marks, mark)
+    end
+  end
+  if height > 1 then
+    lines[height] = truncate_display(("    … %d more"):format(omitted), width)
+    add_text_mark(retained_marks, height - 1, 0, #lines[height], "PiPlanMuted")
+  end
+  return lines, retained_marks
+end
+
+function WidgetArea:measure(width, available)
+  local budget = math.max(0, math.min(maximum_height(), math.floor(available or 0)))
   local above = #self:_content("aboveEditor", width)
   local below = #self:_content("belowEditor", width)
   local below_reserve = below > 0 and budget > 1 and math.min(below, math.floor(budget / 2)) or 0
@@ -244,21 +414,10 @@ function WidgetArea:_render(slot, width, height, row)
   if height < 1 then
     close_window(slot)
     clear_buffer(slot, self.namespace)
-    if slot.placement == "aboveEditor" then
-      self.chat.widget_win = nil
-    end
     return
   end
   local lines, groups = self:_content(slot.placement, width)
-  if #lines > height then
-    local omitted = #lines - height
-    lines = vim.list_slice(lines, 1, height)
-    groups = vim.list_slice(groups, 1, height)
-    if height > 1 then
-      lines[height] = ("… %d more"):format(omitted + 1)
-      groups[height] = "PiWidgetMuted"
-    end
-  end
+  lines, groups = bounded_content(lines, groups, height)
 
   local buf = self:_ensure_buffer(slot)
   vim.bo[buf].modifiable = true
@@ -290,12 +449,25 @@ function WidgetArea:_render(slot, width, height, row)
 end
 
 function WidgetArea:owns_buffer(buf)
+  if buf == nil then
+    return false
+  end
   for _, slot in pairs(self.slots) do
     if slot.buf == buf then
       return true
     end
   end
   return false
+end
+
+function WidgetArea:buffer(placement)
+  local slot = self.slots[placement or "aboveEditor"]
+  return slot and slot.buf or nil
+end
+
+function WidgetArea:window(placement)
+  local slot = self.slots[placement or "aboveEditor"]
+  return slot and slot.win or nil
 end
 
 function WidgetArea:layout(width, input_row, input_height, above_height, below_height)
@@ -307,16 +479,33 @@ function WidgetArea:close_windows()
   for _, slot in pairs(self.slots) do
     close_window(slot)
   end
-  self.chat.widget_win = nil
 end
 
 function WidgetArea:clear()
+  local had_transcript_widget = false
+  for key in pairs(self.widgets) do
+    had_transcript_widget = had_transcript_widget or TRANSCRIPT_WIDGETS[key] == true
+  end
   self.widgets = {}
   self:close_windows()
   for _, slot in pairs(self.slots) do
     clear_buffer(slot, self.namespace)
   end
   self.chat:_layout()
+  if had_transcript_widget then
+    self.chat:_render_transcript()
+  end
+end
+
+function WidgetArea:destroy()
+  self.widgets = {}
+  self:close_windows()
+  for _, slot in pairs(self.slots) do
+    if slot.buf and vim.api.nvim_buf_is_valid(slot.buf) then
+      pcall(vim.api.nvim_buf_delete, slot.buf, { force = true })
+    end
+    slot.buf = nil
+  end
 end
 
 M.WidgetArea = WidgetArea

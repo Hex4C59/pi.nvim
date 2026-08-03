@@ -162,6 +162,24 @@ assert(not text:find("/tmp/lua/example.lua", 1, true), "Markdown link target lea
 assert(text:find("- first item", 1, true), "Markdown list item is missing")
 assert(text:find(" │ quoted", 1, true), "Markdown quote was not rendered")
 assert(text:find(" local value = true", 1, true), "code block is missing")
+local code_row
+for row, line in ipairs(lines) do
+  if line:find("local value = true", 1, true) then
+    code_row = row
+    break
+  end
+end
+assert(code_row, "code row is missing")
+assert(vim.fn.strdisplaywidth(lines[code_row]) == 79, "code surface lost its right margin")
+
+local code_surface
+for _, mark in ipairs(marks) do
+  if mark.row == code_row - 1 and mark.highlight == "PiCodeBg" then
+    code_surface = mark
+  end
+  assert(mark.line_highlight ~= "PiCodeBg", "code surface still uses full-line highlighting")
+end
+assert(code_surface and code_surface.start_col == 1, "code surface lost its left margin")
 assert(text:find("Actions", 1, true), "tool group label is missing")
 assert(text:find("├─ ✓ Edited", 1, true), "tool timeline did not connect its first action")
 assert(text:find("╰─ ✓ Read", 1, true), "tool timeline did not terminate its last action")
@@ -351,7 +369,8 @@ assert(
   "completed active-turn stage did not collapse"
 )
 assert(not active_staged_text:find("first private step", 1, true), "completed active-turn stage leaked private details")
-assert(active_staged_text:find("final private step", 1, true), "current active stage did not remain expanded")
+assert(not active_staged_text:find("final private step", 1, true), "current active stage leaked live thinking")
+assert(active_staged_text:find("Final answer", 1, true), "current active stage lost its public answer")
 assert(not active_staged_text:find("▸ Thought for 3s", 1, true), "current active stage collapsed before settlement")
 assert(#active_staged_tool_ranges == 0, "hidden completed-stage tool retained a clickable range")
 assert(#active_staged_process_ranges == 1, "only completed active-turn stages should expose process toggles")
@@ -380,10 +399,39 @@ local active_lines, _, active_tool_ranges = renderer.render(items, {
   width = 80,
 })
 local active_text = table.concat(active_lines, "\n")
-assert(active_text:find("reasoning", 1, true), "active process must show live thinking")
+assert(not active_text:find("reasoning", 1, true), "active process leaked live thinking")
+assert(not active_text:find("Thinking...", 1, true), "active process duplicated thinking status in the transcript")
 assert(active_text:find("Actions", 1, true), "active process must show live tools")
 assert(not active_text:find("▸ Thought", 1, true), "active process was summarized before completion")
 assert(#active_tool_ranges == 3, "active tool rows are not interactive")
+
+local thinking_only_lines = renderer.render({
+  { type = "user", text = "Wait for the result" },
+  {
+    type = "assistant",
+    message = {
+      role = "assistant",
+      content = { { type = "thinking", thinking = "private live reasoning" } },
+    },
+  },
+}, {
+  collapse_processes = true,
+  process_active = true,
+  process_expanded = false,
+  width = 80,
+})
+assert(#thinking_only_lines == 1, "hidden live thinking left a blank transcript row")
+
+local active_detailed_lines = renderer.render(items, {
+  collapse_processes = true,
+  process_active = true,
+  process_expanded = true,
+  width = 80,
+})
+assert(
+  table.concat(active_detailed_lines, "\n"):find("reasoning", 1, true),
+  "expanded active process did not reveal thinking"
+)
 
 local detailed_lines, _, detailed_tool_ranges = renderer.render(items, {
   collapse_processes = true,

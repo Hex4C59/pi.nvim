@@ -27,6 +27,9 @@ local defaults = {
   context = {
     max_bytes = 100000,
     include_diagnostics = true,
+    diagnostics_max_count = 100,
+    diagnostic_max_message_bytes = 1000,
+    diagnostics_max_bytes = 20 * 1024,
   },
   images = {
     max_bytes = 8 * 1024 * 1024,
@@ -34,7 +37,14 @@ local defaults = {
     max_height = 32,
     max_pixels = 40 * 1000 * 1000,
     cache_max_age_days = 7,
+    attachment_max_count = 4,
+    attachment_max_bytes = 16 * 1024 * 1024,
     backend = "auto",
+    preview = {
+      max_concurrent = 2,
+      debounce_ms = 100,
+      timeout_ms = 10000,
+    },
     terminal = {
       provider = "snacks",
       auto_resize = true,
@@ -68,6 +78,30 @@ function M.setup(opts)
 
   if opts.context and opts.context.max_chars ~= nil and opts.context.max_bytes == nil then
     options.context.max_bytes = opts.context.max_chars
+  end
+
+  local context_limits = {
+    max_bytes = { minimum = 1, maximum = 64 * 1024 * 1024 },
+    diagnostics_max_count = { minimum = 1, maximum = 10000 },
+    diagnostic_max_message_bytes = { minimum = 1, maximum = 64 * 1024 },
+    diagnostics_max_bytes = { minimum = 128, maximum = 16 * 1024 * 1024 },
+  }
+  for name, bounds in pairs(context_limits) do
+    local value = options.context[name]
+    if
+      type(value) ~= "number"
+      or value ~= value
+      or value == math.huge
+      or value == -math.huge
+      or value < bounds.minimum
+      or value > bounds.maximum
+    then
+      error(("pi.nvim: context.%s must be between %d and %d"):format(name, bounds.minimum, bounds.maximum))
+    end
+    options.context[name] = math.floor(value)
+  end
+  if type(options.context.include_diagnostics) ~= "boolean" then
+    error("pi.nvim: context.include_diagnostics must be a boolean")
   end
 
   -- vim.tbl_deep_extend merges list indices. Lists are configuration values,
@@ -111,6 +145,8 @@ function M.setup(opts)
     max_height = { minimum = 4, maximum = 128 },
     max_pixels = { minimum = 1024, maximum = 268435456 },
     cache_max_age_days = { minimum = 1, maximum = 365 },
+    attachment_max_count = { minimum = 1, maximum = 32 },
+    attachment_max_bytes = { minimum = 1024, maximum = 256 * 1024 * 1024 },
   }
   for name, bounds in pairs(image_limits) do
     local value = options.images[name]
@@ -128,6 +164,29 @@ function M.setup(opts)
   end
   if not vim.tbl_contains({ "auto", "terminal", "text" }, options.images.backend) then
     error("pi.nvim: images.backend must be 'auto', 'terminal', or 'text'")
+  end
+  local preview = options.images.preview
+  if type(preview) ~= "table" then
+    error("pi.nvim: images.preview must be a table")
+  end
+  local preview_limits = {
+    max_concurrent = { minimum = 1, maximum = 8 },
+    debounce_ms = { minimum = 0, maximum = 2000 },
+    timeout_ms = { minimum = 100, maximum = 60000 },
+  }
+  for name, bounds in pairs(preview_limits) do
+    local value = preview[name]
+    if
+      type(value) ~= "number"
+      or value ~= value
+      or value == math.huge
+      or value == -math.huge
+      or value < bounds.minimum
+      or value > bounds.maximum
+    then
+      error(("pi.nvim: images.preview.%s must be between %d and %d"):format(name, bounds.minimum, bounds.maximum))
+    end
+    preview[name] = math.floor(value)
   end
   local terminal = options.images.terminal
   if type(terminal) ~= "table" then

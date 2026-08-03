@@ -127,25 +127,11 @@ end
 
 function M.stop()
   local root = runtime.client_root()
-  if runtime.clients[root] then
-    runtime.clients[root]:stop()
-    runtime.clients[root] = nil
-  end
-  if runtime.chats[root] then
-    runtime.chats[root]:destroy()
-    runtime.chats[root] = nil
-  end
+  runtime.stop(root)
 end
 
 function M.stop_all()
-  for root, client in pairs(runtime.clients) do
-    client:stop()
-    runtime.clients[root] = nil
-  end
-  for root, chat in pairs(runtime.chats) do
-    chat:destroy()
-    runtime.chats[root] = nil
-  end
+  runtime.stop_all()
 end
 
 return M

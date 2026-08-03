@@ -418,10 +418,19 @@ lua/pi/client.lua             Pi subprocess, RPC requests, responses, events
 lua/pi/protocol.lua           Strict LF JSONL parser
 lua/pi/runtime.lua            Per-project clients/chats and event projection
 lua/pi/context.lua            Neovim buffer/selection/diagnostic context
+lua/pi/message.lua            UI-independent Pi content-block text projection
+lua/pi/format.lua             Shared compact display formatting
 lua/pi/commands/              Native command adapters and selectors
-lua/pi/ui/chat.lua            Chat UI state and window lifecycle
-lua/pi/ui/render.lua          Pure-ish transcript layout and semantic marks
-lua/pi/ui/input.lua           Prompt and status overlays
+lua/pi/commands/catalog.lua   Native slash-command metadata and merging
+lua/pi/ui/chat.lua            Chat facade, top-level window, component layout
+lua/pi/ui/transcript.lua      Bounded transcript display model
+lua/pi/ui/transcript_view.lua Transcript buffer, render cache, ranges, images
+lua/pi/ui/image_preview.lua   Temporary image preview buffer/window lifecycle
+lua/pi/ui/render.lua          Stable rendering facade
+lua/pi/ui/render/             Focused pure-ish transcript renderers
+lua/pi/ui/input.lua           Prompt/status buffers, windows, and overlays
+lua/pi/ui/command_menu.lua    Completion buffer/window and selection state
+lua/pi/ui/widget.lua          Widget state, buffers, windows, and projection
 lua/pi/ui/dialog.lua          Generic Extension UI protocol adapter
 lua/pi/ui/permission.lua      Native permission presentation only
 extensions/                   Bundled authoritative Pi Extensions

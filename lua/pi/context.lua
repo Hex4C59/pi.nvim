@@ -1,5 +1,11 @@
 local M = {}
 
+local selection_truncated_marker = "[selection truncated by pi.nvim]"
+local context_omitted_marker = "[editor context omitted: byte budget too small]"
+local default_diagnostics_max_count = 100
+local default_diagnostic_max_message_bytes = 1000
+local default_diagnostics_max_bytes = 20 * 1024
+
 local function escape_attribute(value)
   return value:gsub("&", "&amp;"):gsub("\"", "&quot;"):gsub("<", "&lt;"):gsub(">", "&gt;")
 end
@@ -136,26 +142,15 @@ local function bounded_buffer_text(bufnr, first_line, last_line, maximum)
   return table.concat(parts), truncated or row < last_row
 end
 
-local function diagnostics(bufnr, first_line, last_line)
-  local items = {}
-  for _, diagnostic in ipairs(vim.diagnostic.get(bufnr)) do
-    local line = diagnostic.lnum + 1
-    if line >= first_line and line <= last_line then
-      table.insert(
-        items,
-        ("L%d:%d [%s] %s"):format(
-          line,
-          diagnostic.col + 1,
-          vim.diagnostic.severity[diagnostic.severity] or "UNKNOWN",
-          diagnostic.message:gsub("\n", " ")
-        )
-      )
-    end
+local function normalized_limit(value, fallback)
+  value = tonumber(value)
+  if not value or value ~= value or value == math.huge or value == -math.huge then
+    value = fallback
   end
-  return items
+  return math.max(0, math.floor(value))
 end
 
-local function wrap_context(bufnr, root, first_line, last_line, text, opts)
+local function context_header(bufnr, root, first_line, last_line)
   local path = vim.api.nvim_buf_get_name(bufnr)
   local filetype = vim.bo[bufnr].filetype
   local attributes = {
@@ -164,37 +159,202 @@ local function wrap_context(bufnr, root, first_line, last_line, text, opts)
     ("filetype=\"%s\""):format(escape_attribute(filetype)),
     ("modified=\"%s\""):format(tostring(vim.bo[bufnr].modified)),
   }
-  local blocks = {
-    "<editor_context " .. table.concat(attributes, " ") .. ">",
-    text,
-    "</editor_context>",
-  }
+  return "<editor_context " .. table.concat(attributes, " ") .. ">"
+end
 
-  if opts.include_diagnostics then
-    local found = diagnostics(bufnr, first_line, last_line)
-    if #found > 0 then
-      vim.list_extend(blocks, { "<diagnostics>", table.concat(found, "\n"), "</diagnostics>" })
+local function diagnostic_position(diagnostic)
+  local first = math.max(0, math.floor(tonumber(diagnostic.lnum) or 0))
+  local last = math.max(first, math.floor(tonumber(diagnostic.end_lnum) or first))
+  return first, last
+end
+
+local function diagnostic_severity(diagnostic)
+  local severity = math.floor(tonumber(diagnostic.severity) or 0)
+  if severity >= vim.diagnostic.severity.ERROR and severity <= vim.diagnostic.severity.HINT then
+    return severity
+  end
+  return vim.diagnostic.severity.HINT + 1
+end
+
+local function collect_diagnostics(bufnr, first_line, last_line, opts)
+  local matching = {}
+  local first_row = first_line - 1
+  local last_row = last_line - 1
+  for index, diagnostic in ipairs(vim.diagnostic.get(bufnr)) do
+    if type(diagnostic) == "table" then
+      local diagnostic_first, diagnostic_last = diagnostic_position(diagnostic)
+      if diagnostic_first <= last_row and diagnostic_last >= first_row then
+        matching[#matching + 1] = {
+          diagnostic = diagnostic,
+          first = diagnostic_first,
+          last = diagnostic_last,
+          severity = diagnostic_severity(diagnostic),
+          index = index,
+        }
+      end
     end
   end
-  return table.concat(blocks, "\n")
+
+  table.sort(matching, function(left, right)
+    if left.severity ~= right.severity then
+      return left.severity < right.severity
+    end
+    if left.first ~= right.first then
+      return left.first < right.first
+    end
+    local left_col = math.max(0, math.floor(tonumber(left.diagnostic.col) or 0))
+    local right_col = math.max(0, math.floor(tonumber(right.diagnostic.col) or 0))
+    if left_col ~= right_col then
+      return left_col < right_col
+    end
+    if left.last ~= right.last then
+      return left.last < right.last
+    end
+    local left_end_col = math.max(left_col, math.floor(tonumber(left.diagnostic.end_col) or left_col))
+    local right_end_col = math.max(right_col, math.floor(tonumber(right.diagnostic.end_col) or right_col))
+    if left_end_col ~= right_end_col then
+      return left_end_col < right_end_col
+    end
+    return left.index < right.index
+  end)
+
+  local maximum_count = normalized_limit(opts.diagnostics_max_count, default_diagnostics_max_count)
+  local message_maximum = normalized_limit(opts.diagnostic_max_message_bytes, default_diagnostic_max_message_bytes)
+  local records = {}
+  for index = 1, math.min(#matching, maximum_count) do
+    local item = matching[index]
+    local diagnostic = item.diagnostic
+    local message, truncated = truncate_utf8_bytes(
+      type(diagnostic.message) == "string" and diagnostic.message or tostring(diagnostic.message or ""),
+      message_maximum
+    )
+    message = message:gsub("[\r\n]+", " ")
+    local column = math.max(0, math.floor(tonumber(diagnostic.col) or 0)) + 1
+    records[#records + 1] = {
+      text = ("L%d:%d [%s] %s"):format(
+        item.first + 1,
+        column,
+        vim.diagnostic.severity[item.severity] or "UNKNOWN",
+        message
+      ),
+      message_truncated = truncated,
+    }
+  end
+
+  return {
+    total = #matching,
+    records = records,
+  }
+end
+
+local function serialize_diagnostics(data, maximum)
+  if not data or data.total == 0 or maximum <= 0 then
+    return nil
+  end
+
+  local function serialize(included, messages_truncated)
+    local blocks = {
+      ("<diagnostics total=\"%d\" included=\"%d\" omitted=\"%d\" messages_truncated=\"%d\">"):format(
+        data.total,
+        included,
+        data.total - included,
+        messages_truncated
+      ),
+    }
+    for index = 1, included do
+      blocks[#blocks + 1] = data.records[index].text
+    end
+    blocks[#blocks + 1] = "</diagnostics>"
+    return table.concat(blocks, "\n")
+  end
+
+  local included = 0
+  local messages_truncated = 0
+  local section = serialize(0, 0)
+  if #section > maximum then
+    return nil
+  end
+
+  for index, record in ipairs(data.records) do
+    local candidate_truncated = messages_truncated + (record.message_truncated and 1 or 0)
+    local candidate = serialize(index, candidate_truncated)
+    if #candidate > maximum then
+      break
+    end
+    included = index
+    messages_truncated = candidate_truncated
+    section = candidate
+  end
+
+  return section
+end
+
+local function bounded_selection(bufnr, first_line, last_line, maximum)
+  local text, truncated = bounded_buffer_text(bufnr, first_line, last_line, maximum)
+  if not truncated then
+    return text
+  end
+
+  local separator_bytes = maximum > #selection_truncated_marker and 1 or 0
+  local text_maximum = math.max(0, maximum - #selection_truncated_marker - separator_bytes)
+  text = bounded_buffer_text(bufnr, first_line, last_line, text_maximum)
+  if #selection_truncated_marker > maximum then
+    return truncate_utf8_bytes(selection_truncated_marker, maximum)
+  end
+  if text ~= "" then
+    return text .. "\n" .. selection_truncated_marker
+  end
+  return selection_truncated_marker
+end
+
+local function bounded_omission(maximum)
+  local marker = truncate_utf8_bytes(context_omitted_marker, maximum)
+  return marker
+end
+
+local function wrap_context(bufnr, root, first_line, last_line, opts, maximum)
+  local header = context_header(bufnr, root, first_line, last_line)
+  local closing = "</editor_context>"
+  local base_bytes = #header + #closing + 2
+  if maximum and base_bytes > maximum then
+    return bounded_omission(maximum)
+  end
+
+  local diagnostic_data
+  if opts.include_diagnostics then
+    diagnostic_data = collect_diagnostics(bufnr, first_line, last_line, opts)
+  end
+
+  local diagnostics_maximum = normalized_limit(opts.diagnostics_max_bytes, default_diagnostics_max_bytes)
+  if maximum then
+    diagnostics_maximum = math.min(diagnostics_maximum, math.floor((maximum - base_bytes) / 4))
+  end
+  local diagnostic_section = serialize_diagnostics(diagnostic_data, diagnostics_maximum - 1)
+  local diagnostic_suffix = diagnostic_section and ("\n" .. diagnostic_section) or ""
+
+  local text
+  if maximum then
+    local text_maximum = maximum - base_bytes - #diagnostic_suffix
+    text = bounded_selection(bufnr, first_line, last_line, text_maximum)
+  else
+    local lines = vim.api.nvim_buf_get_lines(bufnr, first_line - 1, last_line, false)
+    text = table.concat(lines, "\n")
+  end
+
+  local wrapped = header .. "\n" .. text .. "\n" .. closing .. diagnostic_suffix
+  if maximum and #wrapped > maximum then
+    return bounded_omission(maximum)
+  end
+  return wrapped
 end
 
 function M.range(bufnr, root, first_line, last_line, opts)
   opts = opts or {}
   local maximum = opts.max_bytes or opts.max_chars
-  local text
-  local truncated = false
   if maximum then
-    maximum = math.max(0, math.floor(tonumber(maximum) or 0))
-    text, truncated = bounded_buffer_text(bufnr, first_line, last_line, maximum)
-  else
-    local lines = vim.api.nvim_buf_get_lines(bufnr, first_line - 1, last_line, false)
-    text = table.concat(lines, "\n")
+    maximum = normalized_limit(maximum, 0)
   end
-  if truncated then
-    text = text .. "\n[selection truncated by pi.nvim]"
-  end
-  return wrap_context(bufnr, root, first_line, last_line, text, opts)
+  return wrap_context(bufnr, root, first_line, last_line, opts, maximum)
 end
 
 function M.buffer(bufnr, root, opts)

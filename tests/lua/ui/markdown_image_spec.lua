@@ -166,7 +166,7 @@ if vim.fn.executable("magick") == 1 then
   preview_chat:end_assistant({ role = "assistant", content = { vim.deepcopy(linked_text) }, stopReason = "stop" })
   assert(
     vim.wait(5000, function()
-      local rendered = table.concat(vim.api.nvim_buf_get_lines(preview_chat.buf, 0, -1, false), "\n")
+      local rendered = table.concat(vim.api.nvim_buf_get_lines(preview_chat.transcript_view.buf, 0, -1, false), "\n")
       return rendered:find("▀", 1, true) ~= nil
     end, 20),
     "Chat did not replace the image link fallback with an asynchronous colored preview"

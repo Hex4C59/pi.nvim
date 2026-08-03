@@ -14,7 +14,7 @@ state, live footer, settings, session tree inspection, fork/clone, compaction,
 and extension confirmation dialogs.
 The bundled todo Extension makes the agent decompose complex implementation work
 into a branch-aware plan, keep it current during execution, and render its
-compact native widget above the prompt.
+compact live plan inside the conversation transcript.
 
 Pi 0.83 RPC does not expose in-place `navigate_tree` or a session-list command.
 The tree UI therefore supports inspection and forking from user messages;
@@ -91,11 +91,12 @@ the active colorscheme, while each field keeps a stable semantic color. It
 remains in scrollback as the conversation grows. Assistant answers stay on the
 plain canvas. Each completed work stage renders its public update first,
 followed by a quiet disclosure row such as `Thought for 4s, read 6 files`.
-Earlier stages can therefore collapse while Pi is still working, while only the
-current stage keeps its thinking and tool calls visible in the execution
-timeline. Summaries retain elapsed time plus read, search, command, edit, and
-failure counts. `Ctrl-O` or a click on any disclosure row toggles the complete
-process; wide layouts also show the shortcut inline.
+Earlier stages can therefore collapse while Pi is still working. The current
+reasoning stage replaces the generic activity label on the prompt border instead
+of accumulating private summaries in the transcript, while tool calls remain
+visible in the execution timeline. Summaries retain elapsed time plus read,
+search, command, edit, and failure counts. `Ctrl-O` or a click on any disclosure
+row toggles the complete process; wide layouts also show the shortcut inline.
 
 Assistant Markdown is reduced to terminal-native presentation: headings,
 emphasis, inline code, links, lists, quotes, and fenced code keep their semantic
@@ -147,11 +148,11 @@ The prompt editor focuses automatically and mirrors Pi's primary controls:
 | `/` | Open slash-command completion |
 | `Tab` / `Shift-Tab`, `Up` / `Down` | Select the next or previous command |
 
-While a permission prompt is open, the dedicated Pi permission surface captures
-its navigation keys and stays read-only, so completion, search, cursor-line, and
-other editor plugins cannot alter it. Use `j`/`k` or arrows to select, `Enter` to
-confirm, `Esc` to block, and `Ctrl-Q` to cancel safely and return to the Pi canvas
-in Neovim Normal mode.
+While a permission prompt is open, Pi renders it inline at the end of the
+conversation and captures its navigation keys while the chat stays read-only,
+so completion, search, cursor-line, and other editor plugins cannot alter it.
+Use `j`/`k` or arrows to select, `Enter` to confirm, `Esc` to block, and `Ctrl-Q`
+to cancel safely and return to the Pi canvas in Neovim Normal mode.
 
 Typing `/` opens Pi's borderless command menu containing built-ins plus commands
 loaded from extensions, prompt templates, and skills. Command names are fuzzy
@@ -160,7 +161,8 @@ and descriptions retain distinct semantic highlighting. Commands implemented by 
 frontend include `/settings`, `/model`, `/copy`, `/name`, `/session`, `/hotkeys`,
 `/fork`, `/clone`, `/tree`, `/new`, `/compact`, `/resume`, `/export`, and `/quit`.
 pi.nvim also provides `/thinking`, `/permissions`, `/mode`, `/layout`, `/commands`, `/abort`, and `/clear`.
-The bundled `/todos [show|hide]` command controls the task widget. The agent's
+The bundled `/todos [show|hide]` command controls the task plan rendered inline
+at the end of the conversation. The agent's
 `todo` tool creates an ordered plan atomically with `plan`, then supports `list`,
 `add`, `update`, `remove`, and `clear`. For requests with at least three
 meaningful steps, the Extension tells the agent to establish a 3-7 step plan
@@ -204,8 +206,11 @@ require("pi").setup({
     render_interval_ms = 50,
   },
   context = {
-    max_bytes = 100000, -- UTF-8-safe byte limit; max_chars remains a compatibility alias
+    max_bytes = 100000, -- complete UTF-8-safe serialized context limit
     include_diagnostics = true,
+    diagnostics_max_count = 100,
+    diagnostic_max_message_bytes = 1000,
+    diagnostics_max_bytes = 20 * 1024,
   },
   images = {
     max_bytes = 8 * 1024 * 1024,
@@ -213,7 +218,14 @@ require("pi").setup({
     max_height = 32,
     max_pixels = 40 * 1000 * 1000,
     cache_max_age_days = 7,
+    attachment_max_count = 4,
+    attachment_max_bytes = 16 * 1024 * 1024,
     backend = "auto", -- "auto", "terminal", or "text"
+    preview = {
+      max_concurrent = 2,
+      debounce_ms = 100,
+      timeout_ms = 10000,
+    },
     terminal = {
       provider = "snacks",
       auto_resize = true,
@@ -239,9 +251,11 @@ require("pi").setup({
 `auto` uses terminal images only after the optional provider confirms support;
 `terminal` requests the same backend but reports a health warning when it must
 fall back. When terminal graphics are unavailable, ImageMagick provides a
-bounded colored-block preview without blocking Neovim. `text` never loads the
-provider or creates colored previews. Terminal images use one stable transcript
-anchor and provider-owned virtual rows, avoiding duplicate blank space while
+bounded colored-block preview without blocking Neovim. Preview conversion is
+debounced, globally concurrency-limited, and terminated after `timeout_ms`.
+`text` never loads the provider or creates colored previews. Terminal images
+use one stable transcript anchor and provider-owned virtual rows, avoiding
+duplicate blank space while
 still pushing later messages below the image. Click an image, or place the
 cursor on its anchor and press Enter, to open a larger preview. Explicit
 Markdown images and ordinary Markdown links to supported
@@ -252,7 +266,8 @@ fetched by the client. Repeated renders reuse stable placements, while resize, l
 Buffer deletion, chat close, and Neovim exit clean up only pi.nvim-owned image
 handles. Cached image bytes are content-addressed, stored with `0600`
 permissions, bounded by compressed size and pixel count, and aged out according
-to `cache_max_age_days`.
+to `cache_max_age_days`. Pending prompt images are additionally bounded by
+`attachment_max_count` and their aggregate encoded `attachment_max_bytes`.
 
 ### Security modes
 
@@ -337,11 +352,19 @@ state to migrate the Neovim client safely.
 
 Live Bash output retains at most the configured tail, then shows the client-side
 omitted byte/line counts and Pi's `fullOutputPath` when available. Tool arguments
-and results share a per-tool limit. When the transcript budget is exceeded, the
-oldest completed bodies and then old argument payloads are released while their
-tool name, status, timing, and bounded metadata remain visible. The decoded RPC
-dispatch queue is also bounded by message count and bytes; exceeding either
-limit stops the Pi process instead of continuing with partial client state.
+and results share a per-tool limit. `transcript_max_bytes` covers user,
+assistant, thinking, status, and tool bodies plus retained Lua render
+projections. When that budget is exceeded, the oldest local bodies are released
+while lightweight identity, status, and timing remain visible; Pi's
+authoritative session is unchanged. The decoded RPC dispatch queue is also
+bounded by message count and bytes; exceeding either limit stops the Pi process
+instead of continuing with partial client state.
+`context.max_bytes` bounds the complete serialized editor context, including
+wrapper metadata, selection truncation markers, and diagnostics; `max_chars`
+remains a compatibility alias. Diagnostics have additional count, per-message,
+and section-byte limits. When limited, errors are preferred before warnings,
+information, and hints, with deterministic range ordering and explicit omission
+counts in the serialized diagnostic metadata.
 `:PiStop` and shutdown release the Client, Chat transcript, render caches, and
 owned scratch buffers for the stopped project.
 

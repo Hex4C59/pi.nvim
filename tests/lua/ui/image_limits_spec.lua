@@ -32,4 +32,17 @@ local zoomed = image_block()
 local zoomed_prepared = assert(image_data.prepare(zoomed, 80, nil, { max_width = 80, max_height = 40 }))
 assert(zoomed_prepared.width == 80 and zoomed_prepared.height == 40, "zoom sizing remained capped by inline limits")
 
+local source_path = vim.fn.tempname() .. ".png"
+local source_fd = assert(vim.uv.fs_open(source_path, "w", 384))
+assert(vim.uv.fs_write(source_fd, png_bytes, 0) == #png_bytes, "source reuse fixture was not written")
+vim.uv.fs_close(source_fd)
+local file_backed = { type = "image", mimeType = "image/png", path = source_path }
+assert(image_data.prepare(file_backed, 32), "file-backed image was not prepared")
+local prepared_source = file_backed._pi_image.source
+assert(vim.uv.fs_unlink(source_path), "source reuse fixture was not removed")
+for _, width in ipairs({ 28, 24, 20, 16 }) do
+  assert(image_data.prepare(file_backed, width), "resize tried to read the removed source file")
+  assert(file_backed._pi_image.source == prepared_source, "resize replaced the immutable prepared source")
+end
+
 print("image_limits_spec: ok")

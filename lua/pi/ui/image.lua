@@ -5,6 +5,14 @@ local M = {}
 local image_cache_dir
 local cache_cleaned = false
 local preview_highlights = {}
+local preview_palette_levels = { 0x00, 0x80, 0xFF }
+local preview_palette_size = (#preview_palette_levels) ^ 3
+local preview_highlight_limit = preview_palette_size ^ 2
+local preview_queue = {}
+local preview_queue_first = 1
+local preview_queue_last = 0
+local preview_active = 0
+local pump_preview_queue
 
 local mime_extensions = {
   ["image/png"] = ".png",
@@ -16,6 +24,10 @@ local mime_extensions = {
 
 local function image_config()
   return config.get().images or {}
+end
+
+local function preview_config()
+  return image_config().preview or { max_concurrent = 2, debounce_ms = 100, timeout_ms = 10000 }
 end
 
 local function normalize_mime(block)
@@ -238,11 +250,39 @@ local function color_hex(value)
   return ("#%06x"):format(value)
 end
 
+local function quantize_preview_color(value)
+  local function channel_index(channel)
+    return math.min(#preview_palette_levels - 1, math.floor(channel * (#preview_palette_levels - 1) / 255 + 0.5))
+  end
+
+  local red = math.floor(value / 65536) % 256
+  local green = math.floor(value / 256) % 256
+  local blue = value % 256
+  local red_index = channel_index(red)
+  local green_index = channel_index(green)
+  local blue_index = channel_index(blue)
+  local index = red_index * 9 + green_index * 3 + blue_index
+  local quantized = preview_palette_levels[red_index + 1] * 65536
+    + preview_palette_levels[green_index + 1] * 256
+    + preview_palette_levels[blue_index + 1]
+  return index, quantized
+end
+
 local function preview_highlight(foreground, background)
-  local name = ("PiImagePixel_%06x_%06x"):format(foreground, background)
+  local foreground_index, quantized_foreground = quantize_preview_color(foreground)
+  local background_index, quantized_background = quantize_preview_color(background)
+  local name = ("PiImagePixel_%02x_%02x"):format(foreground_index, background_index)
   if not preview_highlights[name] then
-    preview_highlights[name] = { fg = color_hex(foreground), bg = color_hex(background), nocombine = true }
-    vim.api.nvim_set_hl(0, name, preview_highlights[name])
+    local highlight = {
+      fg = color_hex(quantized_foreground),
+      bg = color_hex(quantized_background),
+      nocombine = true,
+    }
+    local ok, err = pcall(vim.api.nvim_set_hl, 0, name, highlight)
+    if not ok then
+      return nil, "unable to create colored preview highlight: " .. tostring(err)
+    end
+    preview_highlights[name] = highlight
   end
   return name
 end
@@ -291,11 +331,15 @@ local function preview_from_rgba(data, width, height)
       local br, bg, bb, ba = data:byte(bottom, bottom + 3)
       local foreground = composite(tr, tg, tb, ta, background)
       local cell_background = composite(br, bg, bb, ba, background)
+      local highlight, highlight_err = preview_highlight(foreground, cell_background)
+      if not highlight then
+        return nil, highlight_err
+      end
       table.insert(text, glyph)
       table.insert(marks, {
         start_col = col * #glyph,
         end_col = (col + 1) * #glyph,
-        highlight = preview_highlight(foreground, cell_background),
+        highlight = highlight,
       })
     end
     table.insert(rows, { text = table.concat(text), marks = marks })
@@ -346,68 +390,94 @@ local function source(block)
   return path, bytes, mime, nil, digest
 end
 
-function M.prepare(block, available_width, callback, limits)
-  if type(block) ~= "table" or block.type ~= "image" then
-    return nil
+local function close_timer(timer)
+  if timer and not timer:is_closing() then
+    timer:stop()
+    timer:close()
   end
-  local requested_width = math.max(1, math.floor(available_width or image_config().max_width or 72))
-  local state = block._pi_image
-  if state and state.requested_width == requested_width and (state.prepared or state.error) then
-    return state.prepared
-  end
-
-  local token = (state and state.token or 0) + 1
-  block._pi_image = { token = token, requested_width = requested_width, mime_type = normalize_mime(block) }
-  local path, bytes, mime, err, digest = source(block)
-  if err then
-    block._pi_image.error = err
-  else
-    local pixel_width, pixel_height, dimensions_err = dimensions(bytes, mime)
-    local maximum_pixels = image_config().max_pixels or 40 * 1000 * 1000
-    if dimensions_err then
-      block._pi_image.error = dimensions_err
-    elseif pixel_width * pixel_height > maximum_pixels then
-      block._pi_image.error = ("image dimensions exceed the %d pixel limit"):format(maximum_pixels)
-    else
-      local width, height = target_size(pixel_width, pixel_height, requested_width, limits)
-      block._pi_image.prepared = {
-        key = ("%s:%dx%d"):format(digest, width, height),
-        path = path,
-        mime_type = mime,
-        width = width,
-        height = height,
-        pixel_width = pixel_width,
-        pixel_height = pixel_height,
-        description = ("[Image: %s %dx%d]"):format(mime, pixel_width, pixel_height),
-      }
-    end
-  end
-  if callback then
-    callback(block, block._pi_image.prepared, block._pi_image.error)
-  end
-  return block._pi_image.prepared
 end
 
-function M.prepare_preview(block, callback)
-  local state = type(block) == "table" and block._pi_image or nil
-  local prepared = state and state.prepared or nil
-  if not prepared or state.error then
-    return nil
+local function clear_current_task(task)
+  local state = task.state
+  if state and state.preview_task == task then
+    state.preview_task = nil
+    state.preview_loading = false
   end
-  if prepared.preview then
-    return prepared.preview
-  end
-  if state.preview_loading then
-    return nil
-  end
-  if vim.fn.executable("magick") ~= 1 then
-    state.preview_error = "ImageMagick is unavailable for colored terminal preview"
-    return nil
-  end
+end
 
-  state.preview_loading = true
-  state.preview_error = nil
-  local token = state.token
+local function discard_task_references(task)
+  task.block = nil
+  task.state = nil
+  task.prepared = nil
+  task.callback = nil
+end
+
+local function cancel_preview_task(task)
+  if not task or task.finished or task.cancelled then
+    return false
+  end
+  task.cancelled = true
+  close_timer(task.debounce_timer)
+  close_timer(task.timeout_timer)
+  task.debounce_timer = nil
+  task.timeout_timer = nil
+  clear_current_task(task)
+  local running = task.phase == "running"
+  local process = task.process
+  discard_task_references(task)
+  if running and process then
+    pcall(process.kill, process, "sigterm")
+  else
+    task.finished = true
+    if pump_preview_queue then
+      pump_preview_queue()
+    end
+  end
+  return true
+end
+
+local function finish_preview_task(task, result)
+  if task.finished then
+    return
+  end
+  task.finished = true
+  close_timer(task.timeout_timer)
+  task.timeout_timer = nil
+  task.process = nil
+  preview_active = math.max(0, preview_active - 1)
+
+  local state = task.state
+  local block = task.block
+  local prepared = task.prepared
+  local callback = task.callback
+  if not task.cancelled and state and state.preview_task == task and state.token == task.token then
+    state.preview_task = nil
+    state.preview_loading = false
+    if task.timed_out then
+      state.preview_error = ("ImageMagick preview timed out after %d ms"):format(task.timeout_ms)
+    elseif result.code ~= 0 then
+      local reason = vim.trim(result.stderr or "")
+      state.preview_error = reason ~= "" and reason or ("ImageMagick exited with code %d"):format(result.code)
+    else
+      local preview, err = preview_from_rgba(result.stdout, prepared.width, prepared.height)
+      prepared.preview = preview
+      state.preview_error = err
+    end
+    if callback then
+      pcall(callback, block, prepared.preview, state.preview_error)
+    end
+  end
+  discard_task_references(task)
+  pump_preview_queue()
+end
+
+local function start_preview_task(task)
+  if task.cancelled or task.finished then
+    return
+  end
+  task.phase = "running"
+  preview_active = preview_active + 1
+  local prepared = task.prepared
   local command = {
     "magick",
     prepared.path,
@@ -422,32 +492,284 @@ function M.prepare_preview(block, callback)
   }
   local ok, process = pcall(vim.system, command, { text = false }, function(result)
     vim.schedule(function()
-      local current = type(block) == "table" and block._pi_image or nil
-      if current ~= state or current.token ~= token then
-        return
-      end
-      state.preview_loading = false
-      state.preview_process = nil
-      if result.code ~= 0 then
-        local reason = vim.trim(result.stderr or "")
-        state.preview_error = reason ~= "" and reason or ("ImageMagick exited with code %d"):format(result.code)
-      else
-        local preview, err = preview_from_rgba(result.stdout, prepared.width, prepared.height)
-        prepared.preview = preview
-        state.preview_error = err
-      end
-      if callback then
-        callback(block, prepared.preview, state.preview_error)
-      end
+      finish_preview_task(task, result)
     end)
   end)
   if not ok then
-    state.preview_loading = false
-    state.preview_error = tostring(process)
+    finish_preview_task(task, { code = -1, stderr = tostring(process), stdout = "" })
+    return
+  end
+  task.process = process
+  local timeout = vim.uv.new_timer()
+  task.timeout_timer = timeout
+  timeout:start(
+    task.timeout_ms,
+    0,
+    vim.schedule_wrap(function()
+      if task.finished or task.cancelled or task.phase ~= "running" then
+        return
+      end
+      close_timer(task.timeout_timer)
+      task.timeout_timer = nil
+      task.timed_out = true
+      if task.process then
+        pcall(task.process.kill, task.process, "sigkill")
+      end
+    end)
+  )
+end
+
+pump_preview_queue = function()
+  local maximum = preview_config().max_concurrent
+  while preview_active < maximum and preview_queue_first <= preview_queue_last do
+    local task = preview_queue[preview_queue_first]
+    preview_queue[preview_queue_first] = nil
+    preview_queue_first = preview_queue_first + 1
+    if task and not task.cancelled and not task.finished then
+      start_preview_task(task)
+    end
+  end
+  if preview_queue_first > preview_queue_last then
+    preview_queue_first = 1
+    preview_queue_last = 0
+  end
+end
+
+local function enqueue_preview_task(task)
+  if task.cancelled or task.finished then
+    return
+  end
+  task.phase = "queued"
+  preview_queue_last = preview_queue_last + 1
+  preview_queue[preview_queue_last] = task
+  pump_preview_queue()
+end
+
+local function debounce_preview_task(task)
+  local delay = preview_config().debounce_ms
+  if delay == 0 then
+    enqueue_preview_task(task)
+    return
+  end
+  task.phase = "debouncing"
+  local timer = vim.uv.new_timer()
+  task.debounce_timer = timer
+  timer:start(
+    delay,
+    0,
+    vim.schedule_wrap(function()
+      close_timer(task.debounce_timer)
+      task.debounce_timer = nil
+      enqueue_preview_task(task)
+    end)
+  )
+end
+
+local function ensure_source(block, state)
+  if state.source or state.error then
+    return state.source
+  end
+  local path, bytes, mime, err, digest = source(block)
+  state.mime_type = mime
+  if err then
+    state.error = err
     return nil
   end
-  state.preview_process = process
+  local pixel_width, pixel_height, dimensions_err = dimensions(bytes, mime)
+  local maximum_pixels = image_config().max_pixels or 40 * 1000 * 1000
+  if dimensions_err then
+    state.error = dimensions_err
+    return nil
+  elseif pixel_width * pixel_height > maximum_pixels then
+    state.error = ("image dimensions exceed the %d pixel limit"):format(maximum_pixels)
+    return nil
+  end
+  state.source = {
+    path = path,
+    digest = digest,
+    mime_type = mime,
+    pixel_width = pixel_width,
+    pixel_height = pixel_height,
+    description = ("[Image: %s %dx%d]"):format(mime, pixel_width, pixel_height),
+  }
+  return state.source
+end
+
+function M.prepare(block, available_width, callback, limits)
+  if type(block) ~= "table" or block.type ~= "image" then
+    return nil
+  end
+  local requested_width = math.max(1, math.floor(available_width or image_config().max_width or 72))
+  local state = block._pi_image
+  if not state then
+    state = { token = 0, mime_type = normalize_mime(block) }
+    block._pi_image = state
+  end
+  local prepared_source = ensure_source(block, state)
+  if not prepared_source then
+    if callback then
+      callback(block, nil, state.error)
+    end
+    return nil
+  end
+  local width, height = target_size(prepared_source.pixel_width, prepared_source.pixel_height, requested_width, limits)
+  local key = ("%s:%dx%d"):format(prepared_source.digest, width, height)
+  if state.prepared and state.prepared.key == key then
+    return state.prepared
+  end
+
+  cancel_preview_task(state.preview_task)
+  state.token = state.token + 1
+  state.requested_width = requested_width
+  state.preview_error = nil
+  state.backend_error = nil
+  state.prepared = {
+    key = key,
+    path = prepared_source.path,
+    mime_type = prepared_source.mime_type,
+    width = width,
+    height = height,
+    pixel_width = prepared_source.pixel_width,
+    pixel_height = prepared_source.pixel_height,
+    description = prepared_source.description,
+  }
+  if callback then
+    callback(block, state.prepared, nil)
+  end
+  return state.prepared
+end
+
+function M.localize(block)
+  if type(block) ~= "table" or block.type ~= "image" then
+    return nil
+  end
+  if type(block.path) == "string" and block.path ~= "" and not base64_data(block) and block._pi_image then
+    return {
+      type = "image",
+      mimeType = block.mimeType or block.mime_type,
+      path = block.path,
+      alt = type(block.alt) == "string" and block.alt or nil,
+      _pi_image = block._pi_image,
+    }
+  end
+  local source = type(block.source) == "table"
+      and {
+        data = block.source.data,
+        mimeType = block.source.mimeType,
+        media_type = block.source.media_type,
+        mediaType = block.source.mediaType,
+      }
+    or nil
+  local working = {
+    type = "image",
+    mimeType = block.mimeType,
+    mime_type = block.mime_type,
+    data = block.data,
+    source = source,
+    path = block.path,
+  }
+  local prepared = M.prepare(working, image_config().max_width or 72)
+  local state = working._pi_image
+  local localized = {
+    type = "image",
+    mimeType = state and state.mime_type or normalize_mime(block),
+    path = prepared and prepared.path or nil,
+    alt = type(block.alt) == "string" and block.alt or nil,
+    _pi_image = state,
+  }
+  return localized
+end
+
+function M.attachment_payload_bytes(block)
+  local payload = base64_data(block)
+  return type(payload) == "string" and #payload or 0
+end
+
+function M.presentation_bytes(block)
+  if type(block) ~= "table" then
+    return 0
+  end
+  local total = 0
+  for _, key in ipairs({ "mimeType", "mime_type", "path", "alt" }) do
+    if type(block[key]) == "string" then
+      total = total + #block[key]
+    end
+  end
+  local state = block._pi_image
+  if type(state) == "table" then
+    for _, key in ipairs({ "mime_type", "error", "backend_error", "preview_error" }) do
+      if type(state[key]) == "string" then
+        total = total + #state[key]
+      end
+    end
+    for _, record in ipairs({ state.source, state.prepared }) do
+      if type(record) == "table" then
+        for _, key in ipairs({ "path", "digest", "mime_type", "description", "key" }) do
+          if type(record[key]) == "string" then
+            total = total + #record[key]
+          end
+        end
+      end
+    end
+    local preview = state.prepared and state.prepared.preview or nil
+    for _, row in ipairs((preview and preview.rows) or {}) do
+      total = total + #(row.text or "")
+      for _, mark in ipairs(row.marks or {}) do
+        total = total + #(mark.highlight or "")
+      end
+    end
+  end
+  return total
+end
+
+function M.prepare_preview(block, callback)
+  local state = type(block) == "table" and block._pi_image or nil
+  local prepared = state and state.prepared or nil
+  if not prepared or state.error then
+    return nil
+  end
+  if prepared.preview then
+    return prepared.preview
+  end
+  if state.preview_error then
+    return nil
+  end
+  if state.preview_loading then
+    return nil
+  end
+  if vim.fn.executable("magick") ~= 1 then
+    state.preview_error = "ImageMagick is unavailable for colored terminal preview"
+    return nil
+  end
+
+  state.preview_loading = true
+  state.preview_error = nil
+  local task = {
+    block = block,
+    state = state,
+    prepared = prepared,
+    callback = callback,
+    token = state.token,
+    timeout_ms = preview_config().timeout_ms,
+  }
+  state.preview_task = task
+  debounce_preview_task(task)
   return nil
+end
+
+function M.cancel(block)
+  local state = type(block) == "table" and block._pi_image or nil
+  return state and cancel_preview_task(state.preview_task) or false
+end
+
+function M.release(block)
+  if type(block) ~= "table" then
+    return false
+  end
+  local had_state = block._pi_image ~= nil
+  M.cancel(block)
+  block._pi_image = nil
+  return had_state
 end
 
 function M.prepared(block)
@@ -493,13 +815,32 @@ function M.fallback(block)
 end
 
 function M.refresh_preview_highlights()
+  local first_error
   for name, highlight in pairs(preview_highlights) do
-    vim.api.nvim_set_hl(0, name, highlight)
+    local ok, err = pcall(vim.api.nvim_set_hl, 0, name, highlight)
+    if not ok and not first_error then
+      first_error = tostring(err)
+    end
   end
+  return first_error == nil, first_error
 end
 
 M.mime_type = normalize_mime
 M._dimensions = dimensions
 M._preview_from_rgba = preview_from_rgba
+M._preview_highlight_count = function()
+  return vim.tbl_count(preview_highlights)
+end
+M._preview_highlight_limit = preview_highlight_limit
+M._preview_work_counts = function()
+  local queued = 0
+  for index = preview_queue_first, preview_queue_last do
+    local task = preview_queue[index]
+    if task and not task.cancelled and not task.finished then
+      queued = queued + 1
+    end
+  end
+  return { active = preview_active, queued = queued }
+end
 
 return M

@@ -2,12 +2,16 @@ local config = require("pi.config")
 local context = require("pi.context")
 local chat_ui = require("pi.ui.chat")
 local Chat = chat_ui.Chat
-local text_content = chat_ui.text_content
+local text_content = require("pi.message").text_content
 local dialog = require("pi.ui.dialog")
 
 local M = {}
 local clients = {}
 local chats = {}
+
+local function client_is_current(client)
+  return client and clients[client.root] == client
+end
 
 local function notify_error(err)
   vim.notify(err or "Unknown Pi error", vim.log.levels.ERROR, { title = "Pi" })
@@ -27,12 +31,7 @@ local rpc_unavailable_commands = {
 local function client_root()
   local bufnr = vim.api.nvim_get_current_buf()
   for root, chat in pairs(chats) do
-    if
-      bufnr == chat.buf
-      or bufnr == chat.input_buf
-      or bufnr == chat.status_buf
-      or (chat.widget_area and chat.widget_area:owns_buffer(bufnr))
-    then
+    if chat:owns_buffer(bufnr) then
       return root
     end
   end
@@ -48,7 +47,7 @@ end
 
 local function refresh_commands(client)
   client:request("get_commands", {}, function(success, data)
-    if success and data then
+    if client_is_current(client) and success and data then
       local commands = data.commands or {}
       client.commands_by_name = {}
       for _, command in ipairs(commands) do
@@ -95,7 +94,7 @@ local function refresh_stats(client)
   client.stats_pending = true
   client:request("get_session_stats", {}, function(success, data)
     client.stats_pending = false
-    if success and data then
+    if client_is_current(client) and success and data then
       chat_for(client.root):update_stats(data)
     end
   end)
@@ -103,7 +102,7 @@ end
 
 local function refresh_state(client)
   client:request("get_state", {}, function(success, data)
-    if success and data then
+    if client_is_current(client) and success and data then
       client.session = data
       chat_for(client.root):update_state(data)
     end
@@ -112,13 +111,13 @@ end
 
 local function reload_session(client)
   local chat = chat_for(client.root)
-  chat.history_loaded = false
+  chat.transcript.history_loaded = false
   chat:clear()
   chat:update_stats({ tokens = {}, contextUsage = {}, cost = 0 })
   refresh_state(client)
   refresh_stats(client)
   client:request("get_messages", {}, function(success, data)
-    if success and data then
+    if client_is_current(client) and success and data then
       chat:render_history(data.messages or {})
     end
   end)
@@ -128,7 +127,10 @@ local function attach(client)
   local display_queue = {}
   client.display_queue = display_queue
 
-  client:on_event(function(event)
+  client.runtime_unsubscribe = client:on_event(function(event)
+    if not client_is_current(client) then
+      return
+    end
     local chat = chat_for(client.root)
 
     if event.type == "client_state" then
@@ -157,7 +159,7 @@ local function attach(client)
         chat:start_assistant(event.message)
       end
     elseif event.type == "message_update" and event.message and event.message.role == "assistant" then
-      chat:update_assistant(event.message)
+      chat:update_assistant(event.message, event.assistantMessageEvent)
     elseif event.type == "message_end" and event.message and event.message.role == "assistant" then
       chat:end_assistant(event.message)
     elseif event.type == "tool_execution_start" then
@@ -268,6 +270,14 @@ end
 
 local function send_prompt(message, display, root, behavior, images)
   local client = get_client(root)
+  local chat = chat_for(client.root)
+  if type(images) == "table" and #images > 0 then
+    local valid, validation_err = chat:validate_image_attachments(images)
+    if not valid then
+      notify_error(validation_err)
+      return nil
+    end
+  end
   local display_entry = pending_display(client, message, display, images)
   if display_entry then
     table.insert(client.display_queue, display_entry)
@@ -282,15 +292,58 @@ local function send_prompt(message, display, root, behavior, images)
     payload.streamingBehavior = "steer"
   end
   client:request("prompt", payload, function(success, _, err)
+    if not client_is_current(client) then
+      return
+    end
     if not success then
       remove_pending_display(client.display_queue, display_entry)
       if type(images) == "table" and #images > 0 then
-        chat_for(client.root):restore_image_attachments(images)
+        local _, restore_err = chat:restore_image_attachments(images)
+        if restore_err then
+          err = (err or "Prompt failed") .. "; " .. restore_err
+        end
       end
       notify_error(err)
+    elseif display_entry and type(images) == "table" and #images > 0 then
+      display_entry.images = chat:localize_images(images)
+      images = nil
     end
   end)
-  chat_for(client.root):open(false)
+  chat:open(false)
+end
+
+local function stop(root)
+  local client = clients[root]
+  if client then
+    clients[root] = nil
+    if type(client.runtime_unsubscribe) == "function" then
+      client.runtime_unsubscribe()
+      client.runtime_unsubscribe = nil
+    end
+    client.display_queue = nil
+    dialog.discard(client)
+    client:stop()
+  end
+  local chat = chats[root]
+  if chat then
+    chats[root] = nil
+    chat:destroy()
+  end
+end
+
+local function stop_all()
+  local roots = {}
+  for root in pairs(clients) do
+    roots[root] = true
+  end
+  for root in pairs(chats) do
+    roots[root] = true
+  end
+  local ordered = vim.tbl_keys(roots)
+  table.sort(ordered)
+  for _, root in ipairs(ordered) do
+    stop(root)
+  end
 end
 
 M.clients = clients
@@ -306,5 +359,7 @@ M.reload_session = reload_session
 M.get_client = get_client
 M.with_prompt = with_prompt
 M.send_prompt = send_prompt
+M.stop = stop
+M.stop_all = stop_all
 
 return M

@@ -5,6 +5,18 @@ vim.schedule = function(callback)
 end
 local dispatch_events = {}
 local Client = require("pi.client").Client
+local unsubscribe_client = Client.new(vim.fn.getcwd() .. "/unsubscribe")
+local unsubscribe_events = 0
+local unsubscribe = unsubscribe_client:on_event(function()
+  unsubscribe_events = unsubscribe_events + 1
+end)
+unsubscribe_client:_emit({ type = "before_unsubscribe" })
+assert(unsubscribe_events == 1, "Client listener was not called before unsubscribe")
+assert(unsubscribe(), "Client listener unsubscribe did not remove the listener")
+assert(not unsubscribe(), "Client listener unsubscribe was not idempotent")
+unsubscribe_client:_emit({ type = "after_unsubscribe" })
+assert(unsubscribe_events == 1, "Client listener ran after unsubscribe")
+
 local client = Client.new(vim.fn.getcwd())
 client:on_event(function(event)
   table.insert(dispatch_events, event.type)

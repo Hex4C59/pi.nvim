@@ -1,5 +1,6 @@
 local pi = require("pi")
-local builtin_commands = require("pi.ui.chat").builtin_commands
+local catalog = require("pi.commands.catalog")
+local builtin_commands = catalog.builtin_commands()
 local root = vim.fn.getcwd()
 local calls = {}
 
@@ -31,6 +32,14 @@ for index, name in ipairs(expected_builtin_commands) do
   assert(builtin_commands[index].name == name, "Pi builtin command catalog is incomplete or out of order")
 end
 assert(#builtin_commands >= #expected_builtin_commands, "Pi builtin command catalog is incomplete")
+local first_name = builtin_commands[1].name
+builtin_commands[1].name = "mutated"
+assert(catalog.builtin_commands()[1].name == first_name, "builtin command reads share mutable state")
+local merged = catalog.merge({ { name = first_name }, { name = "dynamic", description = "Dynamic" } })
+assert(
+  merged[#merged].name == "dynamic" and #merged == #catalog.builtin_commands() + 1,
+  "command merge changed precedence"
+)
 
 pi.select_model = function(value, query)
   calls.model = value

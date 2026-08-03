@@ -113,6 +113,20 @@ end
 
 function Client:on_event(listener)
   table.insert(self.listeners, listener)
+  local subscribed = true
+  return function()
+    if not subscribed then
+      return false
+    end
+    subscribed = false
+    for index, candidate in ipairs(self.listeners) do
+      if candidate == listener then
+        table.remove(self.listeners, index)
+        return true
+      end
+    end
+    return false
+  end
 end
 
 function Client:_emit(event)
@@ -286,7 +300,7 @@ function Client:_handle(message)
 end
 
 function Client:stop()
-  if not self:is_running() then
+  if self.stopping or not self:is_running() then
     return
   end
   self.stopping = true

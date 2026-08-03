@@ -14,7 +14,12 @@ test-extensions:
 	node --test tests/extensions/*.test.mjs
 
 test-ci-policy:
-	sh tests/policy/actions_policy_test.sh
+	@set -eu; \
+	find tests/policy -type f -name '*_test.sh' -print | LC_ALL=C sort | \
+	while IFS= read -r test_file; do \
+		printf '%s\n' "sh: $$test_file"; \
+		sh "$$test_file"; \
+	done
 
 smoke:
 	nvim --headless -u tests/minimal_init.lua -l tests/smoke/client_smoke.lua

@@ -13,7 +13,7 @@ const respond = (request, data = {}) => send({
 const assistant = {
   role: "assistant",
   content: [
-    { type: "thinking", thinking: "live reasoning" },
+    { type: "thinking", thinking: "**Inspecting RPC event flow**\n\nlive reasoning" },
     { type: "text", text: "# Analysis\n\nlive answer\n\n> structured response\n\n```lua\nlocal ready = true\n```" },
   ],
   stopReason: "stop",
@@ -27,7 +27,28 @@ const runPrompt = (request, userText = request.message) => {
   send({ type: "agent_start" });
   send({ type: "message_start", message: { role: "user", content: [{ type: "text", text: userText }] } });
   send({ type: "message_start", message: { role: "assistant", content: [] } });
-  send({ type: "message_update", message: assistant, assistantMessageEvent: { type: "text_delta", delta: "live answer" } });
+  send({
+    type: "message_update",
+    message: { role: "assistant", content: [] },
+    assistantMessageEvent: { type: "thinking_start", contentIndex: 0 },
+  });
+  send({
+    type: "message_update",
+    message: {
+      role: "assistant",
+      content: [{ type: "thinking", thinking: "**Inspecting RPC event flow**" }],
+    },
+    assistantMessageEvent: {
+      type: "thinking_delta",
+      contentIndex: 0,
+      delta: "**Inspecting RPC event flow**",
+    },
+  });
+  send({
+    type: "message_update",
+    message: assistant,
+    assistantMessageEvent: { type: "text_delta", contentIndex: 1, delta: "live answer" },
+  });
   send({ type: "message_end", message: assistant });
   send({ type: "tool_execution_start", toolCallId: `fixture-tool-${suffix}`, toolName: "read", args: { path: "fixture.txt" } });
   send({ type: "tool_execution_update", toolCallId: `fixture-tool-${suffix}`, toolName: "read", partialResult: { content: [{ type: "text", text: "partial output" }] } });

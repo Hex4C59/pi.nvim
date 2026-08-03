@@ -1,3 +1,5 @@
+local config = require("pi.config")
+
 local root = vim.fn.getcwd()
 local image = {
   type = "image",
@@ -39,6 +41,10 @@ assert(
   rpc_capture.payload.images and rpc_capture.payload.images[1] == image,
   "image prompt was not forwarded as RPC images"
 )
+config.setup({ images = { attachment_max_count = 1 } })
+rpc_capture = nil
+runtime.send_prompt("too many", nil, root, nil, { image, image })
+assert(rpc_capture == nil, "programmatic prompt bypassed the aggregate attachment limit")
 runtime.chat_for(root):close()
 
 print("image_rpc_spec: ok")

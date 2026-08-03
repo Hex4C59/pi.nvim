@@ -18,7 +18,7 @@ chat:add_user("second question")
 chat:set_activity("working")
 chat:start_assistant({ content = { { type = "text", text = "partial answer" } } })
 
-local prefix_extmarks = vim.api.nvim_buf_get_extmarks(chat.buf, -1, { 0, 0 }, { 0, -1 }, {})
+local prefix_extmarks = vim.api.nvim_buf_get_extmarks(chat.transcript_view.buf, -1, { 0, 0 }, { 0, -1 }, {})
 assert(#prefix_extmarks > 0, "performance fixture is missing stable prefix extmarks")
 
 local original_render = renderer.render
@@ -30,14 +30,14 @@ renderer.render = function(items, opts)
   return original_render(items, opts)
 end
 vim.api.nvim_buf_set_lines = function(buf, first, last, strict, lines)
-  if buf == chat.buf then
+  if buf == chat.transcript_view.buf then
     table.insert(transcript_writes, { first = first, last = last, count = #lines })
   end
   return original_set_lines(buf, first, last, strict, lines)
 end
 
 local ok, err = pcall(function()
-  chat.streaming_assistant.message = {
+  chat.transcript.streaming_assistant.message = {
     content = { { type = "text", text = "partial answer with another streamed chunk" } },
   }
   chat:_render_transcript()
@@ -56,20 +56,20 @@ assert(
   "streaming update replaced the entire transcript buffer"
 )
 assert(
-  transcript_writes[1].count < vim.api.nvim_buf_line_count(chat.buf),
+  transcript_writes[1].count < vim.api.nvim_buf_line_count(chat.transcript_view.buf),
   "streaming update copied the complete transcript into its write payload"
 )
-assert(chat.render_frame.lines == nil, "streaming frame retained a duplicate of every transcript line")
+assert(chat.transcript_view.render_frame.lines == nil, "streaming frame retained a duplicate of every transcript line")
 assert(
-  #chat.render_frame.dynamic_lines < vim.api.nvim_buf_line_count(chat.buf),
+  #chat.transcript_view.render_frame.dynamic_lines < vim.api.nvim_buf_line_count(chat.transcript_view.buf),
   "streaming frame did not isolate the active tail"
 )
 
-local updated_prefix_extmarks = vim.api.nvim_buf_get_extmarks(chat.buf, -1, { 0, 0 }, { 0, -1 }, {})
+local updated_prefix_extmarks = vim.api.nvim_buf_get_extmarks(chat.transcript_view.buf, -1, { 0, 0 }, { 0, -1 }, {})
 assert(prefix_extmarks[1][1] == updated_prefix_extmarks[1][1], "unchanged prefix extmarks were deleted and recreated")
 
 local width = vim.api.nvim_win_get_width(chat.win)
-local expected = original_render(chat.items, {
+local expected = original_render(chat.transcript.items, {
   hide_thinking = chat.hide_thinking,
   tools_expanded = chat.tools_expanded,
   collapse_processes = true,
@@ -90,7 +90,7 @@ for _ = 1, chat.overlay_height or 0 do
   table.insert(expected, "")
 end
 assert(
-  vim.deep_equal(expected, vim.api.nvim_buf_get_lines(chat.buf, 0, -1, false)),
+  vim.deep_equal(expected, vim.api.nvim_buf_get_lines(chat.transcript_view.buf, 0, -1, false)),
   "cached transcript composition diverged from a full render"
 )
 

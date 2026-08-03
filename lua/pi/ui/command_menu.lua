@@ -1,62 +1,10 @@
--- Slash-command completion menu. CommandMenu is a method set over the
--- owning Chat instance: menu state (command_buf, command_win, matches,
--- selection) lives on the chat so callers and tests can keep addressing
--- chat.command_* fields.
-
 local M = {}
-
-local builtin_commands = {
-  { name = "settings", description = "Open settings menu" },
-  { name = "model", description = "Select model", argument_hint = "<provider/model>" },
-  { name = "scoped-models", description = "Enable models for cycling", tui_only = true },
-  { name = "export", description = "Export session to HTML", argument_hint = "<path.html>" },
-  { name = "import", description = "Import a session from JSONL", argument_hint = "<path.jsonl>", tui_only = true },
-  { name = "share", description = "Share session as a secret GitHub gist", tui_only = true },
-  { name = "copy", description = "Copy last agent message" },
-  { name = "name", description = "Set session display name", argument_hint = "<name>" },
-  { name = "session", description = "Show session info and statistics" },
-  { name = "changelog", description = "Show Pi changelog", tui_only = true },
-  { name = "hotkeys", description = "Show keyboard shortcuts" },
-  { name = "fork", description = "Fork from a previous user message" },
-  { name = "clone", description = "Duplicate the current session branch" },
-  { name = "tree", description = "Browse the session tree" },
-  { name = "trust", description = "Save project trust decision", tui_only = true },
-  { name = "login", description = "Configure provider authentication", argument_hint = "<provider>", tui_only = true },
-  { name = "logout", description = "Remove provider authentication", tui_only = true },
-  { name = "new", description = "Start a new session" },
-  { name = "compact", description = "Compact session context", argument_hint = "<instructions>" },
-  { name = "resume", description = "Switch to a session file", argument_hint = "<path.jsonl>" },
-  { name = "reload", description = "Reload Pi resources", tui_only = true },
-  { name = "quit", description = "Close the Pi panel" },
-  { name = "thinking", description = "Select thinking level", argument_hint = "<level>" },
-  { name = "layout", description = "Change the Pi workspace layout", argument_hint = "<layout>" },
-  { name = "commands", description = "Browse available commands" },
-  { name = "abort", description = "Abort the active operation" },
-  { name = "clear", description = "Clear the conversation and start a fresh session" },
-  {
-    name = "permissions",
-    description = "Select the session permission mode",
-    argument_hint = "<manual|acceptEdits|auto|plan>",
-  },
-  { name = "mode", description = "Alias for /permissions", argument_hint = "<manual|acceptEdits|auto|plan>" },
-}
+local catalog = require("pi.commands.catalog")
 
 function M.commands(instances)
-  local commands = vim.deepcopy(builtin_commands)
-  local seen = {}
-  for _, command in ipairs(commands) do
-    seen[command.name] = true
-  end
-
   local root = vim.b.pi_root
   local chat = root and instances[root] or nil
-  for _, command in ipairs(chat and chat.commands or {}) do
-    if command.name and not seen[command.name] then
-      table.insert(commands, command)
-      seen[command.name] = true
-    end
-  end
-  return commands
+  return catalog.merge(chat and chat.commands or {})
 end
 
 function M.complete(instances, findstart, base)
@@ -128,21 +76,29 @@ function CommandMenu.new(chat, deps)
     name_buffer = deps.name_buffer,
     truncate_display = deps.truncate_display,
     instances = deps.instances,
+    buf = nil,
+    win = nil,
+    matches = {},
+    selected = 1,
+    first = 1,
+    start_col = nil,
+    base = nil,
   }, CommandMenu)
   return self
 end
 
 function CommandMenu:completion_context()
   local chat = self.chat
-  if not chat.input_buf or not vim.api.nvim_buf_is_valid(chat.input_buf) then
+  local input = chat.input_area
+  if not input:buffer() or not vim.api.nvim_buf_is_valid(input:buffer()) then
     return nil
   end
-  if not chat.input_win or not vim.api.nvim_win_is_valid(chat.input_win) then
+  if not input:window() or not vim.api.nvim_win_is_valid(input:window()) then
     return nil
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(chat.input_win)
-  local line = vim.api.nvim_buf_get_lines(chat.input_buf, cursor[1] - 1, cursor[1], false)[1] or ""
+  local cursor = vim.api.nvim_win_get_cursor(input:window())
+  local line = vim.api.nvim_buf_get_lines(input:buffer(), cursor[1] - 1, cursor[1], false)[1] or ""
   local before_cursor = line:sub(1, cursor[2])
   local leading, base = before_cursor:match("^(%s*)(/[%w:_-]*)$")
   if not base or line:sub(cursor[2] + 1):match("%S") then
@@ -156,38 +112,42 @@ function CommandMenu:completion_context()
   return #leading + 1, matches, base
 end
 
+function CommandMenu:complete(findstart, base)
+  return M.complete(self.instances, findstart, base)
+end
+
 function CommandMenu:visible()
   local chat = self.chat
-  return chat.command_win ~= nil and vim.api.nvim_win_is_valid(chat.command_win)
+  return self.win ~= nil and vim.api.nvim_win_is_valid(self.win)
 end
 
 function CommandMenu:ensure_buffer()
   local chat = self.chat
-  if chat.command_buf and vim.api.nvim_buf_is_valid(chat.command_buf) then
-    return chat.command_buf
+  if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
+    return self.buf
   end
 
-  chat.command_buf = vim.api.nvim_create_buf(false, true)
-  self.name_buffer(chat.command_buf, "commands", chat.root)
-  vim.bo[chat.command_buf].buftype = "nofile"
-  vim.bo[chat.command_buf].bufhidden = "hide"
-  vim.bo[chat.command_buf].swapfile = false
-  vim.bo[chat.command_buf].filetype = "pi_commands"
-  vim.bo[chat.command_buf].modifiable = false
-  return chat.command_buf
+  self.buf = vim.api.nvim_create_buf(false, true)
+  self.name_buffer(self.buf, "commands", chat.root)
+  vim.bo[self.buf].buftype = "nofile"
+  vim.bo[self.buf].bufhidden = "hide"
+  vim.bo[self.buf].swapfile = false
+  vim.bo[self.buf].filetype = "pi_commands"
+  vim.bo[self.buf].modifiable = false
+  return self.buf
 end
 
 function CommandMenu:close()
   local chat = self.chat
   if self:visible() then
-    vim.api.nvim_win_close(chat.command_win, true)
+    vim.api.nvim_win_close(self.win, true)
   end
-  chat.command_win = nil
-  chat.command_matches = {}
-  chat.command_selected = 1
-  chat.command_first = 1
-  chat.command_start_col = nil
-  chat.command_base = nil
+  self.win = nil
+  self.matches = {}
+  self.selected = 1
+  self.first = 1
+  self.start_col = nil
+  self.base = nil
 end
 
 function CommandMenu:render(width, height, first)
@@ -196,7 +156,7 @@ function CommandMenu:render(width, height, first)
   local marker_width = 2
   local content_width = math.max(1, width - marker_width)
   local longest_command = 0
-  for _, match in ipairs(chat.command_matches) do
+  for _, match in ipairs(self.matches) do
     longest_command = math.max(longest_command, vim.api.nvim_strwidth(match.abbr))
   end
 
@@ -215,10 +175,10 @@ function CommandMenu:render(width, height, first)
 
   local lines = {}
   local rows = {}
-  local last = math.min(#chat.command_matches, first + height - 1)
+  local last = math.min(#self.matches, first + height - 1)
   for index = first, last do
-    local match = chat.command_matches[index]
-    local selected = index == chat.command_selected
+    local match = self.matches[index]
+    local selected = index == self.selected
     local marker = selected and "› " or "  "
     local command = self.truncate_display(match.abbr, command_width)
     local command_padding = string.rep(" ", math.max(0, command_width - vim.api.nvim_strwidth(command)))
@@ -292,39 +252,40 @@ end
 
 function CommandMenu:layout()
   local chat = self.chat
-  if not self:visible() or #chat.command_matches == 0 then
+  local input = chat.input_area
+  if not self:visible() or #self.matches == 0 then
     return false
   end
   if not chat.win or not vim.api.nvim_win_is_valid(chat.win) then
     self:close()
     return false
   end
-  if not chat.input_win or not vim.api.nvim_win_is_valid(chat.input_win) then
+  if not input:window() or not vim.api.nvim_win_is_valid(input:window()) then
     self:close()
     return false
   end
 
-  local input_config = vim.api.nvim_win_get_config(chat.input_win)
+  local input_config = vim.api.nvim_win_get_config(input:window())
   local input_row = math.floor(tonumber(input_config.row) or 0)
   local available_height = math.max(0, input_row)
-  local height = math.min(#chat.command_matches, 12, available_height)
+  local height = math.min(#self.matches, 12, available_height)
   if height < 1 then
     self:close()
     return false
   end
 
-  chat.command_selected = math.max(1, math.min(chat.command_selected, #chat.command_matches))
-  local maximum_first = math.max(1, #chat.command_matches - height + 1)
-  local first = math.max(1, math.min(chat.command_first or 1, maximum_first))
-  if chat.command_selected < first then
-    first = chat.command_selected
-  elseif chat.command_selected >= first + height then
-    first = chat.command_selected - height + 1
+  self.selected = math.max(1, math.min(self.selected, #self.matches))
+  local maximum_first = math.max(1, #self.matches - height + 1)
+  local first = math.max(1, math.min(self.first or 1, maximum_first))
+  if self.selected < first then
+    first = self.selected
+  elseif self.selected >= first + height then
+    first = self.selected - height + 1
   end
-  chat.command_first = first
+  self.first = first
 
   local width = math.max(1, vim.api.nvim_win_get_width(chat.win))
-  vim.api.nvim_win_set_config(chat.command_win, {
+  vim.api.nvim_win_set_config(self.win, {
     relative = "win",
     win = chat.win,
     row = input_row - height,
@@ -343,7 +304,7 @@ function CommandMenu:open()
   local chat = self.chat
   if not self:visible() then
     local buf = self:ensure_buffer()
-    chat.command_win = vim.api.nvim_open_win(buf, false, {
+    self.win = vim.api.nvim_open_win(buf, false, {
       relative = "win",
       win = chat.win,
       row = 0,
@@ -354,16 +315,16 @@ function CommandMenu:open()
       focusable = false,
       zindex = 52,
     })
-    vim.wo[chat.command_win].wrap = false
-    vim.wo[chat.command_win].cursorline = false
-    vim.wo[chat.command_win].number = false
-    vim.wo[chat.command_win].relativenumber = false
-    vim.wo[chat.command_win].signcolumn = "no"
-    vim.wo[chat.command_win].foldcolumn = "0"
-    vim.wo[chat.command_win].fillchars = "eob: "
-    vim.wo[chat.command_win].winblend = 0
-    vim.wo[chat.command_win].winbar = ""
-    vim.wo[chat.command_win].winhighlight = table.concat({
+    vim.wo[self.win].wrap = false
+    vim.wo[self.win].cursorline = false
+    vim.wo[self.win].number = false
+    vim.wo[self.win].relativenumber = false
+    vim.wo[self.win].signcolumn = "no"
+    vim.wo[self.win].foldcolumn = "0"
+    vim.wo[self.win].fillchars = "eob: "
+    vim.wo[self.win].winblend = 0
+    vim.wo[self.win].winbar = ""
+    vim.wo[self.win].winhighlight = table.concat({
       "Normal:PiCommandMenu",
       "NormalNC:PiCommandMenu",
       "EndOfBuffer:PiCommandMenu",
@@ -375,7 +336,7 @@ end
 
 function CommandMenu:update()
   local chat = self.chat
-  if vim.api.nvim_get_current_win() ~= chat.input_win then
+  if vim.api.nvim_get_current_win() ~= chat.input_area:window() then
     self:close()
     return false
   end
@@ -389,20 +350,20 @@ function CommandMenu:update()
     return false
   end
 
-  local selected_word = chat.command_matches[chat.command_selected] and chat.command_matches[chat.command_selected].word
-  chat.command_matches = matches
-  chat.command_selected = 1
+  local selected_word = self.matches[self.selected] and self.matches[self.selected].word
+  self.matches = matches
+  self.selected = 1
   if selected_word then
     for index, match in ipairs(matches) do
       if match.word == selected_word then
-        chat.command_selected = index
+        self.selected = index
         break
       end
     end
   end
-  chat.command_first = 1
-  chat.command_start_col = start_col
-  chat.command_base = base
+  self.first = 1
+  self.start_col = start_col
+  self.base = base
   return self:open()
 end
 
@@ -412,40 +373,64 @@ end
 
 function CommandMenu:select(delta)
   local chat = self.chat
-  if not self:visible() or #chat.command_matches == 0 then
+  if not self:visible() or #self.matches == 0 then
     return false
   end
-  local count = #chat.command_matches
-  chat.command_selected = (chat.command_selected - 1 + delta) % count + 1
+  local count = #self.matches
+  self.selected = (self.selected - 1 + delta) % count + 1
   self:layout()
   return true
 end
 
 function CommandMenu:accept()
   local chat = self.chat
+  local input = chat.input_area
   if not self:visible() then
     return false
   end
-  local match = chat.command_matches[chat.command_selected]
-  local start_col = chat.command_start_col
+  local match = self.matches[self.selected]
+  local start_col = self.start_col
   if not match or not start_col then
     return false
   end
 
-  local cursor = vim.api.nvim_win_get_cursor(chat.input_win)
+  local cursor = vim.api.nvim_win_get_cursor(input:window())
   vim.api.nvim_buf_set_text(
-    chat.input_buf,
+    input:buffer(),
     cursor[1] - 1,
     start_col - 1,
     cursor[1] - 1,
     cursor[2],
     { match.word .. " " }
   )
-  vim.api.nvim_win_set_cursor(chat.input_win, { cursor[1], start_col - 1 + #match.word + 1 })
+  vim.api.nvim_win_set_cursor(input:window(), { cursor[1], start_col - 1 + #match.word + 1 })
   self:close()
   return true
 end
 
+function CommandMenu:buffer()
+  return self.buf
+end
+
+function CommandMenu:window()
+  return self.win
+end
+
+function CommandMenu:selected_index()
+  return self.selected
+end
+
+function CommandMenu:owns_buffer(bufnr)
+  return bufnr ~= nil and self.buf == bufnr
+end
+
+function CommandMenu:destroy()
+  self:close()
+  if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
+    pcall(vim.api.nvim_buf_delete, self.buf, { force = true })
+  end
+  self.buf = nil
+end
+
 M.CommandMenu = CommandMenu
-M.builtin_commands = builtin_commands
 return M

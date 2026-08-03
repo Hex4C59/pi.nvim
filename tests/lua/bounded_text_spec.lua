@@ -32,6 +32,19 @@ assert(#utf8:text() <= 9, "UTF-8 trimming exceeded the byte limit")
 local long_line = buffer({ max_bytes = 32 })
 long_line:append(string.rep("x", 100000))
 assert(#long_line:text() == 32, "large single line escaped the byte limit")
+assert(long_line:stats().copied_bytes <= 64, "large single delta copied its discarded prefix")
+
+local split_utf8 = buffer({ max_bytes = 1024, max_lines = 1024, max_chunks = 16 })
+split_utf8:append(string.rep("中", 400))
+assert(pcall(vim.str_utfindex, split_utf8:text()), "fixed-size block split broke a UTF-8 code point")
+assert(#split_utf8:text() <= 1024, "split UTF-8 stream exceeded its byte limit")
+
+local one_chunk = buffer({ max_bytes = 64, max_lines = 64, max_chunks = 1 })
+for _ = 1, 100 do
+  one_chunk:append("x")
+end
+assert(one_chunk:text() == string.rep("x", 64), "single-chunk mode changed retained tail semantics")
+assert(one_chunk:stats().chunks == 1, "single-chunk mode exceeded max_chunks")
 
 local many = buffer({ max_bytes = 1024, max_lines = 1024, max_chunks = 16 })
 local last_omitted = 0
@@ -47,6 +60,27 @@ assert(
   "stress state is unbounded"
 )
 assert(stats.omitted_bytes == 100000 - stats.retained_bytes, "stress omission count is inaccurate")
+
+local function small_delta_copy_work(window)
+  local stream = buffer({ max_bytes = window, max_lines = 1000000, max_chunks = 256 })
+  local appended = 100000
+  for _ = 1, appended do
+    stream:append("x")
+  end
+  local stream_stats = stream:stats()
+  assert(stream_stats.retained_bytes == window, "complexity fixture retained the wrong byte window")
+  assert(stream_stats.omitted_bytes == appended - window, "complexity fixture omission accounting changed")
+  assert(stream_stats.chunks <= 256, "complexity fixture exceeded max_chunks")
+  assert(stream_stats.copied_bytes <= appended * 24, "small deltas caused superlinear retained-window copying")
+  return stream_stats.copied_bytes
+end
+
+local small_window_work = small_delta_copy_work(1024)
+local large_window_work = small_delta_copy_work(64 * 1024)
+assert(
+  large_window_work <= small_window_work * 2,
+  "small-delta copy work scaled in proportion to the 64x larger retained window"
+)
 
 local empty = buffer()
 empty:append("")

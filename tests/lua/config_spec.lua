@@ -40,6 +40,31 @@ config.setup({ context = { max_chars = 321 } })
 assert(config.get().context.max_bytes == 321, "legacy context.max_chars was not migrated")
 config.setup({ context = { max_chars = 321, max_bytes = 654 } })
 assert(config.get().context.max_bytes == 654, "context.max_bytes must take precedence over the legacy alias")
+assert(
+  not pcall(config.setup, { context = { include_diagnostics = "yes" } }),
+  "non-boolean diagnostic inclusion was accepted"
+)
+assert(not pcall(config.setup, { context = { diagnostics_max_count = 0 } }), "zero diagnostic count limit was accepted")
+assert(
+  not pcall(config.setup, { context = { diagnostic_max_message_bytes = math.huge } }),
+  "infinite diagnostic message limit was accepted"
+)
+assert(
+  not pcall(config.setup, { context = { diagnostics_max_bytes = 127 } }),
+  "diagnostic section limit below its structural minimum was accepted"
+)
+config.setup({
+  context = {
+    max_bytes = 4096.9,
+    diagnostics_max_count = 12.9,
+    diagnostic_max_message_bytes = 48.9,
+    diagnostics_max_bytes = 1024.9,
+  },
+})
+assert(config.get().context.max_bytes == 4096, "context byte limit was not integer-normalized")
+assert(config.get().context.diagnostics_max_count == 12, "diagnostic count limit was not integer-normalized")
+assert(config.get().context.diagnostic_max_message_bytes == 48, "diagnostic message limit was not integer-normalized")
+assert(config.get().context.diagnostics_max_bytes == 1024, "diagnostic section limit was not integer-normalized")
 
 config.setup({ security = { mode = "read-only" } })
 local read_only = table.concat(config.command(root), "\n")
@@ -90,5 +115,32 @@ assert(
 )
 config.setup({ images = { terminal = { timeout_ms = 1000.9 } } })
 assert(config.get().images.terminal.timeout_ms == 1000, "image timeout must be normalized to an integer")
+assert(
+  not pcall(config.setup, { images = { preview = { max_concurrent = 0 } } }),
+  "zero colored-preview concurrency was accepted"
+)
+assert(
+  not pcall(config.setup, { images = { preview = { debounce_ms = -1 } } }),
+  "negative colored-preview debounce was accepted"
+)
+assert(
+  not pcall(config.setup, { images = { preview = { timeout_ms = 99 } } }),
+  "colored-preview timeout below the minimum was accepted"
+)
+config.setup({ images = { preview = { max_concurrent = 3.9, debounce_ms = 20.9, timeout_ms = 500.9 } } })
+assert(config.get().images.preview.max_concurrent == 3, "colored-preview concurrency was not integer-normalized")
+assert(config.get().images.preview.debounce_ms == 20, "colored-preview debounce was not integer-normalized")
+assert(config.get().images.preview.timeout_ms == 500, "colored-preview timeout was not integer-normalized")
+assert(
+  not pcall(config.setup, { images = { attachment_max_count = 0 } }),
+  "zero image attachment count limit was accepted"
+)
+assert(
+  not pcall(config.setup, { images = { attachment_max_bytes = 1023 } }),
+  "image attachment byte limit below the minimum was accepted"
+)
+config.setup({ images = { attachment_max_count = 3.9, attachment_max_bytes = 4096.9 } })
+assert(config.get().images.attachment_max_count == 3, "image attachment count was not integer-normalized")
+assert(config.get().images.attachment_max_bytes == 4096, "image attachment bytes were not integer-normalized")
 
 print("config_spec: ok")

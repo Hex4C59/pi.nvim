@@ -1,5 +1,5 @@
 local runtime = require("pi.runtime")
-local chat_ui = require("pi.ui.chat")
+local compact_count = require("pi.format").compact_count
 
 local M = {}
 
@@ -55,9 +55,7 @@ function M.select_model(root, query)
       prompt = query ~= "" and ("Pi model · " .. query) or "Pi model",
       format_item = function(model)
         local marker = model.provider == current.provider and model.id == current.id and "●" or " "
-        local context_window = model.contextWindow
-            and ("  %s context"):format(chat_ui.format_count(model.contextWindow))
-          or ""
+        local context_window = model.contextWindow and ("  %s context"):format(compact_count(model.contextWindow)) or ""
         return ("%s %s/%s%s"):format(marker, model.provider, model.id, context_window)
       end,
     }, apply)
