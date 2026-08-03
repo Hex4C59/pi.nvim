@@ -1,6 +1,6 @@
 local config = require("pi.config")
 local image_data = require("pi.ui.image")
-local image_backend = require("pi.ui.image_backend")
+local image_backend = require("pi.ui.image.backend")
 
 local png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
@@ -65,16 +65,16 @@ assert(image_data.fallback(failed_image):find("conversion failed", 1, true), "pl
 assert(selector_changes >= 2, "backend transitions did not request a transcript redraw")
 
 config.setup({ images = { backend = "text" } })
-local previous_preload = package.preload["pi.ui.image_backends.snacks"]
-local previous_loaded = package.loaded["pi.ui.image_backends.snacks"]
-package.loaded["pi.ui.image_backends.snacks"] = nil
-package.preload["pi.ui.image_backends.snacks"] = function()
+local previous_preload = package.preload["pi.ui.image.backends.snacks"]
+local previous_loaded = package.loaded["pi.ui.image.backends.snacks"]
+package.loaded["pi.ui.image.backends.snacks"] = nil
+package.preload["pi.ui.image.backends.snacks"] = function()
   error("text backend loaded its provider")
 end
 local text_backend = image_backend.new()
 assert(not text_backend:is_terminal(), "text backend became terminal")
-package.preload["pi.ui.image_backends.snacks"] = previous_preload
-package.loaded["pi.ui.image_backends.snacks"] = previous_loaded
+package.preload["pi.ui.image.backends.snacks"] = previous_preload
+package.loaded["pi.ui.image.backends.snacks"] = previous_loaded
 
 vim.api.nvim_win_close(placement_win, true)
 vim.api.nvim_buf_delete(placement_buf, { force = true })

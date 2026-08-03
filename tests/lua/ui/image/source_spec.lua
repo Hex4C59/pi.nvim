@@ -1,5 +1,6 @@
 local config = require("pi.config")
 local image_data = require("pi.ui.image")
+local source = require("pi.ui.image.source")
 
 local png_base64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 
@@ -12,6 +13,9 @@ local function image_block(data)
 end
 
 config.setup({ images = { backend = "text", max_bytes = 1024 } })
+assert(source.mime_type({ mimeType = "image/png; charset=binary" }) == "image/png", "MIME parameters were retained")
+local invalid_width, invalid_height, invalid_err = source.dimensions("not an image", "image/png")
+assert(not invalid_width and not invalid_height and invalid_err, "invalid source dimensions were accepted")
 local oversized = image_block(vim.base64.encode(string.rep("x", 1025)))
 assert(not image_data.prepare(oversized, 32), "oversized compressed image was accepted")
 assert(image_data.fallback(oversized):find("too large", 1, true), "size failure was not preserved in transcript text")
@@ -45,4 +49,4 @@ for _, width in ipairs({ 28, 24, 20, 16 }) do
   assert(file_backed._pi_image.source == prepared_source, "resize replaced the immutable prepared source")
 end
 
-print("image_limits_spec: ok")
+print("image_source_spec: ok")

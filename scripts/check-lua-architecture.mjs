@@ -219,6 +219,13 @@ function dependencyViolation(source, dependency) {
   if (hasPrefix(source, "pi.ui") && dependency === "pi") {
     return "UI modules must receive frontend actions instead of requiring pi";
   }
+  if (
+    (hasPrefix(source, "pi.ui.render") || hasPrefix(source, "pi.ui.transcript") || source === "pi.ui.transcript_view") &&
+    hasPrefix(dependency, "pi.ui.image") &&
+    dependency !== "pi.ui.image"
+  ) {
+    return "transcript and renderer modules must use the stable image facade";
+  }
   if (hasPrefix(source, "pi.protocol") && ["pi.client", "pi.runtime", "pi.commands", "pi.ui"].some((prefix) => hasPrefix(dependency, prefix))) {
     return "protocol must remain a transport-independent leaf";
   }

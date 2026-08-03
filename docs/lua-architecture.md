@@ -24,8 +24,11 @@ pi.ui.chat
   -> pi.ui.chat.registry / pi.ui.chat.shell
   -> pi.ui.transcript
   -> pi.ui.transcript_view -> pi.ui.render
-  -> pi.ui.image_preview
+  -> pi.ui.image.window / pi.ui.image.backend
   -> pi.ui.input / command_menu / permission / widget
+
+pi.ui.image
+  -> pi.ui.image.source / preview / scheduler
 
 pi.ui.render
   -> pi.ui.render.*
@@ -35,7 +38,9 @@ pi.ui.render
 comments and strings. Its policy test rejects forbidden layer edges, UI modules
 that load the top-level `pi` facade for action dispatch, literal-require cycles,
 direct access to private Chat component fields, and Runtime-owned state placed
-on Client objects. There are no reviewed cycle or facade-leak exceptions.
+on Client objects. It also prevents Transcript and renderer modules from
+bypassing the stable image facade. There are no reviewed cycle or facade-leak
+exceptions.
 
 Frontend actions flow from `pi.init` into Runtime, which binds them to a project
 root and passes them to the Chat composition root. Chat then supplies named
@@ -58,8 +63,12 @@ through a late top-level require.
 | Command-menu buffer/window/matches/selection | `pi.ui.command_menu` |
 | Permission queue, inline projection, focus trap | `pi.ui.permission` |
 | Widget values and widget buffers/windows | `pi.ui.widget` |
-| Temporary enlarged-image buffer/window | `pi.ui.image_preview` |
-| Image preparation/cache and terminal placement backend | `pi.ui.image` / `pi.ui.image_backend` |
+| Per-block `_pi_image` state and stable image API | `pi.ui.image` |
+| MIME, decoded source, dimensions, private cache | `pi.ui.image.source` |
+| RGBA block conversion and dynamic preview highlights | `pi.ui.image.preview` |
+| Preview queue, timers, converter processes, cancellation | `pi.ui.image.scheduler` |
+| Terminal backend state and placement handles | `pi.ui.image.backend` / `image.backends.*` |
+| Temporary enlarged-image buffer/window | `pi.ui.image.window` |
 
 `Transcript` is a bounded Neovim display projection, not session storage.
 Releasing or clearing local bodies does not alter Pi's authoritative session.
@@ -106,6 +115,13 @@ windows. `TranscriptView` applies their output and retains stable-prefix render
 caching, bounded projection accounting, coalesced redraws, scroll following,
 Extmarks, and terminal image synchronization.
 
+`pi.ui.image` is the stable facade used by Transcript, TranscriptView, and
+renderers. It is the only module that attaches or clears `_pi_image` on a
+content block. Source loading, preview conversion, scheduling, backend
+placement, and enlarged-window lifecycle are delegated to focused owners below
+`pi.ui.image.*`. The former `pi.ui.image_backend`, `pi.ui.image_backends.snacks`,
+and `pi.ui.image_preview` paths are compatibility aliases without state.
+
 ## Lifecycle
 
 Closing a Chat delegates window reset to Shell: it stops the per-Chat activity
@@ -131,6 +147,7 @@ continue to return a blocking response.
 | Transcript model | `tests/lua/ui/transcript_spec.lua`, `regression/output_budget_spec.lua` |
 | Transcript view and render cache | `regression/performance_spec.lua`, Chat interaction specs |
 | Image preview/backend lifecycle | image Chat/backend lifecycle specs |
+| Image source, preview, scheduler, backend, and window owners | `tests/lua/ui/image/` |
 | Chat registry/global lifecycle | `tests/lua/ui/chat/registry_spec.lua` |
 | Chat shell and responsive layout | `tests/lua/ui/chat/shell_spec.lua` |
 | Chat activity and interaction | `tests/lua/ui/chat/activity_spec.lua`, `interaction_spec.lua` |

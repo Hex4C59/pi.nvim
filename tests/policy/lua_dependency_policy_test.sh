@@ -35,10 +35,11 @@ expect_failure() {
 
 node "$checker" --root "$repo_root"
 
-for fixture in forbidden ui-action cycle leak shell-leak client-state comments; do
+for fixture in forbidden ui-action image-private cycle leak shell-leak client-state comments; do
   mkdir -p "$temporary_root/$fixture/lua/pi/commands" "$temporary_root/$fixture/lua/pi/ui"
 done
 mkdir -p "$temporary_root/shell-leak/lua/pi/ui/chat"
+mkdir -p "$temporary_root/image-private/lua/pi/ui/render" "$temporary_root/image-private/lua/pi/ui/image"
 
 printf '%s\n' 'return require("pi.ui.chat")' > "$temporary_root/forbidden/lua/pi/commands/demo.lua"
 printf '%s\n' 'return {}' > "$temporary_root/forbidden/lua/pi/ui/chat.lua"
@@ -46,6 +47,10 @@ expect_failure forbidden "$temporary_root/forbidden" 'command modules must use r
 
 printf '%s\n' 'return require("pi")' > "$temporary_root/ui-action/lua/pi/ui/demo.lua"
 expect_failure ui-action "$temporary_root/ui-action" 'UI modules must receive frontend actions'
+
+printf '%s\n' 'return require("pi.ui.image.source")' > "$temporary_root/image-private/lua/pi/ui/render/demo.lua"
+printf '%s\n' 'return {}' > "$temporary_root/image-private/lua/pi/ui/image/source.lua"
+expect_failure image-private "$temporary_root/image-private" 'must use the stable image facade'
 
 printf '%s\n' 'return require("pi.b")' > "$temporary_root/cycle/lua/pi/a.lua"
 printf '%s\n' 'return require("pi.a")' > "$temporary_root/cycle/lua/pi/b.lua"

@@ -60,7 +60,7 @@ function M.check()
     )
   )
   local image_options = options.images or {}
-  local image_status = require("pi.ui.image_backend").inspect()
+  local image_status = require("pi.ui.image.backend").inspect()
   vim.health.info("Inline image backend requested: " .. image_status.requested)
   vim.health.info("Inline image provider: " .. tostring(image_status.provider))
   if image_status.actual == "terminal" then

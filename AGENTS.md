@@ -427,7 +427,12 @@ lua/pi/ui/chat/registry.lua   Global UI autocmds, instances, welcome animation
 lua/pi/ui/chat/shell.lua      Top-level window lifecycle and responsive layout
 lua/pi/ui/transcript.lua      Bounded transcript display model
 lua/pi/ui/transcript_view.lua Transcript buffer, render cache, ranges, images
-lua/pi/ui/image_preview.lua   Temporary image preview buffer/window lifecycle
+lua/pi/ui/image.lua           Stable image state and preparation facade
+lua/pi/ui/image/source.lua    MIME, decoding, dimensions, cache, validation
+lua/pi/ui/image/preview.lua   RGBA block previews and dynamic highlights
+lua/pi/ui/image/scheduler.lua Preview debounce, concurrency, timeout, cancellation
+lua/pi/ui/image/backend.lua   Terminal backend selection and status
+lua/pi/ui/image/window.lua    Enlarged image preview buffer/window lifecycle
 lua/pi/ui/render.lua          Stable rendering facade
 lua/pi/ui/render/             Focused pure-ish transcript renderers
 lua/pi/ui/input.lua           Prompt/status buffers, windows, and overlays

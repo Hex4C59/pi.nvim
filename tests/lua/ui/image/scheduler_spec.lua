@@ -154,4 +154,4 @@ assert(next(chat.transcript.image_blocks) == nil, "Chat destroy retained tracked
 vim.fn.executable = original_executable
 vim.system = original_system
 
-print("image_preview_lifecycle_spec: ok")
+print("image_scheduler_spec: ok")

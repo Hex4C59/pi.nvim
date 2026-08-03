@@ -1,4 +1,4 @@
-local SnacksBackend = require("pi.ui.image_backends.snacks")
+local SnacksBackend = require("pi.ui.image.backends.snacks")
 
 local created = {}
 local closed = 0

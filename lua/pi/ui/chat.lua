@@ -5,11 +5,11 @@ local input_area = require("pi.ui.input")
 local permission_panel = require("pi.ui.permission")
 local widget_panel = require("pi.ui.widget")
 local permission_modes = require("pi.permission_mode")
-local image_backend = require("pi.ui.image_backend")
+local image_backend = require("pi.ui.image.backend")
 local text_content = require("pi.message").text_content
 local Transcript = require("pi.ui.transcript").Transcript
 local TranscriptView = require("pi.ui.transcript_view").TranscriptView
-local ImagePreview = require("pi.ui.image_preview").ImagePreview
+local ImagePreview = require("pi.ui.image.window").ImagePreview
 local registry = require("pi.ui.chat.registry").default()
 local Shell = require("pi.ui.chat.shell").Shell
 

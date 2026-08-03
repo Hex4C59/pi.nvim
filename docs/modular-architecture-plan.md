@@ -1,7 +1,7 @@
 # Modular Architecture Improvement Plan
 
-> Status: In progress. Tasks 01 through 03 were completed on 2026-08-04; Tasks
-> 04 through 08 remain proposed.
+> Status: In progress. Tasks 01 through 04 were completed on 2026-08-04; Tasks
+> 05 through 08 remain proposed.
 >
 > Scope: internal Lua frontend boundaries, bundled Extension policy modules,
 > test ownership, dependency enforcement, and durable architecture
@@ -249,7 +249,7 @@ transformation.
 | 01 | Completed | Record contracts and strengthen architecture policy coverage | none |
 | 02 | Completed | Seal Chat and Runtime ownership boundaries | 01 |
 | 03 | Completed | Decouple and split the Chat shell | 02 |
-| 04 | Proposed | Organize the image subsystem | 02 |
+| 04 | Completed | Organize the image subsystem | 02 |
 | 05 | Proposed | Organize Transcript projection, retention, history, and view | 02, 04 |
 | 06 | Proposed | Split bundled security policy owners | 01 |
 | 07 | Proposed | Align test structure and focused execution | 03, 04, 05, 06 |
@@ -499,6 +499,28 @@ RPC image integration test as the end-to-end boundary.
 - Scheduler tests use controlled fake processes/timers and leave no live handle.
 - Transcript and render modules depend only on the image facade.
 - Existing image limits and fallback behavior remain unchanged.
+
+### Implementation Record
+
+Completed on 2026-08-04 against Task 03 commit `4166753`.
+
+- Kept `pi.ui.image` as the stable per-block state facade and extracted source
+  normalization, decoding, dimensions, pixel validation, private cache I/O, and
+  sizing into `pi.ui.image.source`.
+- Extracted bounded RGBA half-block conversion and colorscheme-restorable
+  preview highlights into `pi.ui.image.preview`.
+- Replaced the facade-owned global conversion queue with
+  `pi.ui.image.scheduler`, the sole owner of debounce timers, concurrency,
+  ImageMagick processes, timeouts, cancellation, and queue accounting.
+- Grouped backend selection and the Snacks placement adapter below
+  `pi.ui.image.backend` and `pi.ui.image.backends.snacks`. Moved enlarged preview
+  buffer/window lifecycle to `pi.ui.image.window`; old require paths remain
+  stateless compatibility aliases.
+- Added focused source, preview, scheduler, backend, adapter, facade, and window
+  specs below `tests/lua/ui/image/`. The independent window spec also fixed a
+  multi-return fallback bug while a colored preview is still loading.
+- `make test`, `make format-check`, `make smoke`, and `make ci-policy-check`
+  passed after implementation against installed Pi 0.83.0 without a model call.
 
 ## 11. Task 05: Organize Transcript Ownership
 
