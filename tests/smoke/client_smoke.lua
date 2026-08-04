@@ -24,6 +24,7 @@ assert(
 )
 assert(#errors == 0, table.concat(errors, "\n"))
 assert(client.session.model ~= nil, "get_state did not return a model")
+assert(type(client.session.autoRetryEnabled) == "boolean", "get_state did not return auto-retry state")
 
 client:stop()
 assert(

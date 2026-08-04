@@ -6,6 +6,23 @@ local M = {}
 
 local notify_error = runtime.notify_error
 
+local function enabled_label(value)
+  if type(value) ~= "boolean" then
+    return "unknown"
+  end
+  return value and "on" or "off"
+end
+
+local function set_auto_retry(client, enabled)
+  client:request("set_auto_retry", { enabled = enabled }, function(ok, _, err)
+    if not ok then
+      notify_error(err)
+    else
+      runtime.refresh_state(client)
+    end
+  end)
+end
+
 function M.layout(position, root)
   root = root or runtime.client_root()
   local chat = runtime.chat_for(root)
@@ -42,6 +59,7 @@ function M.settings(root)
     { label = "Thinking level", value = state.thinkingLevel or "off", action = "thinking" },
     { label = "Permission mode", value = display_state.permission_mode_label, action = "permissions" },
     { label = "Auto-compact", value = state.autoCompactionEnabled and "on" or "off", action = "compact" },
+    { label = "Auto-retry", value = enabled_label(state.autoRetryEnabled), action = "retry" },
     { label = "Steering mode", value = state.steeringMode or "one-at-a-time", action = "steering" },
     { label = "Follow-up mode", value = state.followUpMode or "one-at-a-time", action = "followup" },
     { label = "Workspace layout", value = display_state.layout, action = "layout" },
@@ -75,6 +93,25 @@ function M.settings(root)
           chat:update_state(state)
         end
       end)
+    elseif item.action == "retry" then
+      if type(state.autoRetryEnabled) == "boolean" then
+        set_auto_retry(client, not state.autoRetryEnabled)
+      else
+        local choices = {
+          { label = "Enable", enabled = true },
+          { label = "Disable", enabled = false },
+        }
+        vim.ui.select(choices, {
+          prompt = "Set Pi auto-retry",
+          format_item = function(choice)
+            return choice.label
+          end,
+        }, function(choice)
+          if choice then
+            set_auto_retry(client, choice.enabled)
+          end
+        end)
+      end
     elseif item.action == "steering" then
       local mode = state.steeringMode == "all" and "one-at-a-time" or "all"
       client:request("set_steering_mode", { mode = mode }, function(ok, _, err)

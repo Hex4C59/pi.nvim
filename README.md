@@ -123,10 +123,16 @@ Below the prompt, a single quiet row keeps the selected model and thinking level
 on the left, and shows the selected permission mode beside context usage. On narrow
 layouts the permission mode takes priority over model details. Queue counts temporarily
 replace context usage when steering or follow-up prompts are waiting. Detailed
-token, cache, cost, and compaction information remains available through
+token, cache, cost, compaction, and auto-retry information remains available through
 `:PiStatus`, `/session`, and `/settings` instead of competing for permanent
 screen space. The prompt reserves one row of vertical padding above and below
 its text and grows with multiline input up to `chat.max_input_height`.
+
+The settings menu reads Pi's authoritative `autoRetryEnabled` state and can
+enable or disable automatic retry. A successful change refreshes `get_state`
+before the local mirror changes; a failed request leaves the displayed value
+alone. Backends without the state field show `unknown` and require an explicit
+Enable or Disable choice instead of guessing the current value.
 
 The prompt editor focuses automatically and mirrors Pi's primary controls:
 
@@ -381,8 +387,8 @@ owned scratch buffers for the stopped project.
 
 The test suite does not call a model or require authentication. It includes a
 deterministic fake RPC process that exercises history, streaming messages,
-thinking, tool execution, Extension dialog cancellation, queue updates, and
-agent settlement end to end:
+thinking, tool execution, Extension dialog cancellation, retry settings and
+events, queue updates, and agent settlement end to end:
 
 ```bash
 make test

@@ -218,6 +218,7 @@ local function run()
   assert(notification:find("Cache read: 20 (66.7% hit)", 1, true), "session details are missing cache usage")
   assert(notification:find("Cost: $0.0010", 1, true), "session details are missing cost")
   assert(notification:find("Auto-compact: on", 1, true), "session details are missing compaction state")
+  assert(notification:find("Auto-retry: on", 1, true), "session details are missing retry state")
 
   pi.submit("/clear", root)
   assert(

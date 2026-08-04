@@ -20,6 +20,7 @@ const assistant = {
 };
 let delayedPrompt;
 let freshSession = false;
+let autoRetryEnabled = true;
 
 const runPrompt = (request, userText = request.message) => {
   respond(request);
@@ -69,6 +70,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       thinkingLevel: "high",
       isStreaming: false,
       autoCompactionEnabled: true,
+      autoRetryEnabled,
     });
     send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: "manual" });
     if (!freshSession) {
@@ -80,6 +82,9 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         widgetPlacement: "aboveEditor",
       });
     }
+  } else if (request.type === "set_auto_retry") {
+    autoRetryEnabled = request.enabled;
+    respondToRequest();
   } else if (request.type === "get_messages") {
     respondToRequest({
       messages: freshSession ? [] : [

@@ -30,7 +30,6 @@ No release-blocking failure was found in the normal prompt, streaming, tool, per
 | P1 | Full-history RPC responses have a fixed 10 MiB frame ceiling | Pi RPC and pi.nvim client | A sufficiently large persisted session cannot be loaded reliably |
 | P1 | Session listing and in-place tree navigation are absent from RPC | Pi RPC, then pi.nvim UI | `/resume` requires an exact path and the tree cannot activate an existing node |
 | P2 | Authentication and several administrative workflows are TUI-only | Pi RPC, then pi.nvim UI | Users must leave Neovim for login/logout, reload, trust changes, and related commands |
-| P2 | Auto-retry state and controls are incomplete | Pi RPC, then pi.nvim settings UI | Retry events render, but the current setting cannot be inspected or changed accurately |
 
 Priority describes remediation order and user impact, not security severity. The permission gate, workspace guard, and session-root guard remain authoritative in bundled Pi Extensions.
 
@@ -493,98 +492,6 @@ Authentication likely needs an event-driven flow rather than a single request be
 - Authentication secrets remain outside transcripts and logs.
 - Unsupported providers/workflows return structured errors and leave existing state unchanged.
 
-## 4. Auto-Retry Is Rendered but Not Fully Controllable
-
-### Classification
-
-- Priority: P2
-- Status: partial frontend support and Pi 0.83 state gap
-- User-visible area: settings, retry activity, interruption
-- Authoritative owner: Pi settings/session
-- Presentation owner: pi.nvim
-
-### Current behavior
-
-Pi 0.83 RPC exposes:
-
-- `set_auto_retry`
-- `abort_retry`
-- `auto_retry_start`
-- `auto_retry_end`
-
-pi.nvim handles retry events in `lua/pi/runtime.lua`:
-
-- `auto_retry_start` changes the activity label to `retry attempt/maxAttempts`.
-- Failed `auto_retry_end` adds the final error to the transcript.
-
-The settings UI in `lua/pi/commands/ui.lua` exposes model, thinking, permission mode, auto-compaction, steering mode, follow-up mode, layout, and transcript detail. It does not expose auto-retry.
-
-Pi 0.83 `get_state` does not include `autoRetryEnabled`, even though Pi core has an authoritative `autoRetryEnabled` getter. Without that state, a frontend toggle cannot reliably display the current value before changing it.
-
-The generic `abort` RPC already calls `session.abort()`, and Pi core's `session.abort()` calls `abortRetry()` before aborting the agent. Therefore, the existing interrupt action can cancel retry sleep; the primary missing capability is accurate setting inspection and control, not basic cancellation.
-
-### Required backend change
-
-Add `autoRetryEnabled` to `RpcSessionState` and the `get_state` response:
-
-```json
-{
-  "type": "response",
-  "command": "get_state",
-  "success": true,
-  "data": {
-    "autoRetryEnabled": true
-  }
-}
-```
-
-The real response will continue to include all existing state fields. This is an additive protocol change but still requires updating the targeted Pi version or a capability/version gate.
-
-Optionally expose current retry state for reconnecting clients:
-
-```json
-{
-  "isRetrying": true,
-  "retryAttempt": 2
-}
-```
-
-That addition would let a newly attached frontend reconstruct current activity without waiting for a future `auto_retry_start` event. It should be added only if Pi can guarantee consistent semantics with `isStreaming` and `agent_settled`.
-
-### Required frontend changes
-
-- Store `autoRetryEnabled` only from authoritative `get_state` data or successful RPC responses.
-- Add an “Auto-retry” settings row.
-- Send `set_auto_retry` with the inverse of the current authoritative value.
-- Update the mirror only after success, or refresh state after success.
-- Restore the previous display on failure.
-- Include auto-retry in `/session` or `/settings`, not necessarily in the permanent footer.
-- On versions without the state field, show `unknown` and either disable the toggle or offer explicit `enable`/`disable` commands rather than guessing.
-
-### Test requirements
-
-Pi repository:
-
-- `get_state` reports the configured retry value.
-- `set_auto_retry` changes the next `get_state` result.
-- Retry state remains consistent across session switch/reload according to Pi settings semantics.
-
-pi.nvim repository:
-
-- Settings displays on/off/unknown correctly.
-- Successful toggles update from authoritative state.
-- Failed toggles do not change the local mirror.
-- Fake retry event ordering keeps the activity label correct until `agent_settled`.
-- Interrupt during retry sends an abort and returns to idle after Pi settles.
-- Installed no-model smoke verifies the state and toggle commands without triggering a provider request.
-
-### Acceptance criteria
-
-- The settings surface shows the actual Pi auto-retry setting.
-- Users can enable or disable it without entering the TUI.
-- Reconnect/session changes cannot leave a stale optimistic value.
-- Retry interruption remains consistent with Pi's authoritative settled event.
-
 ## Intentional Limitations That Must Not Be Misclassified
 
 The following behaviors are deliberate and should not be “fixed” solely in Lua:
@@ -617,15 +524,7 @@ Pi Extension APIs such as `ctx.ui.custom()`, component factories, custom headers
 
 The sequence below respects ownership and minimizes frontend compatibility branches.
 
-### Phase 1: retry state completeness
-
-1. Add `autoRetryEnabled` to Pi RPC state.
-2. Update Pi RPC types, mode implementation, client types, tests, and docs.
-3. Build and install Pi.
-4. Add the native settings control and frontend tests.
-5. Verify the installed process reports and changes the setting without a model call.
-
-### Phase 2: session discovery and navigation
+### Phase 1: session discovery and navigation
 
 1. Define authoritative session-list pagination in Pi core/RPC.
 2. Expose in-place tree navigation through RPC.
@@ -635,7 +534,7 @@ The sequence below respects ownership and minimizes frontend compatibility branc
 6. Add same-root, cancellation, stale-response, and event-ordering tests.
 7. Keep cross-project migration blocked until it has a separate lifecycle design.
 
-### Phase 3: paginated history
+### Phase 2: paginated history
 
 1. Define cursor, snapshot, ordering, and byte-budget semantics in Pi.
 2. Implement bounded history pages and compatibility behavior.

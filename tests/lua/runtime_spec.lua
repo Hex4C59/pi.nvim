@@ -17,6 +17,8 @@ function FakeChat.new(chat_root)
     started_tools = {},
     ended_tools = {},
     ended_bash = {},
+    activities = {},
+    status_items = {},
     open_count = 0,
     destroy_count = 0,
   }, FakeChat)
@@ -79,6 +81,14 @@ end
 
 function FakeChat:end_bash(id, data, is_error)
   table.insert(self.ended_bash, { id = id, data = data, is_error = is_error })
+end
+
+function FakeChat:set_activity(activity)
+  table.insert(self.activities, activity)
+end
+
+function FakeChat:add_status(message, is_error)
+  table.insert(self.status_items, { message = message, is_error = is_error })
 end
 
 function FakeChat:destroy()
@@ -245,6 +255,22 @@ local function run()
   runtime.refresh_stats(client)
   assert(#requests_for(client, "get_session_stats") == 3, "failed stats refresh left the de-duplication flag stuck")
   respond(latest_request(client, "get_session_stats"), true, { cost = 2 })
+
+  client:emit({ type = "auto_retry_start", attempt = 2, maxAttempts = 3 })
+  assert(chat.activities[#chat.activities] == "retry 2/3", "retry start did not project its attempt")
+  client:emit({ type = "auto_retry_end", success = false, finalError = "retry exhausted" })
+  assert(chat.activities[#chat.activities] == "retry 2/3", "retry end became idle before agent_settled")
+  assert(
+    chat.status_items[#chat.status_items].message == "retry exhausted"
+      and chat.status_items[#chat.status_items].is_error == true,
+    "failed retry did not project its final error"
+  )
+  runtime.abort(root)
+  assert(latest_request(client, "abort").command == "abort", "retry interruption did not send abort")
+  respond(latest_request(client, "abort"), true, {})
+  client:emit({ type = "agent_settled" })
+  assert(chat.activities[#chat.activities] == "idle", "agent_settled did not end retry activity")
+  respond(latest_request(client, "get_session_stats"), true, { cost = 3 })
 
   runtime.refresh_commands(client)
   respond(latest_request(client, "get_commands"), true, {

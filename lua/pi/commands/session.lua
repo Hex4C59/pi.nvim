@@ -47,6 +47,7 @@ function M.status(root)
     local cache_hit = input + cache_read > 0 and (cache_read / (input + cache_read) * 100) or nil
     local context_window = tonumber(usage.contextWindow) and compact_count(usage.contextWindow) or "n/a"
     local auto_compaction = client.session and client.session.autoCompactionEnabled
+    local auto_retry = client.session and client.session.autoRetryEnabled
     local cache_detail = compact_count(cache_read)
     if cache_hit then
       cache_detail = cache_detail .. (" (%.1f%% hit)"):format(cache_hit)
@@ -63,6 +64,7 @@ function M.status(root)
         ("Context: %s%% of %s"):format(usage.percent or "n/a", context_window),
         ("Cost: $%.4f"):format(data.cost or 0),
         "Auto-compact: " .. (auto_compaction == nil and "unknown" or auto_compaction and "on" or "off"),
+        "Auto-retry: " .. (auto_retry == nil and "unknown" or auto_retry and "on" or "off"),
       }, "\n"),
       vim.log.levels.INFO,
       { title = "Pi" }

@@ -53,7 +53,7 @@ through a late top-level require.
 
 | State | Lua owner |
 | --- | --- |
-| RPC process, framing, pending requests | `pi.client` / `pi.protocol` |
+| RPC process, framing, pending requests, authoritative session snapshot mirror | `pi.client` / `pi.protocol` |
 | Per-project clients and RPC event projection | `pi.runtime` |
 | Display correlation queue, discovered-command map, refresh flags, direct-RPC Bash request | `pi.runtime` |
 | Bounded display items, item IDs, tool correlation, retention counters | `pi.ui.transcript` |
@@ -99,6 +99,12 @@ direct-RPC Bash identity, and the Client event unsubscriber in one internal
 per-project record tied to the current Client identity. These values are never
 attached to Client objects. Late events and callbacks from a replaced Client
 cannot project into the replacement Chat.
+
+`Client.session` is replaced only with successful `get_state` data. Settings
+commands such as auto-retry do not update that mirror optimistically: after a
+successful mutation they request a fresh state snapshot, while failures leave
+the previous value intact. Retry activity remains projected until Pi emits the
+authoritative `agent_settled` event.
 
 Chat is the only composition root that knows all child components. InputArea,
 CommandMenu, PermissionPanel, and WidgetArea receive explicit dependency tables
@@ -188,6 +194,7 @@ focused shared helpers. No aggregate security index or policy state remains.
 | Chat transcript and input interactions | `tests/lua/ui/chat/interaction_spec.lua`, `interactions_spec.lua` |
 | Chat activity and component lifecycle | `tests/lua/ui/chat/lifecycle_spec.lua` |
 | Input and command-menu ownership | `tests/lua/ui/input_spec.lua`, `command_menu_spec.lua` |
+| Settings and session-state controls | `tests/lua/commands/ui_spec.lua`, `session_spec.lua` |
 | Widget and permission ownership | `tests/lua/ui/widget_spec.lua`, `permission_spec.lua` |
 | Generic Extension dialog manager and native surface | `tests/lua/ui/dialog_spec.lua`, small-viewport and RPC integration specs |
 | Chat facade contract | `tests/lua/ui/chat/facade_spec.lua` |
@@ -198,7 +205,8 @@ focused shared helpers. No aggregate security index or policy state remains.
 Run `make test-file TEST=<path>` for one known Lua or Extension test owner. Run
 `make test` for the complete deterministic Lua, Extension, and repository policy
 suite; `make format-check` for formatting; and `make smoke` for installed Pi RPC,
-Extension loading, and authoritative dialog cancellation without a model call.
+Extension loading, authoritative dialog cancellation, and isolated auto-retry
+state mutation without a model call.
 
 ## Architecture Closeout
 
