@@ -1,6 +1,8 @@
 local dialog = require("pi.ui.dialog")
 
 local original_select = vim.ui.select
+local original_columns = vim.o.columns
+local original_lines = vim.o.lines
 local original_buffers = {}
 for _, buf in ipairs(vim.api.nvim_list_bufs()) do
   original_buffers[buf] = true
@@ -135,6 +137,48 @@ local function run()
     end
   end
 
+  for _, case in ipairs({
+    { id = "editor-tiny", columns = 20, lines = 10, floating = false },
+    { id = "editor-small", columns = 40, lines = 12, floating = false },
+    { id = "editor-normal", columns = 100, lines = 32, floating = true },
+    { id = "editor-wide", columns = 180, lines = 55, floating = true },
+  }) do
+    vim.o.columns = case.columns
+    vim.o.lines = case.lines
+    local previous_win = vim.api.nvim_get_current_win()
+    local previous_buf = vim.api.nvim_get_current_buf()
+    dialog.handle(client, {
+      id = case.id,
+      method = "editor",
+      title = string.rep("Long title ", 20),
+      prefill = "responsive",
+    })
+    local editor_win = vim.api.nvim_get_current_win()
+    local editor_buf = vim.api.nvim_get_current_buf()
+    local config = vim.api.nvim_win_get_config(editor_win)
+    assert((config.relative ~= "") == case.floating, "editor chose the wrong responsive layout: " .. case.id)
+    if case.floating then
+      assert(config.row >= 0 and config.col >= 0, "editor float used a negative origin: " .. case.id)
+      assert(config.width + 2 <= case.columns, "editor float exceeded available columns: " .. case.id)
+      assert(config.height + 2 < case.lines, "editor float exceeded available rows: " .. case.id)
+      local title = type(config.title) == "table" and config.title[1][1] or config.title
+      assert(vim.fn.strdisplaywidth(title or "") <= config.width - 2, "editor title exceeded the float: " .. case.id)
+    else
+      assert(editor_win == previous_win, "small editor did not reuse the current window: " .. case.id)
+      assert(editor_buf ~= previous_buf, "small editor did not install its scratch buffer: " .. case.id)
+    end
+    assert(mapping(editor_buf, "q"), "responsive editor cancel mapping is missing: " .. case.id)()
+    assert(response_for(case.id).cancelled, "responsive editor cancellation did not resolve: " .. case.id)
+    if not case.floating then
+      assert(
+        vim.api.nvim_win_get_buf(previous_win) == previous_buf,
+        "small editor did not restore its buffer: " .. case.id
+      )
+    end
+  end
+  vim.o.columns = original_columns
+  vim.o.lines = original_lines
+
   dialog.handle(client, { id = "editor-submit", method = "editor", title = "Edit", prefill = "first" })
   local editor_buf = vim.api.nvim_get_current_buf()
   vim.api.nvim_buf_set_lines(editor_buf, 0, -1, false, { "first", "second" })
@@ -159,6 +203,8 @@ end
 
 local ok, err = xpcall(run, debug.traceback)
 vim.ui.select = original_select
+vim.o.columns = original_columns
+vim.o.lines = original_lines
 for _, buf in ipairs(vim.api.nvim_list_bufs()) do
   if not original_buffers[buf] and vim.api.nvim_buf_is_valid(buf) then
     pcall(vim.api.nvim_buf_delete, buf, { force = true })

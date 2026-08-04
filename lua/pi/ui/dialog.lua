@@ -1,4 +1,5 @@
 local M = {}
+local truncate_display = require("pi.format").truncate_display
 
 local pending = setmetatable({}, { __mode = "k" })
 local editor_group = vim.api.nvim_create_augroup("PiNvimExtensionEditors", { clear = false })
@@ -47,27 +48,64 @@ local function permission_request(request)
   return copy
 end
 
+local function tabline_height()
+  if vim.o.showtabline == 2 then
+    return 1
+  end
+  return vim.o.showtabline == 1 and #vim.api.nvim_list_tabpages() > 1 and 1 or 0
+end
+
+local function editor_geometry(line_count)
+  local columns = math.max(1, vim.o.columns)
+  local statusline = vim.o.laststatus == 0 and 0 or 1
+  local reserved_rows = math.max(1, vim.o.cmdheight) + statusline + tabline_height()
+  local usable_rows = math.max(1, vim.o.lines - reserved_rows)
+  local maximum_width = math.max(1, columns - 2)
+  local maximum_height = math.max(1, usable_rows - 2)
+  if maximum_width < 40 or maximum_height < 8 then
+    return nil
+  end
+
+  local width = math.min(maximum_width, math.max(40, math.floor(columns * 0.65)))
+  local height = math.min(maximum_height, math.max(8, math.min(line_count + 4, math.floor(usable_rows * 0.6))))
+  return {
+    width = width,
+    height = height,
+    row = math.max(0, math.floor((usable_rows - height - 2) / 2)),
+    col = math.max(0, math.floor((columns - width - 2) / 2)),
+  }
+end
+
 local function editor(client, request)
+  local previous_win = vim.api.nvim_get_current_win()
+  local previous_buf = vim.api.nvim_get_current_buf()
   local buf = vim.api.nvim_create_buf(false, true)
   local lines = vim.split(request.prefill or "", "\n", { plain = true })
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].filetype = "markdown"
+  vim.bo[buf].swapfile = false
 
-  local width = math.max(40, math.floor(vim.o.columns * 0.65))
-  local height = math.max(8, math.min(#lines + 4, math.floor(vim.o.lines * 0.6)))
-  local win = vim.api.nvim_open_win(buf, true, {
-    relative = "editor",
-    style = "minimal",
-    border = "rounded",
-    title = request.title or "Pi input",
-    title_pos = "center",
-    width = width,
-    height = height,
-    row = math.floor((vim.o.lines - height) / 2),
-    col = math.floor((vim.o.columns - width) / 2),
-  })
+  local geometry = editor_geometry(#lines)
+  local floating = geometry ~= nil
+  local win
+  if floating then
+    win = vim.api.nvim_open_win(buf, true, {
+      relative = "editor",
+      style = "minimal",
+      border = "rounded",
+      title = truncate_display(request.title or "Pi input", math.max(1, geometry.width - 2)),
+      title_pos = "center",
+      width = geometry.width,
+      height = geometry.height,
+      row = geometry.row,
+      col = geometry.col,
+    })
+  else
+    win = previous_win
+    vim.api.nvim_win_set_buf(win, buf)
+  end
 
   local finished = false
   local autocmds = {}
@@ -80,8 +118,17 @@ local function editor(client, request)
       pcall(vim.api.nvim_del_autocmd, autocmd)
     end
     autocmds = {}
-    if vim.api.nvim_win_is_valid(win) then
+    if floating and vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_win_close(win, true)
+      if vim.api.nvim_win_is_valid(previous_win) then
+        vim.api.nvim_set_current_win(previous_win)
+      end
+    elseif vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
+      if vim.api.nvim_buf_is_valid(previous_buf) then
+        vim.api.nvim_win_set_buf(win, previous_buf)
+      else
+        vim.api.nvim_buf_delete(buf, { force = true })
+      end
     end
     respond_once(client, request.id, response)
   end

@@ -30,7 +30,7 @@ No release-blocking failure was found in the normal prompt, streaming, tool, per
 | P1 | Full-history RPC responses have a fixed 10 MiB frame ceiling | Pi RPC and pi.nvim client | A sufficiently large persisted session cannot be loaded reliably |
 | P1 | Session listing and in-place tree navigation are absent from RPC | Pi RPC, then pi.nvim UI | `/resume` requires an exact path and the tree cannot activate an existing node |
 | P2 | Authentication and several administrative workflows are TUI-only | Pi RPC, then pi.nvim UI | Users must leave Neovim for login/logout, reload, trust changes, and related commands |
-| P2 | Generic Extension dialogs do not have a complete responsive/timeout lifecycle | Pi RPC and pi.nvim UI | Small viewports clip the editor; timed dialogs can remain visible after Pi has stopped waiting |
+| P2 | Generic Extension dialogs do not have a complete cancellation lifecycle | Pi RPC and pi.nvim UI | Timed dialogs can remain visible after Pi has stopped waiting |
 | P2 | Auto-retry state and controls are incomplete | Pi RPC, then pi.nvim settings UI | Retry events render, but the current setting cannot be inspected or changed accurately |
 
 Priority describes remediation order and user impact, not security severity. The permission gate, workspace guard, and session-root guard remain authoritative in bundled Pi Extensions.
@@ -499,54 +499,11 @@ Authentication likely needs an event-driven flow rather than a single request be
 ### Classification
 
 - Priority: P2
-- Status: confirmed frontend defect plus RPC lifecycle gap
+- Status: confirmed RPC lifecycle gap
 - User-visible area: third-party/bundled Extension `select`, `confirm`, `input`, and `editor`
 - Authority: the Extension validates responses and owns resulting workflow state
 - Presentation: pi.nvim
 - Timeout completion: Pi RPC is authoritative for when it stops waiting
-
-### Responsive editor defect
-
-`lua/pi/ui/dialog.lua` computes editor dimensions as:
-
-```lua
-local width = math.max(40, math.floor(vim.o.columns * 0.65))
-local height = math.max(8, math.min(#lines + 4, math.floor(vim.o.lines * 0.6)))
-```
-
-The minimums are not clamped back to the available editor dimensions. In a `20x10` Neovim viewport, the resulting floating-window configuration was verified as:
-
-```text
-width = 40
-height = 8
-col = -10
-row = 1
-```
-
-Neovim accepts the window, but a substantial part of it is outside the viewport. Long titles and content can therefore be inaccessible.
-
-The main Chat has several narrow-width rendering tests, but the generic Extension editor currently has no tiny-viewport test.
-
-### Required responsive behavior
-
-The editor must derive its maximum dimensions from usable rows and columns after accounting for:
-
-- Border cells.
-- Command line height.
-- Tabline/statusline/winbar where relevant.
-- A non-negative row and column.
-- At least one editable content row.
-
-For viewports too small for a bordered float, the UI should degrade to a full-editor or current-window scratch buffer rather than create an off-screen float.
-
-A suitable policy is:
-
-1. Compute `available_width` and `available_height` first.
-2. Clamp desired dimensions to those maxima.
-3. Use a float only when minimum usable content dimensions fit.
-4. Otherwise replace the current window temporarily or open a dedicated tab.
-5. Restore the previous window only if it is still valid.
-6. Keep submission/cancellation exactly-once semantics in every layout.
 
 ### Timeout lifecycle defect
 
@@ -615,8 +572,6 @@ Replacing generic `vim.ui.select/input` with pi.nvim-owned native surfaces would
 
 Frontend tests:
 
-- Editor at `20x10`, `40x12`, normal, and wide viewports.
-- No negative row/column and no dimensions exceeding available space.
 - Timeout before user response.
 - User response immediately before timeout.
 - Server cancellation before local mirrored timeout.
@@ -634,7 +589,6 @@ Backend tests:
 
 ### Acceptance criteria
 
-- Every Extension dialog is visible and operable on the minimum supported practical viewport.
 - Timed-out or aborted requests leave no stale Neovim UI.
 - Every request ID receives at most one client response.
 - Permission requests continue to fail closed and never acquire an implicit timeout.
@@ -763,15 +717,7 @@ Pi Extension APIs such as `ctx.ui.custom()`, component factories, custom headers
 
 The sequence below respects ownership and minimizes frontend compatibility branches.
 
-### Phase 1: frontend-only dialog correctness
-
-1. Clamp generic editor dimensions and add a small-viewport fallback.
-2. Add focused Lua tests for the responsive dialog behavior.
-3. Run `make test` and `make format-check`.
-
-This phase does not require a Pi package rebuild.
-
-### Phase 2: Extension dialog cancellation lifecycle
+### Phase 1: Extension dialog cancellation lifecycle
 
 1. Design `extension_ui_cancel` in the Pi RPC types and documentation.
 2. Implement timeout, AbortSignal, session-switch, and shutdown emission in Pi RPC.
@@ -780,7 +726,7 @@ This phase does not require a Pi package rebuild.
 5. Add a native pi.nvim dialog manager and fake RPC cancellation events.
 6. Run Pi checks, pi.nvim tests, `make smoke`, and manual small-viewport verification.
 
-### Phase 3: retry state completeness
+### Phase 2: retry state completeness
 
 1. Add `autoRetryEnabled` to Pi RPC state.
 2. Update Pi RPC types, mode implementation, client types, tests, and docs.
@@ -788,9 +734,9 @@ This phase does not require a Pi package rebuild.
 4. Add the native settings control and frontend tests.
 5. Verify the installed process reports and changes the setting without a model call.
 
-This can be combined with Phase 2 if both changes target the same Pi release, but each capability should retain independent tests.
+This can be combined with Phase 1 if both changes target the same Pi release, but each capability should retain independent tests.
 
-### Phase 4: session discovery and navigation
+### Phase 3: session discovery and navigation
 
 1. Define authoritative session-list pagination in Pi core/RPC.
 2. Expose in-place tree navigation through RPC.
@@ -800,7 +746,7 @@ This can be combined with Phase 2 if both changes target the same Pi release, bu
 6. Add same-root, cancellation, stale-response, and event-ordering tests.
 7. Keep cross-project migration blocked until it has a separate lifecycle design.
 
-### Phase 5: paginated history
+### Phase 4: paginated history
 
 1. Define cursor, snapshot, ordering, and byte-budget semantics in Pi.
 2. Implement bounded history pages and compatibility behavior.
