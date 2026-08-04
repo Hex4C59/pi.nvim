@@ -9,7 +9,9 @@ process are kept in the separate smoke target and also do not call a model.
 
 See [AGENTS.md](../AGENTS.md) for authoritative ownership and security rules and
 [Lua Frontend Architecture](../docs/lua-architecture.md) for frontend module
-boundaries. Bundled guards are trusted in-process guardrails, not a sandbox.
+boundaries. The [Compatibility Contract](../docs/compatibility.md) defines the
+public surface and RPC fallbacks. Bundled guards are trusted in-process
+guardrails, not a sandbox.
 
 ## Commands
 
@@ -61,7 +63,7 @@ the focused loop and is not part of CI.
 | `tests/extensions/security/` | Permission, path, workspace, and session-root policy owners |
 | `tests/fixtures/` | Deterministic fake processes and test data |
 | `tests/smoke/` | Installed Pi RPC and Extension loading checks without model calls |
-| `tests/policy/` | Repository architecture, dependency, runner, and CI policy contracts |
+| `tests/policy/` | Repository architecture, documentation, dependency, runner, and CI policy contracts |
 
 ## Critical-Path Ownership
 
@@ -69,6 +71,7 @@ the focused loop and is not part of CI.
 | --- | --- | --- | --- |
 | LF JSONL parser | `tests/lua/protocol_spec.lua` | `tests/lua/client_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua` | `tests/smoke/client_smoke.lua` when installed protocol compatibility changes |
 | RPC client and subprocess lifecycle | `tests/lua/client_spec.lua` | `tests/lua/integration/init_spec.lua`, `tests/lua/integration/image_rpc_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua` | `tests/smoke/client_smoke.lua` |
+| Public commands, configuration, and module aliases | `tests/lua/compatibility_spec.lua` | Matching command/config owner specs | When the installed RPC baseline changes |
 | Runtime event projection and per-project state | `tests/lua/runtime_spec.lua` | `tests/lua/integration/init_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua` | When an installed capability is involved |
 | Commands and catalogue | `tests/lua/commands/`, `tests/lua/shared_owners_spec.lua` | `tests/lua/integration/rpc_ui_spec.lua` | When an installed RPC command capability is involved |
 | Renderer text/welcome/messages/Markdown/tools/process | `tests/lua/ui/render/`, `tests/lua/ui/render_spec.lua` | `tests/lua/ui/chat/facade_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua` | None normally |
@@ -92,6 +95,7 @@ native Neovim presentation and adapter behavior.
 | Change | Focused checks during development | Completion checks |
 | --- | --- | --- |
 | JSONL parser or Client | Protocol/client specs and the relevant fake-RPC integration | `make test`; client smoke for installed compatibility changes |
+| Public command, setup option, or compatibility alias | `tests/lua/compatibility_spec.lua` and the matching owner spec | `make test`, `make format-check` |
 | Runtime event projection | Runtime spec, related command spec, and RPC UI integration | `make test` |
 | Command adapter or catalogue | Matching `tests/lua/commands/` spec and shared catalogue/RPC UI coverage | `make test` |
 | Renderer owner | Matching `tests/lua/ui/render/` spec and Chat facade | `make test`, `make format-check` |
@@ -101,6 +105,7 @@ native Neovim presentation and adapter behavior.
 | Extension permission/workspace/session policy | Authoritative Node policy test; Lua UI test only if presentation also changes | `make test`, `make smoke` for Extension API/loading changes |
 | Extension todo workflow | Todo Extension test and widget/RPC UI tests when presentation changes | `make test`, `make smoke` for Extension API/loading changes |
 | GitHub Actions workflow | `make ci-policy-check` and policy tests | `make test`, `make ci-policy-check` |
+| Documentation links, scoped instructions, or repository map | `sh tests/policy/documentation_policy_test.sh` | `make test` |
 | Broad refactor | Owner-focused tests throughout the work | `make test`, `make format-check`, and scope-dependent `make smoke` |
 
 ## Writing Tests

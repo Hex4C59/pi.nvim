@@ -14,6 +14,21 @@ The most important development rule is to preserve ownership boundaries between:
 Do not implement a feature in Lua merely because the native Neovim UI needs to
 expose it. First identify which layer must own the behavior and state.
 
+## Scoped Instructions
+
+Read the nearest directory-level instructions before changing that area:
+
+- `lua/pi/AGENTS.md` owns RPC client, runtime, UI, rendering, state projection,
+  and Lua lifecycle rules.
+- `extensions/AGENTS.md` owns bundled Extension API, security policy, and
+  Extension lifecycle rules.
+- `tests/AGENTS.md` owns deterministic fixtures, cleanup, test placement, and
+  verification commands.
+
+Cross-layer ownership, Pi source/deployment, compatibility, and completion
+rules remain authoritative in this root document. `docs/compatibility.md`
+defines the supported public surface and RPC capability fallbacks.
+
 ## Official Pi Model
 
 Pi describes itself as a minimal, extensible agent harness. Pi core provides the
@@ -111,7 +126,8 @@ Before editing Pi:
    rewrite unrelated work.
 4. Make the authoritative change in the owning Pi package. RPC protocol changes
    normally touch `packages/coding-agent/src/modes/rpc/rpc-types.ts`,
-   `rpc-mode.ts`, `rpc-client.ts`, matching tests, and `docs/rpc.md`.
+   `rpc-mode.ts`, `rpc-client.ts`, matching tests, and
+   `packages/coding-agent/docs/rpc.md`.
 5. Update pi.nvim's Lua adapter, fake RPC fixture, tests, minimum-version or
    capability gates, and user-facing documentation in the same feature.
 
@@ -299,66 +315,21 @@ clear unsupported message is better than a misleading partial implementation.
 ## RPC Rules
 
 The RPC protocol is a JSONL protocol over stdin/stdout, not JSON-RPC and not a
-terminal protocol.
+terminal protocol. Optional behavior must use the capability and fallback
+defined in `docs/compatibility.md`; do not infer it from a version string.
+Detailed framing, correlation, event-ordering, and Lua adapter rules live in
+`lua/pi/AGENTS.md`.
 
-- Split records only on LF (`\n`).
-- Strip an optional trailing CR from a frame.
-- U+2028 and U+2029 are valid inside JSON strings and are not delimiters.
-- Add request IDs and correlate responses through `Client.pending`.
-- Commands may respond before the resulting asynchronous event stream ends.
-- `agent_end` is not always idle; retries, compaction, or queued work may follow.
-- Use `agent_settled` when the UI needs the final idle transition.
-- Correlate tool events by `toolCallId`.
-- `tool_execution_update.partialResult` is accumulated output, not necessarily a
-  delta; replace local display state unless the documented event is a delta.
-- Direct RPC `bash_execution_update.delta` is a delta and uses the originating
-  command ID.
-- Extension commands are discovered by `get_commands` and invoked through the
-  `prompt` command with `/name`.
-- Built-in TUI-only commands are not returned by `get_commands` and must not be
-  sent blindly as model prompts.
+## Extension UI Boundary
 
-When adding protocol support:
+Pi owns the Extension UI request/response protocol and cancellation timing.
+Bundled Extensions validate responses and own permission decisions; Lua renders
+native Neovim surfaces and returns structured user input. TUI-only Extension
+APIs are not available merely because RPC reports `ctx.hasUI`.
 
-1. Read the matching `docs/rpc.md` section.
-2. Check matching `rpc-types.d.ts` or source.
-3. Add parser/client tests.
-4. Add an end-to-end fake RPC fixture when event ordering matters.
-5. Add a real no-model smoke only when it verifies actual Pi compatibility.
-
-## Extension UI Rules
-
-In RPC mode, `ctx.mode` is `"rpc"` and `ctx.hasUI` is true because Pi forwards
-Extension UI requests to the client.
-
-Dialog methods block the Extension until pi.nvim responds:
-
-- `select`
-- `confirm`
-- `input`
-- `editor`
-
-Fire-and-forget methods do not require a client response:
-
-- `notify`
-- `setStatus`
-- `setWidget`
-- `setTitle`
-- `set_editor_text`
-
-TUI-only Extension APIs such as `ctx.ui.custom()` are unavailable or degraded in
-RPC mode. Do not attempt to render Pi TUI components inside Neovim. Implement a
-native Neovim surface for the supported RPC payload, or request an upstream RPC
-protocol extension when the payload lacks required structured data.
-
-For any Extension dialog:
-
-- Each request ID gets at most one response.
-- Cancellation must return the protocol's cancelled/false value.
-- Missing UI must fail closed for permission-sensitive operations.
-- Client text is presentation, not an authoritative security payload.
-- The Extension must validate every response before changing state or allowing
-  execution.
+Detailed Extension-side rules live in `extensions/AGENTS.md`; client dialog and
+presentation rules live in `lua/pi/AGENTS.md`. Missing structure requires an
+upstream RPC addition, not prose parsing or TUI automation.
 
 ## Permissions And Security
 
@@ -379,7 +350,8 @@ For this repository:
 - No UI, cancellation, timeout, thrown errors, malformed inputs, and unknown
   responses must block.
 
-Read `docs/extension-owned-permissions.md` before refactoring permissions.
+Read `extensions/AGENTS.md` and the security tests under
+`tests/extensions/security/` before refactoring permissions.
 
 Never describe bundled guards as a sandbox. Recommend container, VM, micro-VM,
 or another OS boundary for untrusted or unattended work.
@@ -411,7 +383,11 @@ explicitly requires it.
 ## Repository Map
 
 ```text
+.github/pull_request_template.md Review and delivery checklist
+docs/compatibility.md         Public API and RPC capability contract
+docs/lua-architecture.md      Durable Lua dependency and state architecture
 plugin/pi.lua                 Neovim command and autocmd registration
+lua/pi/AGENTS.md              Scoped Lua frontend implementation rules
 lua/pi/init.lua               Public Lua API and slash-command dispatch
 lua/pi/config.lua             User options and Pi process argv construction
 lua/pi/client.lua             Pi subprocess, RPC requests, responses, events
@@ -443,13 +419,17 @@ lua/pi/ui/widget.lua          Widget state, buffers, windows, and projection
 lua/pi/ui/dialog.lua          Generic Extension UI protocol adapter
 lua/pi/ui/permission.lua      Native permission presentation only
 extensions/                   Bundled authoritative Pi Extensions
+extensions/AGENTS.md          Scoped Extension and security rules
 extensions/lib/security/     Permission, workspace, session, path helpers
 extensions/lib/todo-list.mjs Testable todo workflow policy
+tests/AGENTS.md               Scoped deterministic test rules
+tests/README.md               Test commands, ownership, and coverage guide
 tests/fixtures/fake_pi.js     Deterministic RPC fixture
 tests/lua/                    Headless Lua tests grouped by frontend area
 tests/extensions/             Node tests grouped by Extension owner
 tests/smoke/                  No-model tests against the installed Pi
 tests/policy/                 Repository policy tests
+scripts/check-documentation.mjs Local documentation integrity checker
 scripts/coverage.sh           Validated local coverage orchestration and cleanup
 scripts/coverage/             Lua merge/report and Node source-only reporter
 scripts/vendor/luacov/        Pinned LuaCov subset, license, and provenance
@@ -477,91 +457,22 @@ either have documented RPC support or report a precise limitation.
 
 ## Extension Development
 
-Bundled Extensions are TypeScript loaded directly by Pi through jiti. Keep the
-entry file small and move reusable policy into `extensions/lib/` so it can be
-tested without launching Pi.
-
-- Use `ExtensionAPI` types from `@earendil-works/pi-coding-agent`.
-- Inspect installed `.d.ts` files instead of guessing API fields.
-- Use typed event guards when available.
-- Start session-scoped timers/processes/watchers from `session_start` or on
-  demand, not in the factory.
-- Clean long-lived resources idempotently in `session_shutdown`.
-- Use `tool_call` for pre-execution blocking or input mutation.
-- Use `tool_result` for result transformation, not execution permission.
-- Remember that sibling tools may execute in parallel after sequential
-  preflight.
-- Canonicalize paths at the Extension execution boundary.
-- Keep unknown tools outside claimed policy coverage unless they register an
-  explicit policy.
-- Do not persist temporary permission grants accidentally through session
-  entries.
-
-Changes under `extensions/` require Node policy tests and, when API loading is
-affected, the real Pi extension smoke test.
+Bundled Extensions are TypeScript loaded directly by Pi through jiti. Follow
+`extensions/AGENTS.md` for API, UI, tool-policy, security, lifecycle, and test
+requirements. Cross-layer ownership remains governed by this document.
 
 ## Neovim UI Development
 
 pi.nvim uses normal `nofile` buffers and Neovim windows, not a terminal buffer.
-
-- Transcript text is a projection of Pi state, never the session source of
-  truth.
-- Keep renderer inputs structured; do not recover semantics by parsing rendered
-  lines.
-- Prefer Extmarks for semantic highlights and anchors.
-- Keep the transcript read-only outside controlled render sections.
-- Preserve user scroll position unless the user was following output.
-- Coalesce streaming redraws.
-- Bound retained client data before rendering; visual truncation alone does not
-  bound memory.
-- Treat optional UI integrations as optional and provide a text fallback.
-- Never let a colorscheme, completion plugin, or user autocmd alter a
-  permission-sensitive decision.
-
-If Pi emits insufficient structure for a correct native UI, document the gap and
-propose an RPC addition. Do not parse prose fields into security or session
-semantics.
+Follow `lua/pi/AGENTS.md` and `docs/lua-architecture.md` for transport,
+projection, rendering, component, lifecycle, and memory-boundary rules.
 
 ## Testing
 
 The default tests must not call a model, require authentication, or use paid
-tokens.
-
-Run all deterministic tests:
-
-```bash
-make test
-```
-
-Run formatting checks:
-
-```bash
-make format-check
-```
-
-Run no-model compatibility smoke tests against the installed Pi:
-
-```bash
-make smoke
-```
-
-Run the GitHub Actions pinning policy:
-
-```bash
-make ci-policy-check
-```
-
-Generate separate local Lua and Extension coverage summaries:
-
-```bash
-make coverage
-```
-
-Coverage requires Node 20.1 or newer, validates the vendored LuaCov 0.17.0
-files, and runs the normal deterministic gate without instrumentation before
-collecting data. Generated output under `coverage/` is ignored. Coverage is a
-local diagnostic, not a CI threshold or a replacement for behavior and smoke
-tests.
+tokens. Follow `tests/AGENTS.md` for test-writing and cleanup rules and
+`tests/README.md` for the complete command, ownership, smoke, and coverage
+matrix.
 
 Test ownership follows implementation ownership:
 
@@ -574,13 +485,31 @@ Test ownership follows implementation ownership:
 | Extension API usage/loading | `make smoke` |
 | Security invariant | Authoritative Extension test plus client UI test |
 
-For focused Lua tests, use the existing form:
-
-```bash
-nvim --headless -u tests/minimal_init.lua -l tests/lua/<area>/<name>_spec.lua
-```
-
 Do not weaken an authoritative Extension test and compensate with a Lua UI test.
+
+## Change Planning And Review
+
+Write a decision-complete implementation plan before substantive edits when a
+change does any of the following:
+
+- spans the Pi and pi.nvim repositories;
+- changes an RPC command, response, event, capability, or ordering guarantee;
+- changes a security invariant, permission decision, or fail-closed path;
+- introduces authoritative, persisted, or session-restored state;
+- changes a public command, configuration key, Lua API, or compatibility alias;
+- spans multiple owners with non-trivial cancellation, cleanup, or resource
+  lifetime behavior.
+
+The plan must state the outcome, owner and interfaces, failure/cancellation and
+cleanup behavior, compatibility/migration path, and executable acceptance
+checks. Keep it in the issue or active task unless it defines a durable shipped
+contract. Ordinary local fixes do not require a standalone specification.
+
+Review findings should prioritize, in order: authoritative ownership and
+security, public/RPC compatibility and fallback, stale callback and resource
+cleanup, bounded memory/context behavior, tests at the owning layer, and
+documentation accuracy. A change is not complete while an applicable item is
+unresolved or its verification is unexplained.
 
 ## Version Changes
 
@@ -594,8 +523,8 @@ When upgrading Pi support:
 4. Update feature gates and user-facing RPC limitation messages.
 5. Update fake RPC fixtures.
 6. Run `make test`, `make smoke`, and `make format-check`.
-7. Update README and architecture/security docs when ownership or guarantees
-   change.
+7. Update README, `docs/compatibility.md`, and architecture/security docs when
+   public behavior, ownership, or guarantees change.
 
 Do not add broad version-compatibility branches without a concrete supported
 version matrix. Prefer one explicit minimum Pi version.
@@ -608,6 +537,8 @@ version matrix. Prefer one explicit minimum Pi version.
   captured in code, tests, README, or a current architecture document.
 - Never cite Pi `latest` behavior as current 0.83 behavior without checking the
   installed package.
+- Run the documentation policy test after changing local links, scoped
+  instructions, or repository-map entries.
 
 ## Final Boundary Check
 
@@ -618,6 +549,10 @@ Before finishing any feature, verify:
 - Is Neovim-specific presentation/context in Lua rather than an Extension?
 - Does pi.nvim use a documented RPC capability instead of reproducing Pi core?
 - If RPC lacks a capability, is the limitation explicit instead of simulated?
+- Does `docs/compatibility.md` still describe every changed public surface and
+  capability fallback?
 - Are security decisions enforced before execution inside Pi?
+- Are queues, retained data, callbacks, timers, jobs, buffers, and windows
+  bounded and released by their authoritative owner?
 - Do tests cover the authoritative layer and the UI adapter separately?
 - Do README and docs describe what is actually shipped?

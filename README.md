@@ -33,10 +33,11 @@ Older Pi processes retain the complete `get_messages` compatibility path.
 ## Requirements
 
 - Neovim 0.10 or newer
-- `pi` available on `PATH` with the `extension_ui_cancel` RPC event supported;
-  `list_sessions` and `navigate_tree` capabilities enable native session
-  discovery and navigation, `history_pagination` enables bounded history
-  loading, and `administrative_workflows` enables native Pi administration
+- `pi` available on `PATH` with the `extension_ui_cancel` and `agent_settled`
+  RPC events supported; `auto_retry_state` enables authoritative retry settings,
+  `list_sessions` and `navigate_tree` enable native session discovery and
+  navigation, `history_pagination` enables bounded history loading, and
+  `administrative_workflows` enables native Pi administration
 - A model configured in Pi (use native `/login` when supported, or Pi's TUI on
   an older RPC process)
 - Optional Tree-sitter parsers for syntax highlighting in fenced-code languages
@@ -475,8 +476,9 @@ Coverage requires Node 20.1 or newer, runs the normal uninstrumented test gate
 first, and writes ignored local reports under `coverage/`. It is diagnostic and
 does not replace `make smoke` or introduce a CI percentage threshold.
 
-See [`tests/README.md`](tests/README.md) for command scope, test ownership, and
-change-to-test guidance.
+See the [Compatibility Contract](docs/compatibility.md) for the supported public
+surface and RPC fallbacks. See [`tests/README.md`](tests/README.md) for command
+scope, test ownership, and change-to-test guidance.
 
 The RPC parser deliberately buffers arbitrary stdout chunks and splits only on
 LF. It does not use generic line readers because U+2028 and U+2029 are valid
