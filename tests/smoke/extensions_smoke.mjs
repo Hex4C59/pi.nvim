@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -225,6 +225,144 @@ async function smokeDialogCancellation() {
   }
 }
 
+async function smokeSessionDiscoveryAndNavigation() {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-session-rpc-smoke-"));
+  const agentDir = path.join(cwd, "agent");
+  const sessionDir = path.join(cwd, "sessions");
+  const sessionFile = path.join(sessionDir, "session.jsonl");
+  await mkdir(agentDir);
+  await mkdir(sessionDir);
+  const timestamp = "2026-08-04T08:00:00.000Z";
+  const entries = [
+    { type: "session", version: 3, id: "smoke-session", timestamp, cwd },
+    { type: "session_info", id: "info", parentId: null, timestamp, name: "RPC smoke" },
+    { type: "model_change", id: "model", parentId: "info", timestamp, provider: "fixture", modelId: "model-a" },
+    {
+      type: "message",
+      id: "u1",
+      parentId: "model",
+      timestamp,
+      message: { role: "user", content: "first prompt", timestamp: Date.parse(timestamp) },
+    },
+    {
+      type: "message",
+      id: "a1",
+      parentId: "u1",
+      timestamp,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "first reply" }],
+        api: "anthropic-messages",
+        provider: "fixture",
+        model: "model-a",
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.parse(timestamp) + 1,
+      },
+    },
+    {
+      type: "message",
+      id: "u2",
+      parentId: "a1",
+      timestamp,
+      message: { role: "user", content: "current prompt", timestamp: Date.parse(timestamp) + 2 },
+    },
+  ];
+  await writeFile(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+
+  try {
+    const messages = await new Promise((resolve, reject) => {
+      const child = spawn(
+        piCommand,
+        [
+          "--mode",
+          "rpc",
+          "--session",
+          sessionFile,
+          "--session-dir",
+          sessionDir,
+          "--no-context-files",
+          "--no-approve",
+        ],
+        {
+          cwd,
+          env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+      const received = [];
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("session discovery/navigation smoke timed out"));
+      }, 8000);
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        while (stdout.includes("\n")) {
+          const newline = stdout.indexOf("\n");
+          const line = stdout.slice(0, newline).replace(/\r$/, "");
+          stdout = stdout.slice(newline + 1);
+          if (!line) continue;
+          try {
+            const message = JSON.parse(line);
+            received.push(message);
+            if (message.id === "session-state") {
+              assert.equal(message.data?.rpcCapabilities?.includes("list_sessions"), true);
+              assert.equal(message.data?.rpcCapabilities?.includes("navigate_tree"), true);
+              child.stdin.write(`${JSON.stringify({ type: "list_sessions", id: "session-list", limit: 1 })}\n`);
+            } else if (message.id === "session-list") {
+              assert.equal(message.success, true, "list_sessions failed");
+              assert.equal(message.data?.sessions?.[0]?.path, sessionFile);
+              assert.equal(message.data?.sessions?.[0]?.name, "RPC smoke");
+              assert.deepEqual(message.data?.sessions?.[0]?.model, { provider: "fixture", id: "model-a" });
+              child.stdin.write(`${JSON.stringify({ type: "get_tree", id: "tree-before" })}\n`);
+            } else if (message.id === "tree-before") {
+              const containsTarget = message.data?.tree?.some(function contains(node) {
+                return node.entry?.id === "a1" || node.children?.some(contains);
+              });
+              assert.equal(containsTarget, true, "get_tree omitted the navigation target");
+              child.stdin.write(
+                `${JSON.stringify({ type: "navigate_tree", id: "navigate", entryId: "a1", summarize: false })}\n`,
+              );
+            } else if (message.id === "navigate") {
+              assert.deepEqual(message.data, { cancelled: false, leafId: "a1" });
+              child.stdin.write(`${JSON.stringify({ type: "get_tree", id: "tree-after" })}\n`);
+            } else if (message.id === "tree-after") {
+              assert.equal(message.data?.leafId, "a1", "navigation did not persist the active leaf");
+              child.stdin.end(`${JSON.stringify({ type: "abort", id: "session-done" })}\n`);
+            }
+          } catch (error) {
+            clearTimeout(timer);
+            child.kill("SIGKILL");
+            reject(error);
+          }
+        }
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve(received);
+        else reject(new Error(`session discovery/navigation smoke exited ${code}: ${stderr}`));
+      });
+      child.stdin.write(`${JSON.stringify({ type: "get_state", id: "session-state" })}\n`);
+    });
+    assert.equal(messages.find((message) => message.id === "session-done")?.success, true);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}
+
 for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-root-guard.ts", "todo.ts"]) {
   const requests = extension === "permission-gate.ts"
     ? [
@@ -237,5 +375,6 @@ for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-ro
 
 await smokeAutoRetryState();
 await smokeDialogCancellation();
+await smokeSessionDiscoveryAndNavigation();
 
 console.log("extensions_smoke: ok");

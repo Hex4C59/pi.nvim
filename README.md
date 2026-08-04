@@ -10,21 +10,24 @@ extensions, skills, and compaction.
 The plugin provides a Pi-inspired Neovim frontend over RPC. It implements the
 streamed transcript, user message blocks, collapsible thinking and tool output,
 persistent prompt editor, command completion, model/thinking controls, queue
-state, live footer, settings, session tree inspection, fork/clone, compaction,
-and native Extension select, confirm, input, and editor dialogs.
+state, live footer, settings, session discovery and tree navigation, fork/clone,
+compaction, and native Extension select, confirm, input, and editor dialogs.
 The bundled todo Extension makes the agent decompose complex implementation work
 into a branch-aware plan, keep it current during execution, and render its
 compact live plan inside the conversation transcript.
 
-Pi 0.83 RPC does not expose in-place `navigate_tree` or a session-list command.
-The tree UI therefore supports inspection and forking from user messages;
-`/resume` accepts a session path instead of pretending to provide Pi's full
-interactive resume picker.
+When Pi advertises the `list_sessions` and `navigate_tree` RPC capabilities,
+`/resume` opens a bounded native session picker and the tree UI can move the
+active leaf to an existing entry. Older RPC processes retain exact-path resume
+and tree inspection, and report the missing capability without sending an
+unsupported command.
 
 ## Requirements
 
 - Neovim 0.10 or newer
-- `pi` available on `PATH` with the `extension_ui_cancel` RPC event supported
+- `pi` available on `PATH` with the `extension_ui_cancel` RPC event supported;
+  `list_sessions` and `navigate_tree` capabilities enable native session
+  discovery and navigation
 - A model configured in Pi (`pi`, then `/login` when needed)
 - Optional Tree-sitter parsers for syntax highlighting in fenced-code languages
 - Clipboard image capture uses `wl-paste` on Wayland or `xclip` on X11.
@@ -71,7 +74,7 @@ The `snacks.nvim` dependency is optional. Remove it when using
 | `:PiPermissions [mode]` | Select the session permission mode |
 | `:PiSettings` | Open the Pi settings selector |
 | `:PiLayout [layout]` | Switch between tab, float, right, and bottom workspaces |
-| `:PiTree` | Inspect the current session tree |
+| `:PiTree` | Inspect or navigate the current session tree |
 | `:PiFork` | Fork from a previous user message |
 | `:PiClone` | Clone the active session branch |
 | `:PiCommands` | Browse extension, prompt, and skill commands |
@@ -168,6 +171,16 @@ Chat teardown and session replacement discard all generic dialogs. On a small
 viewport the surface reuses the current window and restores its previous buffer
 and local options when it closes. Permission prompts remain a separate,
 fail-closed surface with no client-invented timeout.
+
+`/resume` uses Pi's authoritative, current-project session catalogue. The
+native picker displays the stored name or preview, message count, model, and
+update date, and loads additional bounded pages through Pi-owned opaque
+cursors. It never scans or parses the Pi session directory in Lua. An explicit
+path remains available from the picker and on older Pi processes. Cross-project
+resume remains blocked in every security mode. `:PiTree` and `/tree` use
+structured entry IDs; successful navigation reloads the transcript and session
+state only after Pi confirms the new leaf, while cancellation, failure, or a
+stale overlapping action leaves the current projection untouched.
 
 Typing `/` opens Pi's borderless command menu containing built-ins plus commands
 loaded from extensions, prompt templates, and skills. Command names are fuzzy

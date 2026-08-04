@@ -223,7 +223,19 @@ local function run()
 
   local client = runtime.get_client(root)
   local chat = runtime.chat_for(root)
+  local first_action = runtime.begin_session_action(client)
+  assert(runtime.session_action_current(client, first_action), "new session action was not current")
+  local second_action = runtime.begin_session_action(client)
+  assert(
+    not runtime.session_action_current(client, first_action),
+    "new session action did not invalidate the old action"
+  )
+  assert(runtime.session_action_current(client, second_action), "latest session action was not current")
   runtime.reload_session(client)
+  assert(
+    not runtime.session_action_current(client, second_action),
+    "session reload did not invalidate pending session actions"
+  )
   assert(dialog_discards == 1, "session reload did not discard dialogs from the previous session")
   assert(chat.reset_count == 1, "session reload bypassed the Chat projection facade")
   assert(#requests_for(client, "get_state") == 1, "session reload did not refresh state exactly once")

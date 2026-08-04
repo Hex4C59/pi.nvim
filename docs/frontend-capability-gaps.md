@@ -28,7 +28,6 @@ No release-blocking failure was found in the normal prompt, streaming, tool, per
 | Priority | Gap | Primary owner | Current consequence |
 | --- | --- | --- | --- |
 | P1 | Full-history RPC responses have a fixed 10 MiB frame ceiling | Pi RPC and pi.nvim client | A sufficiently large persisted session cannot be loaded reliably |
-| P1 | Session listing and in-place tree navigation are absent from RPC | Pi RPC, then pi.nvim UI | `/resume` requires an exact path and the tree cannot activate an existing node |
 | P2 | Authentication and several administrative workflows are TUI-only | Pi RPC, then pi.nvim UI | Users must leave Neovim for login/logout, reload, trust changes, and related commands |
 
 Priority describes remediation order and user impact, not security severity. The permission gate, workspace guard, and session-root guard remain authoritative in bundled Pi Extensions.
@@ -207,193 +206,7 @@ pi.nvim repository:
 - Session switches cannot merge pages from different sessions.
 - The old `get_messages` RPC remains compatible for older clients or is removed only with an explicit minimum-version change.
 
-## 2. Session Discovery and Tree Navigation Are Incomplete
-
-### Classification
-
-- Priority: P1
-- Status: confirmed Pi 0.83 RPC capability gap
-- User-visible area: `/resume`, `:PiTree`, `/tree`, branch navigation
-- Authoritative owner: Pi session manager and RPC
-- Presentation owner: pi.nvim picker and tree UI
-
-### Current behavior
-
-Pi 0.83 exposes:
-
-- `switch_session` when the caller already knows a session path.
-- `get_tree` for inspecting the current session tree.
-- `get_fork_messages` and `fork` for creating a new branch from a user message.
-- `clone` for duplicating the active branch.
-
-Pi 0.83 does not expose:
-
-- A session-list RPC command.
-- An RPC command equivalent to in-place `navigate_tree`.
-- Sufficient structured state for pi.nvim to migrate a project-bound client to a different canonical root safely.
-
-Consequently:
-
-- `/resume` prompts for an exact session JSONL path.
-- pi.nvim reads only a bounded session header for same-root validation.
-- `:PiTree` can inspect all nodes.
-- Selecting a user-message node offers “Fork from this message” and “Copy message”.
-- Selecting other nodes reports that the active leaf cannot be moved.
-- Cross-project resume is rejected in every security mode.
-
-Relevant frontend files:
-
-- `lua/pi/commands/session.lua`
-- `lua/pi/session_file.lua`
-- `extensions/session-root-guard.ts`
-- `extensions/lib/security/session-root.mjs`
-
-### Why Lua must not implement a filesystem session index
-
-Pi core owns session paths, formats, metadata, branches, compatibility, and future storage changes. A Lua implementation that recursively scans `~/.pi/agent/sessions`, parses filenames, and reconstructs display metadata would duplicate Pi session semantics and eventually diverge.
-
-The existing bounded header read is intentionally narrower. It is defense in depth for a user-supplied path and supports the same-root preflight check; it is not a session catalogue.
-
-### Required backend capability: session listing
-
-Pi RPC should expose an authoritative, bounded session-list command. A possible request is:
-
-```json
-{
-  "id": "nvim-20",
-  "type": "list_sessions",
-  "cwd": "/canonical/project/root",
-  "limit": 100,
-  "cursor": null
-}
-```
-
-A possible response is:
-
-```json
-{
-  "id": "nvim-20",
-  "type": "response",
-  "command": "list_sessions",
-  "success": true,
-  "data": {
-    "sessions": [
-      {
-        "path": "/absolute/session.jsonl",
-        "id": "session-id",
-        "name": "Focused task",
-        "cwd": "/canonical/project/root",
-        "updatedAt": "2026-01-01T12:00:00.000Z",
-        "messageCount": 42,
-        "model": {
-          "provider": "provider",
-          "id": "model-id"
-        }
-      }
-    ],
-    "nextCursor": null
-  }
-}
-```
-
-The backend, not Lua, must define session discovery roots, malformed-session handling, sorting, canonical `cwd`, pagination, and metadata extraction.
-
-The request may omit `cwd` and return all sessions if Pi wants the client to filter presentation only. For security-sensitive switching, the authoritative same-root guard must still run inside Pi immediately before the switch.
-
-### Required backend capability: tree navigation
-
-Pi RPC should expose the existing Pi core navigation behavior directly. A possible request is:
-
-```json
-{
-  "id": "nvim-21",
-  "type": "navigate_tree",
-  "entryId": "target-entry-id",
-  "summarize": true,
-  "customInstructions": "optional summary guidance"
-}
-```
-
-The response must distinguish success, user cancellation, and a stale/missing target:
-
-```json
-{
-  "id": "nvim-21",
-  "type": "response",
-  "command": "navigate_tree",
-  "success": true,
-  "data": {
-    "cancelled": false,
-    "leafId": "new-active-leaf"
-  }
-}
-```
-
-Pi core must remain responsible for branch summaries, context rebuilding, session writes, and lifecycle events. Lua should only invoke the command and reload the resulting projection after authoritative success.
-
-### Required frontend changes
-
-Session picker:
-
-1. Add a native session picker backed by `list_sessions`.
-2. Default to the current canonical root.
-3. Display session name, relative age/date, message count, and model without parsing session files locally.
-4. Retain an explicit path entry route for advanced use and backward compatibility.
-5. Wait for `switch_session` success before clearing or replacing the transcript.
-6. Preserve current session UI if switching is cancelled or fails.
-
-Tree UI:
-
-1. Keep `get_tree` as the source of structure.
-2. Add “Navigate to this node” only when the installed Pi advertises the RPC capability.
-3. Submit the structured entry ID directly.
-4. Show compaction/summary progress using Pi events.
-5. Reload state, stats, messages/history cursor, permission mode, widgets, and title after success.
-6. Prevent stale tree selections from acting after another session operation.
-
-### Cross-project resume
-
-Cross-project resume is currently an intentional safety limitation, not a missing Lua path check. A safe implementation requires an explicit lifecycle design for:
-
-- Rebinding the client key from one canonical root to another.
-- Deciding whether the old root keeps a separate Pi process and Chat.
-- Rebinding current-buffer context collection.
-- Revalidating project trust and context-file loading for the destination root.
-- Reinitializing bundled guard roots inside Pi.
-- Clearing session-scoped permission approvals.
-- Rebinding image path resolution and cache ownership.
-- Preventing old-root events from mutating the new-root UI.
-
-Until Pi RPC returns enough authoritative destination state and the frontend can migrate these owners atomically, rejection is the correct behavior.
-
-### Test requirements
-
-Pi repository:
-
-- Session listing over valid, malformed, renamed, and legacy sessions.
-- Pagination and stable ordering.
-- Tree navigation to ancestor, sibling branch, compaction, and summary nodes.
-- Cancellation and stale entry ID behavior.
-- Session lifecycle event ordering.
-
-pi.nvim repository:
-
-- Fake RPC list picker and pagination tests.
-- Same-root and cross-root picker filtering/presentation tests.
-- Tree navigation success, failure, and cancellation tests.
-- Race test for two overlapping session actions.
-- Permission mode and widget reset tests after a switch.
-- Installed no-model smoke for list and navigation commands.
-
-### Acceptance criteria
-
-- `/resume` works without requiring users to locate a JSONL file manually.
-- Tree nodes can be activated in place when Pi supports the command.
-- No session operation updates the transcript optimistically.
-- Same-root enforcement remains authoritative inside the bundled Extension.
-- Older Pi versions receive a precise limitation message rather than an invalid RPC request.
-
-## 3. Administrative Pi Workflows Still Require the TUI
+## 2. Administrative Pi Workflows Still Require the TUI
 
 ### Classification
 
@@ -524,17 +337,7 @@ Pi Extension APIs such as `ctx.ui.custom()`, component factories, custom headers
 
 The sequence below respects ownership and minimizes frontend compatibility branches.
 
-### Phase 1: session discovery and navigation
-
-1. Define authoritative session-list pagination in Pi core/RPC.
-2. Expose in-place tree navigation through RPC.
-3. Add Pi session/RPC tests and documentation.
-4. Build and install Pi.
-5. Implement the pi.nvim session picker and tree action.
-6. Add same-root, cancellation, stale-response, and event-ordering tests.
-7. Keep cross-project migration blocked until it has a separate lifecycle design.
-
-### Phase 2: paginated history
+### Phase 1: paginated history
 
 1. Define cursor, snapshot, ordering, and byte-budget semantics in Pi.
 2. Implement bounded history pages and compatibility behavior.
@@ -544,7 +347,7 @@ The sequence below respects ownership and minimizes frontend compatibility branc
 6. Add prepend/scroll/output-budget/stale-session tests.
 7. Verify a session larger than the old 10 MiB ceiling against the installed process.
 
-Although large history is the highest-impact architectural gap, it is listed last in delivery sequence because it has the broadest protocol and renderer implications. It should be designed first even if smaller correctness fixes ship earlier.
+Large history is the next delivery phase because it is the highest-impact remaining architectural gap and has the broadest protocol and renderer implications.
 
 ## Required Verification Matrix
 

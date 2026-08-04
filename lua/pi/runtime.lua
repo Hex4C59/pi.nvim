@@ -4,6 +4,7 @@ local chat_ui = require("pi.ui.chat")
 local Chat = chat_ui.Chat
 local text_content = require("pi.message").text_content
 local dialog = require("pi.ui.dialog")
+local session_picker = require("pi.ui.session_picker")
 
 local M = {}
 local clients = {}
@@ -165,6 +166,10 @@ local function refresh_state(client)
 end
 
 local function reload_session(client)
+  local project = project_for_client(client)
+  if project then
+    project.session_action_generation = project.session_action_generation + 1
+  end
   dialog.discard(client)
   local chat = chat_for(client.root)
   chat:reset_session_projection()
@@ -184,6 +189,7 @@ local function attach(client)
     commands_by_name = {},
     stats_pending = false,
     direct_bash_request_id = nil,
+    session_action_generation = 0,
     unsubscribe = nil,
   }
   projects[client.root] = project
@@ -464,6 +470,28 @@ local function set_ui_actions(actions)
   ui_actions = actions or {}
 end
 
+local function begin_session_action(client)
+  local project = project_for_client(client)
+  if not project then
+    return nil
+  end
+  project.session_action_generation = project.session_action_generation + 1
+  return { project = project, generation = project.session_action_generation }
+end
+
+local function session_action_current(client, action)
+  local project = project_for_client(client)
+  return action ~= nil
+    and project ~= nil
+    and action.project == project
+    and action.generation == project.session_action_generation
+    and project_is_current(project)
+end
+
+local function open_session_picker(options)
+  return session_picker.open(options)
+end
+
 M.clients = clients
 M.chats = chats
 M.notify_error = notify_error
@@ -474,6 +502,9 @@ M.refresh_commands = refresh_commands
 M.refresh_stats = refresh_stats
 M.refresh_state = refresh_state
 M.reload_session = reload_session
+M.begin_session_action = begin_session_action
+M.session_action_current = session_action_current
+M.open_session_picker = open_session_picker
 M.get_client = get_client
 M.with_prompt = with_prompt
 M.send_prompt = send_prompt
