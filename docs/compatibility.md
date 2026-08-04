@@ -94,6 +94,9 @@ advertise `auto_retry_state`; pi.nvim also accepts a typed
 
 - RPC records are LF-delimited JSONL. Responses are correlated by request ID;
   asynchronous events are not assumed to carry that ID.
+- `output.rpc_queue_max_bytes` bounds each incoming and outgoing JSONL frame as
+  well as the aggregate decoded dispatch queue. An oversized request is rejected
+  before it reaches Pi; an oversized response frame fails before projection.
 - A successful command response does not imply that its asynchronous workflow
   has settled. State mirrors update from the documented response or subsequent
   authoritative state/event, never optimistically.
@@ -106,6 +109,12 @@ advertise `auto_retry_state`; pi.nvim also accepts a typed
 - Missing capabilities, malformed responses, cancellation, timeout, and process
   replacement must leave the current authoritative projection unchanged or
   fail closed, according to the owning layer.
+
+CI's `smoke-baseline` target starts the pinned public Pi package and loads every
+bundled TypeScript Extension entry, but it is not a supported-backend claim and
+does not replace `make smoke`. The complete smoke target runs against the
+configured 0.83 capability build and verifies required dialog cancellation plus
+optional capabilities present in that build.
 
 ## Changing The Contract
 

@@ -184,6 +184,44 @@ assert(
   "released status body marker is missing"
 )
 
+for _, fixture in ipairs({
+  {
+    label = "assistant",
+    item = {
+      type = "assistant",
+      message = { content = { { type = "text", text = "```lua\nlocal responsive = true\n```" } } },
+    },
+    opts = { width = 48 },
+  },
+  {
+    label = "thinking",
+    item = {
+      type = "assistant",
+      message = { content = { { type = "thinking", thinking = "```lua\nlocal responsive = true\n```" } } },
+    },
+    opts = { width = 64, hide_thinking = false },
+  },
+  {
+    label = "status",
+    item = { type = "status", text = "```lua\nlocal responsive = true\n```" },
+    opts = { width = 96 },
+  },
+}) do
+  local lines = render({ fixture.item }, fixture.opts)
+  local code_line
+  for _, line in ipairs(lines) do
+    if line:find("local responsive = true", 1, true) then
+      code_line = line
+      break
+    end
+  end
+  assert(code_line, fixture.label .. " code surface is missing")
+  assert(
+    vim.fn.strdisplaywidth(code_line) == fixture.opts.width - 1,
+    fixture.label .. " code surface ignored the transcript width"
+  )
+end
+
 for _, fixture_lines in ipairs({ user_lines, public_lines, hidden_lines, visible_lines, multiple_lines, status_lines }) do
   for _, line in ipairs(fixture_lines) do
     assert(not line:find("[\r\n]"), "message renderer emitted an embedded newline")

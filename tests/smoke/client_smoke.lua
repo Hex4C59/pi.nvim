@@ -1,5 +1,6 @@
 local config = require("pi.config")
 local Client = require("pi.client").Client
+local baseline_only = vim.env.PI_SMOKE_BASELINE_ONLY == "1"
 
 config.setup({
   persist_session = false,
@@ -24,11 +25,13 @@ assert(
 )
 assert(#errors == 0, table.concat(errors, "\n"))
 assert(client.session.model ~= nil, "get_state did not return a model")
-assert(type(client.session.autoRetryEnabled) == "boolean", "get_state did not return auto-retry state")
-assert(
-  vim.tbl_contains(client.session.rpcCapabilities or {}, "administrative_workflows"),
-  "installed Pi does not advertise administrative workflows"
-)
+if not baseline_only then
+  assert(type(client.session.autoRetryEnabled) == "boolean", "get_state did not return auto-retry state")
+  assert(
+    vim.tbl_contains(client.session.rpcCapabilities or {}, "administrative_workflows"),
+    "installed Pi does not advertise administrative workflows"
+  )
+end
 
 local function request(command, payload)
   local result
@@ -50,19 +53,21 @@ local function request(command, payload)
   return result
 end
 
-local providers = request("get_auth_providers").providers or {}
-for _, provider in ipairs(providers) do
-  assert(
-    provider.apiKey == nil and provider.token == nil and provider.credential == nil,
-    "provider metadata exposed a secret"
-  )
+if not baseline_only then
+  local providers = request("get_auth_providers").providers or {}
+  for _, provider in ipairs(providers) do
+    assert(
+      provider.apiKey == nil and provider.token == nil and provider.credential == nil,
+      "provider metadata exposed a secret"
+    )
+  end
+  local trust = request("get_project_trust")
+  assert(type(trust.active) == "boolean" and type(trust.cwd) == "string", "project trust metadata is incomplete")
+  local scope = request("get_model_scope")
+  assert(type(scope.available) == "table" and type(scope.enabled) == "table", "model scope metadata is incomplete")
+  local changelog = request("get_changelog", { limit = 1 })
+  assert(type(changelog.entries) == "table" and #changelog.entries <= 1, "bounded changelog request failed")
 end
-local trust = request("get_project_trust")
-assert(type(trust.active) == "boolean" and type(trust.cwd) == "string", "project trust metadata is incomplete")
-local scope = request("get_model_scope")
-assert(type(scope.available) == "table" and type(scope.enabled) == "table", "model scope metadata is incomplete")
-local changelog = request("get_changelog", { limit = 1 })
-assert(type(changelog.entries) == "table" and #changelog.entries <= 1, "bounded changelog request failed")
 
 client:stop()
 assert(

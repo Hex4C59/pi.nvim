@@ -5,6 +5,12 @@ local runtime
 
 local function run()
   local root = vim.fn.getcwd()
+  local defaults = config.get()
+  local maximum_encoded_image = 4 * math.ceil(defaults.images.max_bytes / 3)
+  assert(
+    defaults.output.rpc_queue_max_bytes > maximum_encoded_image + 4096,
+    "default RPC frame budget cannot carry one maximum-size image plus its JSON envelope"
+  )
   local image = {
     type = "image",
     mimeType = "image/png",

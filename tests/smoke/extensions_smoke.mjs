@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 
 const repository = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../..");
 const piCommand = process.env.PI_COMMAND || "pi";
+const baselineOnly = process.env.PI_SMOKE_BASELINE_ONLY === "1";
 
 async function loadExtension(extension, requests = []) {
   const cwd = await mkdtemp(path.join(tmpdir(), "pi-extension-smoke-"));
@@ -504,7 +505,7 @@ async function smokeLargeHistoryPagination() {
 }
 
 for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-root-guard.ts", "todo.ts"]) {
-  const requests = extension === "permission-gate.ts"
+  const requests = !baselineOnly && extension === "permission-gate.ts"
     ? [
         { type: "prompt", id: "plan-mode", message: "/permissions plan" },
         { type: "prompt", id: "manual-mode", message: "/permissions manual" },
@@ -513,9 +514,11 @@ for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-ro
   await loadExtension(extension, requests);
 }
 
-await smokeAutoRetryState();
-await smokeDialogCancellation();
-await smokeSessionDiscoveryAndNavigation();
-await smokeLargeHistoryPagination();
+if (!baselineOnly) {
+  await smokeDialogCancellation();
+  await smokeAutoRetryState();
+  await smokeSessionDiscoveryAndNavigation();
+  await smokeLargeHistoryPagination();
+}
 
 console.log("extensions_smoke: ok");

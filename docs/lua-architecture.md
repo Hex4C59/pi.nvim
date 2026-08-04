@@ -192,10 +192,12 @@ native responsive select, confirm, input, and editor presentation.
 and read-only Markdown surfaces. Authentication sensitivity comes from the RPC
 event, never prompt prose. Sensitive input stores plaintext only in an
 ephemeral Lua field while its nofile buffer holds a mask with swap and
-persistent undo disabled; closing the surface wipes the buffer and drops the
-field. Resource reload success clears the prior Extension dialog, permission
-status mirror, and widget projection before Runtime refreshes state, commands,
-models, and statistics. New Extension events then repopulate those mirrors.
+persistent undo disabled. The active surface intercepts Neovim's paste hook so
+pasted plaintext follows the same memory-only path as typed input; closing the
+surface removes that hook, wipes the buffer, and drops the field. Resource
+reload success clears the prior Extension dialog, permission status mirror, and
+widget projection before Runtime refreshes state, commands, models, and
+statistics. New Extension events then repopulate those mirrors.
 
 Permission decisions remain in the bundled permission Extension. The Lua
 permission panel only displays structured requests, validates interaction,
@@ -240,6 +242,9 @@ Run `make test-file TEST=<path>` for one known Lua or Extension test owner. Run
 suite; `make format-check` for formatting; and `make smoke` for installed Pi RPC,
 Extension loading, authoritative dialog cancellation, and isolated auto-retry
 state mutation without a model call.
+CI additionally runs `make smoke-baseline` against pinned public Pi `0.82.1` to
+exercise process startup and TypeScript Extension entry loading only. It is not
+a compatibility fallback for the complete 0.83 smoke contract.
 
 ## Architecture Closeout
 

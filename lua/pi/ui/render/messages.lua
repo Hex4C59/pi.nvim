@@ -113,7 +113,11 @@ function M.render_assistant(canvas, item, opts)
   for index, block in ipairs(content) do
     if block.type == "thinking" and vim.trim(block.thinking or "") ~= "" then
       if not opts.hide_thinking then
-        markdown.add(canvas, block.thinking, { highlight = "PiThinkingText", prefix = "   ┊ " })
+        markdown.add(canvas, block.thinking, {
+          highlight = "PiThinkingText",
+          prefix = "   ┊ ",
+          width = opts.width,
+        })
         if has_visible_after(content, index) then
           canvas:blank()
         end
@@ -121,6 +125,7 @@ function M.render_assistant(canvas, item, opts)
     elseif block.type == "text" and vim.trim(block.text or "") ~= "" then
       markdown.add(canvas, block.text, {
         prefix = "   ",
+        width = opts.width,
         content_block = block,
         root = opts.root,
         item = item,
@@ -155,10 +160,12 @@ function M.render_assistant(canvas, item, opts)
   end
 end
 
-function M.render_status(canvas, item)
+function M.render_status(canvas, item, opts)
+  opts = opts or {}
   canvas:space()
   markdown.add(canvas, item.body_released and "Earlier status message released from local memory" or item.text, {
     highlight = item.error and "PiToolError" or "PiPanelMuted",
+    width = opts.width,
   })
 end
 

@@ -54,6 +54,7 @@ local function run()
     table.insert(scheduled, callback)
   end
   local overloaded = Client.new(vim.fn.getcwd())
+  assert(overloaded.parser.max_frame_bytes == 128, "Client parser did not inherit the RPC queue byte budget")
   local overload_errors = {}
   overloaded:on_event(function(event)
     if event.type == "client_error" then
@@ -71,6 +72,21 @@ local function run()
     overloaded.dispatch_count == 0 and overloaded.dispatch_bytes == 0 and next(overloaded.dispatch_queue) == nil,
     "RPC overload did not release queued payloads"
   )
+
+  local writes = {}
+  overloaded.process = {
+    is_closing = function()
+      return false
+    end,
+    write = function(_, value)
+      table.insert(writes, value)
+    end,
+  }
+  local sent, send_err = overloaded:_raw_send({ type = "prompt", message = string.rep("x", 200) })
+  assert(not sent and send_err:find("frame is too large", 1, true), "oversized outbound RPC frame was accepted")
+  assert(#writes == 0, "oversized outbound RPC frame reached the Pi process")
+  assert(overloaded:_raw_send({ type = "get_state" }), "bounded outbound RPC frame was rejected")
+  assert(#writes == 1, "bounded outbound RPC frame was not written exactly once")
 
   require("pi.config").setup({ output = { rpc_queue_max_messages = 300, rpc_queue_max_bytes = 1024 * 1024 } })
   scheduled = {}

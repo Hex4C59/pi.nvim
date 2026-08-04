@@ -2,6 +2,8 @@ local admin = require("pi.ui.admin")
 
 local original_columns = vim.o.columns
 local original_lines = vim.o.lines
+local original_paste = vim.paste
+local sensitive_surface
 
 local function mapping(buf, lhs, mode)
   for _, item in ipairs(vim.api.nvim_buf_get_keymap(buf, mode or "n")) do
@@ -36,12 +38,13 @@ local function run()
       submitted = value
     end,
   })
+  sensitive_surface = surface
   assert(vim.b[surface.buf].pi_sensitive == true, "secret input did not carry structural sensitivity metadata")
   assert(vim.bo[surface.buf].swapfile == false, "secret input enabled a swap file")
   assert(vim.bo[surface.buf].undofile == false, "secret input enabled persistent undo")
-  local mask = surface:capture_secret(secret)
-  surface:render_secret()
-  assert(mask == string.rep("*", #secret), "secret input used a non-concealed display value")
+  assert(vim.api.nvim_paste(secret, false, -1), "Neovim rejected sensitive input paste")
+  local mask = string.rep("*", #secret)
+  assert(surface.secret == secret, "sensitive paste did not update the memory-only value")
   assert(
     vim.api.nvim_buf_get_lines(surface.buf, 0, 1, false)[1] == mask,
     "secret input buffer contains something other than its mask"
@@ -51,7 +54,9 @@ local function run()
   submit()
   assert(submitted == secret, "secret input did not return its in-memory value")
   assert(surface.closed and not vim.api.nvim_buf_is_valid(surface.buf), "secret input did not wipe its scratch buffer")
+  assert(vim.paste == original_paste, "secret input did not restore Neovim's paste handler")
   assert(not buffers_contain(secret), "submitted secret remained in a Neovim buffer")
+  sensitive_surface = nil
   submitted = nil
   secret = nil
 
@@ -106,8 +111,12 @@ local function run()
 end
 
 local ok, err = xpcall(run, debug.traceback)
+if sensitive_surface then
+  pcall(sensitive_surface.close, sensitive_surface)
+end
 vim.o.columns = original_columns
 vim.o.lines = original_lines
+vim.paste = original_paste
 if not ok then
   error(err)
 end

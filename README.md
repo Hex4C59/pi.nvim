@@ -187,8 +187,9 @@ fail-closed surface with no client-invented timeout.
 A structurally sensitive authentication prompt keeps its value only in
 ephemeral Lua state. Its nofile buffer contains an equal-length mask, has swap
 and persistent undo disabled, and is wiped before the value is submitted to Pi.
-Secrets are never added to the prompt buffer, transcript, notifications, or
-command history.
+Typed and pasted input both update that memory-only value; the temporary paste
+hook is removed when the surface closes. Secrets are never added to the prompt
+buffer, transcript, notifications, or command history.
 
 `/resume` uses Pi's authoritative, current-project session catalogue. The
 native picker displays the stored name or preview, message count, model, and
@@ -436,9 +437,11 @@ and results share a per-tool limit. `transcript_max_bytes` covers user,
 assistant, thinking, status, and tool bodies plus retained Lua render
 projections. When that budget is exceeded, the oldest local bodies are released
 while lightweight identity, status, and timing remain visible; Pi's
-authoritative session is unchanged. The decoded RPC dispatch queue is also
-bounded by message count and bytes; exceeding either limit stops the Pi process
-instead of continuing with partial client state.
+authoritative session is unchanged. `rpc_queue_max_bytes` is both the maximum
+size of one incoming or outgoing JSONL frame and the aggregate decoded dispatch
+queue budget. Oversized outgoing requests fail before being written to Pi;
+exceeding an incoming frame or queue limit stops processing instead of
+continuing with partial client state.
 History pagination additionally caps every Pi response at 1 MiB and merges each
 page through the same transcript budget. It does not increase the parser's
 general frame ceiling or decode the complete persisted session in Neovim.
@@ -488,6 +491,13 @@ make coverage
 Coverage requires Node 20.1 or newer, runs the normal uninstrumented test gate
 first, and writes ignored local reports under `coverage/`. It is diagnostic and
 does not replace `make smoke` or introduce a CI percentage threshold.
+
+CI also installs the pinned public Pi `0.82.1` package and runs
+`make smoke-baseline` to catch Client startup and bundled TypeScript Extension
+loading failures. That published-package baseline deliberately does not claim
+0.82 compatibility or exercise capabilities absent from the package. Run
+`make smoke` against the configured 0.83 capability build for the complete RPC
+and Extension compatibility gate.
 
 See the [Compatibility Contract](docs/compatibility.md) for the supported public
 surface and RPC fallbacks. See the [test guide](tests/README.md) for command

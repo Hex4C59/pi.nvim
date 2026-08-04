@@ -1,4 +1,4 @@
-.PHONY: test test-lua test-file test-extensions test-ci-policy coverage coverage-clean smoke format-check ci-policy-check
+.PHONY: test test-lua test-file test-extensions test-ci-policy coverage coverage-clean smoke smoke-baseline format-check ci-policy-check
 
 # Preserve the command-line value as data. $(value ...) prevents Make from
 # expanding function syntax embedded in TEST before the fixed recipe validates it.
@@ -69,6 +69,10 @@ coverage-clean:
 smoke:
 	nvim --headless -u tests/minimal_init.lua -l tests/smoke/client_smoke.lua
 	node tests/smoke/extensions_smoke.mjs
+
+smoke-baseline:
+	PI_SMOKE_BASELINE_ONLY=1 nvim --headless -u tests/minimal_init.lua -l tests/smoke/client_smoke.lua
+	PI_SMOKE_BASELINE_ONLY=1 node tests/smoke/extensions_smoke.mjs
 
 format-check:
 	stylua --check lua plugin tests scripts/coverage

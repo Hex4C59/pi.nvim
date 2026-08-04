@@ -3,6 +3,51 @@ local truncate_display = require("pi.format").truncate_display
 local M = {}
 local group = vim.api.nvim_create_augroup("PiNvimExtensionDialogs", { clear = false })
 local namespace = vim.api.nvim_create_namespace("pi.nvim.extension_dialog")
+local sensitive_surfaces = {}
+local paste_handler
+local previous_paste_handler
+
+local function active_sensitive_surface()
+  local current_buf = vim.api.nvim_get_current_buf()
+  for index = #sensitive_surfaces, 1, -1 do
+    local candidate = sensitive_surfaces[index]
+    if not candidate.closed and candidate.buf == current_buf then
+      return candidate
+    end
+  end
+end
+
+local function install_sensitive_paste(surface)
+  if #sensitive_surfaces == 0 then
+    local inherited = vim.paste
+    previous_paste_handler = inherited
+    paste_handler = function(lines, phase)
+      local active = vim.fn.getcmdtype() == "" and active_sensitive_surface() or nil
+      if active then
+        return active:capture_paste(lines, phase)
+      end
+      return inherited(lines, phase)
+    end
+    vim.paste = paste_handler
+  end
+  table.insert(sensitive_surfaces, surface)
+end
+
+local function remove_sensitive_paste(surface)
+  for index = #sensitive_surfaces, 1, -1 do
+    if sensitive_surfaces[index] == surface then
+      table.remove(sensitive_surfaces, index)
+      break
+    end
+  end
+  if #sensitive_surfaces == 0 then
+    if vim.paste == paste_handler then
+      vim.paste = previous_paste_handler
+    end
+    paste_handler = nil
+    previous_paste_handler = nil
+  end
+end
 
 local function tabline_height()
   if vim.o.showtabline == 2 then
@@ -328,6 +373,15 @@ function M.open(request, on_submit, on_cancel)
     return string.rep("*", vim.fn.strchars(value))
   end
 
+  function surface:capture_paste(lines, _)
+    if self.closed then
+      return false
+    end
+    self.secret = (self.secret or "") .. table.concat(lines or {}, "\n")
+    self:render_secret()
+    return true
+  end
+
   vim.wo[win].wrap = request.method == "confirm"
   vim.wo[win].cursorline = false
   install_lifecycle(surface)
@@ -345,6 +399,9 @@ function M.open(request, on_submit, on_cancel)
       return
     end
     self.closed = true
+    if self.request.sensitive then
+      remove_sensitive_paste(self)
+    end
     self.secret = nil
     for _, autocmd in ipairs(self.autocmds) do
       pcall(vim.api.nvim_del_autocmd, autocmd)
@@ -371,6 +428,7 @@ function M.open(request, on_submit, on_cancel)
   end
 
   if request.method == "input" and request.sensitive then
+    install_sensitive_paste(surface)
     vim.schedule(function()
       if
         not surface.closed

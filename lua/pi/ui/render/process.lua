@@ -163,7 +163,7 @@ function M.render_range(canvas, items, first, last, opts, tool_ranges)
       elseif item.type == "assistant" then
         messages.render_assistant(canvas, item, opts)
       elseif item.type == "status" then
-        messages.render_status(canvas, item)
+        messages.render_status(canvas, item, opts)
       end
       index = index + 1
     end
@@ -185,7 +185,7 @@ local function render_compact_process(canvas, items, first, last, opts, process_
         messages.render_assistant(canvas, public_item, opts)
       end
     elseif item.type == "status" then
-      messages.render_status(canvas, item)
+      messages.render_status(canvas, item, opts)
     end
   end
 

@@ -7,6 +7,7 @@ Client.__index = Client
 local max_dispatch_batch = 256
 
 function Client.new(root)
+  local max_frame_bytes = config.get().output.rpc_queue_max_bytes
   local self = setmetatable({
     root = root,
     process = nil,
@@ -24,9 +25,11 @@ function Client.new(root)
     dispatch_bytes = 0,
     dispatch_scheduled = false,
     dispatch_overload = nil,
+    max_frame_bytes = max_frame_bytes,
   }, Client)
 
   self.parser = Parser.new({
+    max_frame_bytes = max_frame_bytes,
     on_message = function(message, frame_bytes)
       self:_enqueue_dispatch("message", message, nil, frame_bytes)
     end,
@@ -226,6 +229,9 @@ function Client:_raw_send(message)
   local ok, encoded = pcall(vim.json.encode, message)
   if not ok then
     return false, encoded
+  end
+  if #encoded > self.max_frame_bytes then
+    return false, ("RPC request frame is too large (%d bytes; limit %d)"):format(#encoded, self.max_frame_bytes)
   end
   local wrote, err = pcall(self.process.write, self.process, encoded .. "\n")
   if not wrote then

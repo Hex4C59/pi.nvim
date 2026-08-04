@@ -28,6 +28,7 @@ Run commands from the repository root.
 | `make coverage-clean` | Only the validated repository-local `coverage/` directory | Remove generated reports |
 | `make format-check` | StyLua validation for `lua/`, `plugin/`, `tests/`, and repository coverage helpers | Formatting gate |
 | `make smoke` | Installed Pi RPC startup and bundled Extension loading, without model calls | Installed compatibility gate |
+| `make smoke-baseline` | Published Pi `0.82.1` startup and TypeScript Extension entry loading only | CI integration baseline, not a supported-backend claim |
 | `make ci-policy-check` | GitHub Actions immutable-pin policy | CI workflow gate |
 | `node scripts/check-exec-plans.mjs` | ExecPlan guide and active-plan structure | Focused planning-policy check |
 
@@ -47,6 +48,14 @@ the change scope requires them.
 `make coverage` additionally requires Node 20.1 or newer. Normal tests retain
 their Node 20 major-version boundary. Coverage is deliberately separate from
 the focused loop and is not part of CI.
+
+The CI smoke job installs public Pi `0.82.1` and runs `make smoke-baseline` so
+entry-file syntax or Extension API loading failures cannot pass on helper tests
+alone. That published package lacks required and optional RPC capabilities in
+the configured 0.83 build, so the baseline skips dialog cancellation and the
+newer RPC workflows. `make smoke` remains the complete installed compatibility
+gate and must run against the configured capability build before relevant work
+is complete.
 
 ## Directory Map
 
