@@ -187,3 +187,30 @@ Run `make test-file TEST=<path>` for one known Lua or Extension test owner. Run
 `make test` for the complete deterministic Lua, Extension, and repository policy
 suite; `make format-check` for formatting; and `make smoke` for installed Pi RPC
 and Extension loading without a model call.
+
+## Architecture Closeout
+
+The modular architecture work was closed on 2026-08-04 after the implemented
+tree, dependency policy, state table, lifecycle contracts, and test ownership
+map converged on the same boundaries:
+
+- Chat, Transcript, TranscriptView, Image, and Render retain stable public
+  facades while focused modules own composition, projection, resources, and
+  pure rendering separately.
+- Runtime state remains outside Client, UI components receive explicit
+  providers instead of reaching through siblings, and only the Chat composition
+  root may access child component fields.
+- Permission, workspace, and session-root decisions remain in separate bundled
+  Extension policies with thin TypeScript registration entries. Lua owns only
+  native presentation and display mirrors.
+- `scripts/check-lua-architecture.mjs` enforces layer direction, cycle absence,
+  stable image boundaries, Runtime/Client separation, and Chat facade privacy
+  with failing policy fixtures.
+- Focused tests mirror renderer, transcript, view, input, menu, Chat, image, and
+  Extension policy owners while facade and fake-RPC specs retain cross-owner
+  composition and ordering coverage.
+
+The current command surface, test inventory, harness decision, coverage
+baseline, closeout timings, and residual test risks are maintained in
+`tests/README.md`. Historical implementation checklists were removed after this
+durable record was verified.

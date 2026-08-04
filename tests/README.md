@@ -235,3 +235,81 @@ does not replace RPC ordering, security, lifecycle, memory-budget, performance,
 or smoke assertions. No percentage threshold is enforced in CI. Reproduce the
 baseline with exactly `make coverage` after relevant source or behavior-test
 changes.
+
+## Plan Closeout
+
+The focused-test and modular-architecture plans were closed on 2026-08-04 with
+Neovim 0.12.4 / LuaJIT 2.1.1767980792, Node 22.23.1, GNU Make 4.4.1,
+StyLua 2.5.2, and installed Pi 0.83.0. Pi resolved from
+`/home/hex4c59/.local/bin/pi` to the user-level package CLI. No verification
+command called a model, required credentials, fetched dependencies, or changed
+the installed Pi package.
+
+### Inventory And Timing
+
+| Measurement | Initial Task 01 baseline | Closeout |
+| --- | ---: | ---: |
+| Lua spec files | 31 | 50, 8,966 lines |
+| Extension test files | 4 | 5, containing 24 Node test cases |
+| Repository policy files | 2 | 4 |
+| Smoke files | 2 | 2 |
+| `make test` wall time | 2.46 s | 4.20 s |
+| `make format-check` wall time | 0.04 s | 0.04 s |
+| `make smoke` wall time | 2.51 s | 2.43 s |
+
+The full suite is about 71% slower because it starts 19 additional isolated
+Neovim spec processes and runs additional Extension and policy owners. The
+tradeoff is accepted: failures now identify a narrower module/lifecycle owner,
+while the complete suite remains only a few seconds. Representative closeout
+focused times were below 0.01 s for `protocol_spec.lua`, 0.01 s for the process
+renderer, 0.16 s for Chat lifecycle, 0.08 s for fake-RPC UI integration, and
+0.14 s for the authoritative permission Extension test.
+
+An irrelevant exported `TEST` value did not narrow the complete gate: its
+prefix inventory remained exactly 50 Lua, 5 Extension, and 4 policy files.
+`make coverage` took 46.74 s, merged 50 fresh Lua artifacts across all 57 Lua
+production files, emitted the documented separate baseline totals, and left no
+tracked generated report. `make ci-policy-check`, formatting, deterministic
+tests, and installed-process smoke all passed. The official Neovim 0.10.4 suite
+also passed during the preceding compatibility verification; CI continues to
+run the full gate on `v0.10.4` and stable.
+
+Task 01 and closeout had no baseline failures. Controlled runner and coverage
+failures used during implementation now report the selected Make prefix, the
+behavior assertion or original traceback, and a non-zero result while protected
+cleanup still runs; this is more actionable than the former broad owner files.
+
+### Assertion And Ownership Audit
+
+Renderer decomposition retained the public facade and increased owner-focused
+coverage from 145 assertions in the old aggregate to 275 across the facade and
+six renderer specs. Chat already had an initial six-file component split before
+its final decomposition; it increased from 143 assertions before the shell task
+to 253 across the current facade, shell, interaction, registry, and lifecycle
+owners. The old activity fixture was removed only after its timer and cleanup
+cases moved into lifecycle/facade coverage. Reviewed repeated fixture strings
+are intentional facade/owner boundary inputs, not copied full scenarios.
+
+Discovery finds every supported suffix recursively, no test path is a symlink,
+and no helper uses a supported test suffix. Resource-owning specs retain local
+protected cleanup for timers, jobs, temporary files, windows, buffers, and
+patched globals. The ownership map above was checked against imports and
+fixtures: Pi session/model/queue behavior enters through RPC state; permission
+decisions and approvals remain in Extension tests; Lua permission tests cover
+only display, response, and fail-closed cancellation; Transcript and View keep
+separate model/projection resources; and UI/image owners release only the
+resources they create.
+
+Residual risks remain explicit:
+
+- Top-level Lua files stop at their first failed assertion and support filtering
+  only by file. The retained dependency-free harness remains appropriate until
+  repeated case-level filtering or cleanup defects justify its cost.
+- Local closeout ran on stable Neovim. Minimum-version behavior is protected by
+  the earlier official 0.10.4 run and CI matrix, not by this one local timing.
+- Lua coverage has no branch/function signal, transformed TypeScript entry
+  points remain excluded, and the risk-ranked behavior gaps in the baseline
+  still require focused assertions rather than a percentage threshold.
+- Installed smoke verifies RPC startup and Extension loading without a model;
+  it cannot prove manual terminal layout, optional image backend, or long-lived
+  authenticated model workflows.

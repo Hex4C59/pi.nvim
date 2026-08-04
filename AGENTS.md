@@ -450,6 +450,9 @@ tests/lua/                    Headless Lua tests grouped by frontend area
 tests/extensions/             Node tests grouped by Extension owner
 tests/smoke/                  No-model tests against the installed Pi
 tests/policy/                 Repository policy tests
+scripts/coverage.sh           Validated local coverage orchestration and cleanup
+scripts/coverage/             Lua merge/report and Node source-only reporter
+scripts/vendor/luacov/        Pinned LuaCov subset, license, and provenance
 ```
 
 Keep process transport, event projection, rendering, and command adapters
@@ -547,6 +550,18 @@ Run the GitHub Actions pinning policy:
 ```bash
 make ci-policy-check
 ```
+
+Generate separate local Lua and Extension coverage summaries:
+
+```bash
+make coverage
+```
+
+Coverage requires Node 20.1 or newer, validates the vendored LuaCov 0.17.0
+files, and runs the normal deterministic gate without instrumentation before
+collecting data. Generated output under `coverage/` is ignored. Coverage is a
+local diagnostic, not a CI threshold or a replacement for behavior and smoke
+tests.
 
 Test ownership follows implementation ownership:
 
