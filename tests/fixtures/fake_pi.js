@@ -21,6 +21,8 @@ const assistant = {
 let delayedPrompt;
 let freshSession = false;
 let autoRetryEnabled = true;
+let resourceGeneration = 0;
+let permissionMode = "manual";
 
 const runPrompt = (request, userText = request.message) => {
   respond(request);
@@ -72,15 +74,17 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       autoCompactionEnabled: true,
       autoRetryEnabled,
       sessionId: freshSession ? "fixture-fresh" : "fixture-session",
-      rpcCapabilities: ["history_pagination"],
+      rpcCapabilities: ["history_pagination", "administrative_workflows"],
     });
-    send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: "manual" });
+    send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: permissionMode });
     if (!freshSession) {
       send({
         type: "extension_ui_request",
         method: "setWidget",
         widgetKey: "pi.todo",
-        widgetLines: ["Tasks · 1/2 complete", "◐ #2 Run RPC tests", "✓ #1 Load Extension"],
+        widgetLines: resourceGeneration === 0
+          ? ["Tasks · 1/2 complete", "◐ #2 Run RPC tests", "✓ #1 Load Extension"]
+          : ["Tasks · reloaded", "✓ Reloaded RPC resources"],
         widgetPlacement: "aboveEditor",
       });
     }
@@ -164,16 +168,88 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       { name: "todos", description: "Show or hide todos", source: "extension" },
       { name: "fixture-template", description: "Fixture prompt template", source: "prompt" },
     ] });
+  } else if (request.type === "get_auth_providers") {
+    respondToRequest({ providers: [{
+      id: "fixture",
+      name: "Fixture",
+      configured: false,
+      methods: [{ type: "api_key", name: "API key", interactive: true }],
+    }] });
+  } else if (request.type === "begin_auth") {
+    respondToRequest({ flowId: "fixture-auth-flow" });
+    setImmediate(() => send({
+      type: "auth_prompt",
+      flowId: "fixture-auth-flow",
+      promptId: "fixture-auth-prompt",
+      promptType: "secret",
+      message: "Fixture provider secret",
+      placeholder: "secret",
+      sensitive: true,
+    }));
+  } else if (request.type === "submit_auth_value") {
+    if (request.flowId !== "fixture-auth-flow"
+      || request.promptId !== "fixture-auth-prompt"
+      || request.value !== "fixture-private-secret") {
+      send({ id: request.id, type: "response", command: request.type, success: false, error: "invalid fixture secret" });
+    } else {
+      respondToRequest();
+      send({
+        type: "auth_complete",
+        flowId: "fixture-auth-flow",
+        provider: "fixture",
+        method: "api_key",
+        success: true,
+      });
+    }
+  } else if (request.type === "cancel_auth") {
+    respondToRequest();
+    send({
+      type: "auth_complete",
+      flowId: "fixture-auth-flow",
+      provider: "fixture",
+      method: "api_key",
+      success: false,
+      cancelled: true,
+    });
+  } else if (request.type === "get_available_models") {
+    respondToRequest({ models: [{ provider: "fake", id: "fixture", contextWindow: 100000 }] });
+  } else if (request.type === "reload_resources") {
+    resourceGeneration += 1;
+    respondToRequest({
+      reloaded: ["extensions", "skills", "prompts", "themes"],
+      resources: { extensions: 1, skills: 1, prompts: 1, themes: 1 },
+    });
+  } else if (request.type === "get_project_trust") {
+    respondToRequest({ cwd: process.cwd(), active: false, saved: null, restartRequired: false });
+  } else if (request.type === "set_project_trust") {
+    respondToRequest({
+      cwd: process.cwd(),
+      active: false,
+      saved: request.decision === "unset" ? null : { path: process.cwd(), decision: request.decision },
+      restartRequired: request.decision !== "untrusted",
+    });
+  } else if (request.type === "get_model_scope" || request.type === "set_model_scope") {
+    const available = [{ provider: "fake", id: "fixture" }];
+    respondToRequest({ available, enabled: available, allEnabled: true, persistedPatterns: [] });
+  } else if (request.type === "import_session") {
+    respondToRequest({ cancelled: true });
+  } else if (request.type === "share_session") {
+    respondToRequest({ url: "https://pi.invalid/view", gistUrl: "https://gist.invalid/id" });
+  } else if (request.type === "get_changelog") {
+    respondToRequest({ entries: [{ version: "0.83.0", markdown: "Fixture changelog" }] });
+  } else if (request.type === "logout_provider") {
+    respondToRequest();
   } else if (request.type === "prompt") {
     if (request.message === "/fixture-noop") {
       respondToRequest();
     } else if (request.message.startsWith("/permissions ")) {
+      permissionMode = request.message.slice("/permissions ".length);
       respondToRequest();
       send({
         type: "extension_ui_request",
         method: "setStatus",
         statusKey: "pi.permission_mode",
-        statusText: request.message.slice("/permissions ".length),
+        statusText: permissionMode,
       });
     } else if (request.message === "/fixture-prefill") {
       respondToRequest();
@@ -215,7 +291,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (request.type === "new_session") {
     freshSession = true;
     respondToRequest({ cancelled: false });
-    send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: "manual" });
+    send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: permissionMode });
     send({ type: "extension_ui_request", method: "setWidget", widgetKey: "pi.todo" });
   } else {
     respondToRequest();

@@ -66,8 +66,10 @@ local function configure_buffer(buf, request, lines)
   vim.bo[buf].buftype = "nofile"
   vim.bo[buf].bufhidden = "wipe"
   vim.bo[buf].swapfile = false
+  vim.bo[buf].undofile = false
   vim.bo[buf].filetype = request.method == "editor" and "markdown" or "text"
   vim.b[buf].pi_kind = "extension_dialog"
+  vim.b[buf].pi_sensitive = request.sensitive == true
   vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
 end
 
@@ -189,25 +191,73 @@ end
 local function install_text_mappings(surface)
   local request = surface.request
   local function submit()
-    local lines = vim.api.nvim_buf_get_lines(surface.buf, 0, -1, false)
-    local value = request.method == "input" and (lines[1] or "") or table.concat(lines, "\n")
+    local value
+    if request.sensitive then
+      value = surface.secret or ""
+    else
+      local lines = vim.api.nvim_buf_get_lines(surface.buf, 0, -1, false)
+      value = request.method == "input" and (lines[1] or "") or table.concat(lines, "\n")
+    end
     surface.on_submit({ value = value })
   end
   vim.keymap.set({ "n", "i" }, "<C-s>", submit, { buffer = surface.buf, silent = true })
   if request.method == "input" then
     vim.keymap.set({ "n", "i" }, "<CR>", submit, { buffer = surface.buf, silent = true })
-    table.insert(
-      surface.autocmds,
-      vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
-        group = group,
-        buffer = surface.buf,
-        callback = function()
-          if not surface.closed then
+    if request.sensitive then
+      vim.bo[surface.buf].undolevels = -1
+      table.insert(
+        surface.autocmds,
+        vim.api.nvim_create_autocmd("InsertCharPre", {
+          group = group,
+          buffer = surface.buf,
+          callback = function()
+            if not surface.closed and vim.v.char ~= "" then
+              vim.v.char = surface:capture_secret(vim.v.char)
+            end
+          end,
+        })
+      )
+      table.insert(
+        surface.autocmds,
+        vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+          group = group,
+          buffer = surface.buf,
+          callback = function()
+            if surface.closed or surface.secret_syncing then
+              return
+            end
+            local line = vim.api.nvim_buf_get_lines(surface.buf, 0, 1, false)[1] or ""
+            local display_length = line:match("^%**$") and vim.fn.strchars(line) or -1
+            local secret_length = vim.fn.strchars(surface.secret or "")
+            if display_length >= 0 and display_length <= secret_length then
+              surface.secret = vim.fn.strcharpart(surface.secret or "", 0, display_length)
+            else
+              surface:render_secret()
+            end
             update_placeholder(surface)
-          end
-        end,
-      })
-    )
+          end,
+        })
+      )
+      for _, key in ipairs({ "<Left>", "<Right>", "<Up>", "<Down>", "<Home>", "<Del>", "<C-o>", "<C-r>" }) do
+        vim.keymap.set("i", key, "<Nop>", { buffer = surface.buf, silent = true })
+      end
+      for _, key in ipairs({ "<Esc>", "<C-[>" }) do
+        vim.keymap.set("i", key, surface.on_cancel, { buffer = surface.buf, silent = true })
+      end
+    else
+      table.insert(
+        surface.autocmds,
+        vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+          group = group,
+          buffer = surface.buf,
+          callback = function()
+            if not surface.closed then
+              update_placeholder(surface)
+            end
+          end,
+        })
+      )
+    end
     update_placeholder(surface)
   end
 end
@@ -256,7 +306,27 @@ function M.open(request, on_submit, on_cancel)
     closed = false,
     on_submit = on_submit,
     on_cancel = on_cancel,
+    secret = request.sensitive and "" or nil,
+    secret_syncing = false,
   }
+
+  function surface:render_secret()
+    if self.closed or not vim.api.nvim_buf_is_valid(self.buf) then
+      return
+    end
+    self.secret_syncing = true
+    local mask = string.rep("*", vim.fn.strchars(self.secret or ""))
+    vim.api.nvim_buf_set_lines(self.buf, 0, -1, false, { mask })
+    self.secret_syncing = false
+    if vim.api.nvim_win_is_valid(self.win) then
+      vim.api.nvim_win_set_cursor(self.win, { 1, #mask })
+    end
+  end
+
+  function surface:capture_secret(value)
+    self.secret = (self.secret or "") .. value
+    return string.rep("*", vim.fn.strchars(value))
+  end
 
   vim.wo[win].wrap = request.method == "confirm"
   vim.wo[win].cursorline = false
@@ -275,6 +345,7 @@ function M.open(request, on_submit, on_cancel)
       return
     end
     self.closed = true
+    self.secret = nil
     for _, autocmd in ipairs(self.autocmds) do
       pcall(vim.api.nvim_del_autocmd, autocmd)
     end
@@ -297,6 +368,18 @@ function M.open(request, on_submit, on_cancel)
     if restore_focus and vim.api.nvim_win_is_valid(self.previous_win) then
       vim.api.nvim_set_current_win(self.previous_win)
     end
+  end
+
+  if request.method == "input" and request.sensitive then
+    vim.schedule(function()
+      if
+        not surface.closed
+        and vim.api.nvim_win_is_valid(surface.win)
+        and vim.api.nvim_get_current_win() == surface.win
+      then
+        vim.cmd("startinsert")
+      end
+    end)
   end
 
   return surface

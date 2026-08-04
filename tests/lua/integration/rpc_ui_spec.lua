@@ -36,6 +36,18 @@ local function run()
     end
   end
 
+  local function buffers_contain(needle)
+    for _, bufnr in ipairs(vim.api.nvim_list_bufs()) do
+      if vim.api.nvim_buf_is_valid(bufnr) and vim.api.nvim_buf_is_loaded(bufnr) then
+        local text = table.concat(vim.api.nvim_buf_get_lines(bufnr, 0, -1, false), "\n")
+        if text:find(needle, 1, true) then
+          return true
+        end
+      end
+    end
+    return false
+  end
+
   local chat_buf = assert(find_buffer("chat"), "chat buffer was not created")
   local input_buf = assert(find_buffer("prompt"), "prompt buffer was not created")
   local status_buf = assert(find_buffer("status"), "status buffer was not created")
@@ -96,6 +108,64 @@ local function run()
       return #chat.command_menu:complete(0, "/fixture-noop") == 1
     end, 20),
     "extension command catalog was not loaded"
+  )
+  local login_completion = chat.command_menu:complete(0, "/login")
+  assert(#login_completion == 1 and login_completion[1].kind == "PI", "administrative capability stayed TUI-only")
+
+  local authentication_notifications = {}
+  vim.notify = function(message, level, options)
+    table.insert(authentication_notifications, { message = message, level = level, options = options })
+  end
+  pi.login(root, "fixture")
+  local secret_buf
+  assert(
+    vim.wait(3000, function()
+      secret_buf = find_buffer("extension_dialog")
+      return secret_buf ~= nil and vim.b[secret_buf].pi_sensitive == true
+    end, 10),
+    "structured authentication did not open a sensitive native input"
+  )
+  local secret = "fixture-private-secret"
+  local typed_secret = vim.api.nvim_replace_termcodes("i" .. secret, true, false, true)
+  vim.api.nvim_feedkeys(typed_secret, "xt", false)
+  assert(
+    vim.wait(1000, function()
+      local line = vim.api.nvim_buf_get_lines(secret_buf, 0, 1, false)[1] or ""
+      return line == string.rep("*", #secret)
+    end, 10),
+    "sensitive authentication input did not mask typed text"
+  )
+  assert(not buffers_contain(secret), "authentication secret entered a Neovim buffer")
+  local submit_mapping = vim.fn.maparg("<CR>", "i", false, true)
+  assert(type(submit_mapping.callback) == "function", "sensitive authentication submit mapping is missing")
+  submit_mapping.callback()
+  assert(
+    vim.wait(3000, function()
+      for _, notification in ipairs(authentication_notifications) do
+        if notification.message:find("Authentication completed", 1, true) then
+          return true
+        end
+      end
+      return false
+    end, 10),
+    "fake credential did not complete the structured authentication flow"
+  )
+  for _, notification in ipairs(authentication_notifications) do
+    assert(not notification.message:find(secret, 1, true), "authentication secret leaked into a notification")
+  end
+  assert(not buffers_contain(secret), "submitted authentication secret remained in a Neovim buffer")
+  local after_auth = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+  assert(not after_auth:find(secret, 1, true), "authentication secret leaked into the transcript")
+  secret = nil
+  vim.notify = original_notify
+
+  pi.reload(root)
+  assert(
+    vim.wait(3000, function()
+      local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+      return text:find("Reloaded RPC resources", 1, true) ~= nil and text:find("Run RPC tests", 1, true) == nil
+    end, 20),
+    "resource reload did not replace Extension status and widget projection"
   )
 
   pi.submit("/fixture-prefill", root)

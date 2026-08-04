@@ -15,6 +15,7 @@ plugin/pi.lua
         -> pi.client -> pi.protocol
         -> pi.ui.chat
         -> pi.ui.dialog -> pi.ui.dialog_surface
+        -> pi.ui.admin -> pi.ui.dialog_surface
 
 pi.commands.*
   -> pi.runtime
@@ -66,6 +67,8 @@ through a late top-level require.
 | Component composition, display mirrors, activity state, frontend delegation | `pi.ui.chat` |
 | Prompt and footer buffers/windows | `pi.ui.input` |
 | Command-menu buffer/window/matches/selection | `pi.ui.command_menu` |
+| Administrative action generations and active authentication prompt correlation | `pi.commands.admin` |
+| Administrative selectors, concealed input, model-scope picker, changelog window | `pi.ui.admin` / `pi.ui.dialog_surface` |
 | Permission queue, inline projection, focus trap | `pi.ui.permission` |
 | Generic Extension dialog queue and request correlation | `pi.ui.dialog` |
 | Native generic dialog buffers, windows, and mappings | `pi.ui.dialog_surface` |
@@ -115,6 +118,16 @@ commands such as auto-retry do not update that mirror optimistically: after a
 successful mutation they request a fresh state snapshot, while failures leave
 the previous value intact. Retry activity remains projected until Pi emits the
 authoritative `agent_settled` event.
+
+Administrative commands are capability-gated from each Client's authoritative
+`rpcCapabilities` snapshot. The marker travels with that project's discovered
+command table, so projects connected to different Pi versions cannot alter one
+another's command availability. `pi.commands.admin` retains only transient
+request generations, flow/prompt IDs, and presentation handles; provider
+credentials, trust, resources, model scope, imported sessions, sharing, and
+changelog data remain Pi-owned. Runtime routes authentication events and the
+adapter validates them against the current Client and active flow before any UI
+action.
 
 Chat is the only composition root that knows all child components. InputArea,
 CommandMenu, PermissionPanel, and WidgetArea receive explicit dependency tables
@@ -175,6 +188,15 @@ and client exit, session replacement, or Chat destruction discard all remaining
 generic dialogs without fabricating answers. `pi.ui.dialog_surface` owns the
 native responsive select, confirm, input, and editor presentation.
 
+`pi.ui.admin` owns native administrative selection, confirmation, model-scope,
+and read-only Markdown surfaces. Authentication sensitivity comes from the RPC
+event, never prompt prose. Sensitive input stores plaintext only in an
+ephemeral Lua field while its nofile buffer holds a mask with swap and
+persistent undo disabled; closing the surface wipes the buffer and drops the
+field. Resource reload success clears the prior Extension dialog, permission
+status mirror, and widget projection before Runtime refreshes state, commands,
+models, and statistics. New Extension events then repopulate those mirrors.
+
 Permission decisions remain in the bundled permission Extension. The Lua
 permission panel only displays structured requests, validates interaction,
 captures focus, and returns a response. Missing UI, cancellation, and teardown
@@ -205,6 +227,7 @@ focused shared helpers. No aggregate security index or policy state remains.
 | Chat activity and component lifecycle | `tests/lua/ui/chat/lifecycle_spec.lua` |
 | Input and command-menu ownership | `tests/lua/ui/input_spec.lua`, `command_menu_spec.lua` |
 | Settings and session-state controls | `tests/lua/commands/ui_spec.lua`, `session_spec.lua` |
+| Administrative adapters and sensitive native surfaces | `tests/lua/commands/admin_spec.lua`, `tests/lua/ui/admin_spec.lua` |
 | Widget and permission ownership | `tests/lua/ui/widget_spec.lua`, `permission_spec.lua` |
 | Generic Extension dialog manager and native surface | `tests/lua/ui/dialog_spec.lua`, small-viewport and RPC integration specs |
 | Chat facade contract | `tests/lua/ui/chat/facade_spec.lua` |

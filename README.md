@@ -12,7 +12,10 @@ streamed transcript, user message blocks, collapsible thinking and tool output,
 persistent prompt editor, command completion, model/thinking controls, queue
 state, live footer, settings, session discovery and tree navigation, fork/clone,
 compaction, bounded history pagination, and native Extension select, confirm,
-input, and editor dialogs.
+input, and editor dialogs. When Pi advertises structured administrative
+workflows, provider login/logout, project trust, resource reload, model cycling
+scope, JSONL import, session sharing, and the installed changelog also stay
+inside the native Neovim frontend.
 The bundled todo Extension makes the agent decompose complex implementation work
 into a branch-aware plan, keep it current during execution, and render its
 compact live plan inside the conversation transcript.
@@ -32,9 +35,10 @@ Older Pi processes retain the complete `get_messages` compatibility path.
 - Neovim 0.10 or newer
 - `pi` available on `PATH` with the `extension_ui_cancel` RPC event supported;
   `list_sessions` and `navigate_tree` capabilities enable native session
-  discovery and navigation, and `history_pagination` enables bounded history
-  loading
-- A model configured in Pi (`pi`, then `/login` when needed)
+  discovery and navigation, `history_pagination` enables bounded history
+  loading, and `administrative_workflows` enables native Pi administration
+- A model configured in Pi (use native `/login` when supported, or Pi's TUI on
+  an older RPC process)
 - Optional Tree-sitter parsers for syntax highlighting in fenced-code languages
 - Clipboard image capture uses `wl-paste` on Wayland or `xclip` on X11.
 - Optional `snacks.nvim` with `image.enabled = true` enables true terminal
@@ -179,6 +183,12 @@ viewport the surface reuses the current window and restores its previous buffer
 and local options when it closes. Permission prompts remain a separate,
 fail-closed surface with no client-invented timeout.
 
+A structurally sensitive authentication prompt keeps its value only in
+ephemeral Lua state. Its nofile buffer contains an equal-length mask, has swap
+and persistent undo disabled, and is wiped before the value is submitted to Pi.
+Secrets are never added to the prompt buffer, transcript, notifications, or
+command history.
+
 `/resume` uses Pi's authoritative, current-project session catalogue. The
 native picker displays the stored name or preview, message count, model, and
 update date, and loads additional bounded pages through Pi-owned opaque
@@ -202,7 +212,9 @@ loaded from extensions, prompt templates, and skills. Command names are fuzzy
 matched and ranked while matched characters, the active row, parameter hints,
 and descriptions retain distinct semantic highlighting. Commands implemented by the RPC
 frontend include `/settings`, `/model`, `/copy`, `/name`, `/session`, `/hotkeys`,
-`/fork`, `/clone`, `/tree`, `/new`, `/compact`, `/resume`, `/export`, and `/quit`.
+`/fork`, `/clone`, `/tree`, `/new`, `/compact`, `/resume`, `/export`, `/login`,
+`/logout`, `/trust`, `/reload`, `/scoped-models`, `/import`, `/share`,
+`/changelog`, and `/quit`.
 pi.nvim also provides `/thinking`, `/permissions`, `/mode`, `/layout`, `/commands`, `/abort`, and `/clear`.
 The bundled `/todos [show|hide]` command controls the task plan rendered inline
 at the end of the conversation. The agent's
@@ -214,10 +226,26 @@ verification, and resolve the list before its final response. Pending,
 in-progress, and completed state is restored from the active Pi session branch.
 Both `/new` and `/clear` start a fresh Pi session, so `/clear` resets the model
 conversation and context usage instead of only hiding the rendered transcript.
-Pi TUI commands that RPC 0.83 does not expose remain searchable and report the
-limitation instead of being sent to the model. Input beginning
+Administrative commands are enabled per project only when that Pi process
+advertises `administrative_workflows`. Older processes keep the commands
+searchable as TUI-only and report a precise limitation instead of sending them
+to the model. Input beginning
 with `!` runs through Pi's RPC bash command. Unknown slash commands pass through
 to Pi so extension, prompt-template, and skill commands continue to work.
+
+On an `administrative_workflows` capable process, `/trust` changes Pi's saved
+decision through structured RPC. Pi reports active and saved decisions
+separately; when a restart is required, pi.nvim does not claim that the running
+process changed. This operation never changes the bundled permission mode.
+
+`/login` and `/logout` use Pi-owned provider metadata and authentication flows.
+Browser URLs and device codes are reported as structured notices, while values
+marked `sensitive` use the concealed scratch input described above. Successful
+authentication refreshes Pi state, models, and commands. `/reload` asks Pi to
+reload its resources in place, then clears stale Extension status/widgets and
+accepts the replacement state published by reloaded Extensions. `/share`
+requires explicit confirmation because Pi creates an external private gist;
+pi.nvim never implements GitHub access itself.
 
 Example visual-mode mapping:
 

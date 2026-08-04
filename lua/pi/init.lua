@@ -7,6 +7,7 @@ local session_cmds = require("pi.commands.session")
 local action_cmds = require("pi.commands.action")
 local ui_cmds = require("pi.commands.ui")
 local permission_cmds = require("pi.commands.permission")
+local admin_cmds = require("pi.commands.admin")
 
 local M = {}
 
@@ -37,6 +38,14 @@ M.settings = ui_cmds.settings
 M.hotkeys = ui_cmds.hotkeys
 M.select_permission_mode = permission_cmds.select
 M.cycle_permission_mode = permission_cmds.cycle
+M.login = admin_cmds.login
+M.logout = admin_cmds.logout
+M.trust = admin_cmds.trust
+M.reload = admin_cmds.reload
+M.scoped_models = admin_cmds.scoped_models
+M.import_session = admin_cmds.import_session
+M.share = admin_cmds.share
+M.changelog = admin_cmds.changelog
 
 function M.setup(opts)
   config.setup(opts)
@@ -93,6 +102,22 @@ function M.submit(text, root, behavior, images)
     M.commands(root)
   elseif command == "hotkeys" then
     M.hotkeys()
+  elseif command == "login" then
+    M.login(root, arguments)
+  elseif command == "logout" then
+    M.logout(root, arguments)
+  elseif command == "trust" then
+    M.trust(root)
+  elseif command == "reload" then
+    M.reload(root)
+  elseif command == "scoped-models" then
+    M.scoped_models(root)
+  elseif command == "import" then
+    M.import_session(root, arguments)
+  elseif command == "share" then
+    M.share(root)
+  elseif command == "changelog" then
+    M.changelog(root)
   elseif command == "abort" then
     M.abort(root)
   elseif command == "clear" then
@@ -115,6 +140,8 @@ runtime.set_ui_actions({
   cycle_model = M.cycle_model,
   cycle_permission_mode = M.cycle_permission_mode,
   cycle_thinking_level = M.cycle_thinking_level,
+  admin_event = admin_cmds.handle_event,
+  admin_discard = admin_cmds.discard,
 })
 
 function M.track_buffer(bufnr)

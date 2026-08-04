@@ -1,5 +1,16 @@
 local M = {}
 
+local administrative_commands = {
+  ["scoped-models"] = true,
+  import = true,
+  share = true,
+  changelog = true,
+  trust = true,
+  login = true,
+  logout = true,
+  reload = true,
+}
+
 local builtins = {
   { name = "settings", description = "Open settings menu" },
   { name = "model", description = "Select model", argument_hint = "<provider/model>" },
@@ -36,12 +47,22 @@ local builtins = {
   { name = "mode", description = "Alias for /permissions", argument_hint = "<manual|acceptEdits|auto|plan>" },
 }
 
-function M.builtin_commands()
-  return vim.deepcopy(builtins)
+function M.builtin_commands(options)
+  local commands = vim.deepcopy(builtins)
+  if options and options.administrative_workflows then
+    for _, command in ipairs(commands) do
+      if administrative_commands[command.name] then
+        command.tui_only = nil
+      end
+    end
+  end
+  return commands
 end
 
 function M.merge(dynamic_commands)
-  local commands = M.builtin_commands()
+  local commands = M.builtin_commands({
+    administrative_workflows = dynamic_commands and dynamic_commands.administrative_workflows == true,
+  })
   local seen = {}
   for _, command in ipairs(commands) do
     seen[command.name] = true

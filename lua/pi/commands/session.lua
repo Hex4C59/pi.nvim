@@ -413,7 +413,9 @@ function M.commands(root)
       notify_error(err)
       return
     end
-    local commands = catalog.merge(data.commands)
+    local dynamic_commands = data.commands or {}
+    dynamic_commands.administrative_workflows = runtime.has_capability(client, "administrative_workflows")
+    local commands = catalog.merge(dynamic_commands)
     vim.ui.select(commands, {
       prompt = "Pi commands",
       format_item = function(command)

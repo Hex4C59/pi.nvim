@@ -14,6 +14,14 @@ local patched_functions = {
   "copy_last_response",
   "new_session",
   "select_permission_mode",
+  "login",
+  "logout",
+  "trust",
+  "reload",
+  "scoped_models",
+  "import_session",
+  "share",
+  "changelog",
 }
 local originals = {}
 for _, name in ipairs(patched_functions) do
@@ -57,6 +65,13 @@ local function run()
     merged[#merged].name == "dynamic" and #merged == #catalog.builtin_commands() + 1,
     "command merge changed precedence"
   )
+  local capable = { administrative_workflows = true }
+  local native_admin = catalog.merge(capable)
+  for _, command in ipairs(native_admin) do
+    if command.name == "login" or command.name == "scoped-models" then
+      assert(not command.tui_only, "administrative capability did not enable native command metadata")
+    end
+  end
 
   pi.select_model = function(value, query)
     calls.model = value
@@ -90,6 +105,30 @@ local function run()
   pi.select_permission_mode = function(value, mode)
     calls.permissions = { value, mode }
   end
+  pi.login = function(value, query)
+    calls.login = { value, query }
+  end
+  pi.logout = function(value, query)
+    calls.logout = { value, query }
+  end
+  pi.trust = function(value)
+    calls.trust = value
+  end
+  pi.reload = function(value)
+    calls.reload = value
+  end
+  pi.scoped_models = function(value)
+    calls.scoped_models = value
+  end
+  pi.import_session = function(value, path)
+    calls.import_session = { value, path }
+  end
+  pi.share = function(value)
+    calls.share = value
+  end
+  pi.changelog = function(value)
+    calls.changelog = value
+  end
 
   pi.submit("/model openai/gpt-test", root)
   pi.submit("/thinking high", root)
@@ -101,6 +140,14 @@ local function run()
   pi.submit("/clear", root)
   pi.submit("/permissions auto", root)
   pi.submit("/mode plan", root)
+  pi.submit("/login fixture", root)
+  pi.submit("/logout fixture", root)
+  pi.submit("/trust", root)
+  pi.submit("/reload", root)
+  pi.submit("/scoped-models", root)
+  pi.submit("/import /tmp/export.jsonl", root)
+  pi.submit("/share", root)
+  pi.submit("/changelog", root)
   pi.submit("!printf hello", root)
 
   assert(calls.model == root, "model command was not routed")
@@ -114,6 +161,15 @@ local function run()
   assert(calls.copy == root, "copy command was not routed")
   assert(calls.new_session == root, "clear command did not start a fresh session")
   assert(calls.permissions[1] == root and calls.permissions[2] == "plan", "permission mode command was not routed")
+  assert(calls.login[1] == root and calls.login[2] == "fixture", "login command was not routed")
+  assert(calls.logout[1] == root and calls.logout[2] == "fixture", "logout command was not routed")
+  assert(calls.trust == root and calls.reload == root, "trust or reload command was not routed")
+  assert(calls.scoped_models == root, "scoped-models command was not routed")
+  assert(
+    calls.import_session[1] == root and calls.import_session[2] == "/tmp/export.jsonl",
+    "import command was not routed"
+  )
+  assert(calls.share == root and calls.changelog == root, "share or changelog command was not routed")
   assert(calls.bash[1] == "printf hello" and calls.bash[2] == root, "bash command was not routed")
 end
 

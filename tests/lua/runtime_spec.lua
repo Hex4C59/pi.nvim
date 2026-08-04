@@ -24,6 +24,8 @@ function FakeChat.new(chat_root)
     status_items = {},
     open_count = 0,
     destroy_count = 0,
+    clear_widgets_count = 0,
+    reset_permission_count = 0,
   }, FakeChat)
   table.insert(created_chats, chat)
   return chat
@@ -104,6 +106,14 @@ end
 
 function FakeChat:destroy()
   self.destroy_count = self.destroy_count + 1
+end
+
+function FakeChat:clear_widgets()
+  self.clear_widgets_count = self.clear_widgets_count + 1
+end
+
+function FakeChat:reset_permission_mode()
+  self.reset_permission_count = self.reset_permission_count + 1
 end
 
 local clients = {}
@@ -227,6 +237,18 @@ local function run()
   package.loaded["pi.runtime"] = nil
   runtime = require("pi.runtime")
 
+  local admin_events = {}
+  local admin_discards = 0
+  runtime.set_ui_actions({
+    admin_event = function(event_client, event)
+      table.insert(admin_events, { client = event_client, event = event })
+    end,
+    admin_discard = function(event_client)
+      assert(event_client ~= nil)
+      admin_discards = admin_discards + 1
+    end,
+  })
+
   local notifications = {}
   vim.notify = function(message, level)
     table.insert(notifications, { message = message, level = level })
@@ -248,6 +270,7 @@ local function run()
     "session reload did not invalidate pending session actions"
   )
   assert(dialog_discards == 1, "session reload did not discard dialogs from the previous session")
+  assert(admin_discards == 1, "session reload did not discard administrative UI")
   assert(chat.reset_count == 1, "session reload bypassed the Chat projection facade")
   assert(#requests_for(client, "get_state") == 1, "session reload did not refresh state exactly once")
   assert(#requests_for(client, "get_session_stats") == 1, "session reload did not refresh stats exactly once")
@@ -269,6 +292,11 @@ local function run()
       and dialog_cancellations[1].client == client
       and dialog_cancellations[1].id == "server-cancelled",
     "runtime did not route the authoritative Extension UI cancellation"
+  )
+  client:emit({ type = "auth_prompt", flowId = "flow", promptId = "prompt", sensitive = true })
+  assert(
+    #admin_events == 1 and admin_events[1].client == client and admin_events[1].event.promptId == "prompt",
+    "runtime did not route structured authentication events"
   )
 
   runtime.refresh_stats(client)
@@ -303,6 +331,31 @@ local function run()
     },
   })
   assert(#chat.commands == 2, "discovered commands did not reach Chat")
+
+  client.session.rpcCapabilities = { "administrative_workflows" }
+  runtime.refresh_commands(client)
+  respond(latest_request(client, "get_commands"), true, {
+    commands = {
+      { name = "builtin", source = "builtin" },
+      { name = "extension", source = "extension" },
+    },
+  })
+  assert(chat.commands.administrative_workflows == true, "command snapshot lost its project RPC capability")
+
+  runtime.replace_extension_projection(client)
+  assert(
+    chat.clear_widgets_count == 1 and chat.reset_permission_count == 1,
+    "resource reload did not clear stale Extension projection state"
+  )
+  respond(latest_request(client, "get_state"), true, { rpcCapabilities = { "administrative_workflows" } })
+  respond(latest_request(client, "get_commands"), true, {
+    commands = {
+      { name = "builtin", source = "builtin" },
+      { name = "extension", source = "extension" },
+    },
+  })
+  respond(latest_request(client, "get_available_models"), true, { models = {} })
+  respond(latest_request(client, "get_session_stats"), true, { cost = 4 })
 
   runtime.send_prompt("/builtin", nil, root)
   local builtin_prompt = latest_request(client, "prompt")

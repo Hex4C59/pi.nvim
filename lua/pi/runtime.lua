@@ -5,6 +5,7 @@ local Chat = chat_ui.Chat
 local text_content = require("pi.message").text_content
 local dialog = require("pi.ui.dialog")
 local session_picker = require("pi.ui.session_picker")
+local admin_ui = require("pi.ui.admin")
 
 local M = {}
 local clients = {}
@@ -74,14 +75,14 @@ local function notify_error(err)
 end
 
 local rpc_unavailable_commands = {
-  ["scoped-models"] = "Pi RPC 0.83 cannot change the model cycling scope; configure Pi's models setting in the Pi TUI.",
-  import = "Pi RPC 0.83 cannot import external JSONL. Use /resume <path> for an existing Pi session.",
-  share = "Pi RPC 0.83 cannot create a shared gist. Use /export or run /share in the Pi TUI.",
-  changelog = "Pi RPC 0.83 does not expose the changelog view. Run /changelog in the Pi TUI.",
-  trust = "Project trust cannot be changed inside an active RPC process. Update project_trust in pi.nvim setup and restart Pi.",
-  login = "Authentication is not exposed by Pi RPC 0.83. Run pi in a terminal, use /login, then restart the Pi client.",
-  logout = "Authentication is not exposed by Pi RPC 0.83. Run /logout in the Pi TUI, then restart the Pi client.",
-  reload = "Pi RPC 0.83 cannot reload resources in place. Restart the Pi client after changing extensions, skills, or prompts.",
+  ["scoped-models"] = "The installed Pi process does not advertise structured model-scope administration; use /scoped-models in the Pi TUI.",
+  import = "The installed Pi process does not advertise structured JSONL import. Use /resume <path> for an existing Pi session.",
+  share = "The installed Pi process does not advertise structured session sharing. Use /export or run /share in the Pi TUI.",
+  changelog = "The installed Pi process does not advertise structured changelog access. Run /changelog in the Pi TUI.",
+  trust = "The installed Pi process does not advertise structured project trust. Update project_trust in pi.nvim setup and restart Pi.",
+  login = "The installed Pi process does not advertise structured authentication. Run /login in the Pi TUI, then restart the Pi client.",
+  logout = "The installed Pi process does not advertise structured authentication. Run /logout in the Pi TUI, then restart the Pi client.",
+  reload = "The installed Pi process does not advertise structured resource reload. Restart Pi after changing extensions, skills, or prompts.",
 }
 
 local function client_root()
@@ -101,6 +102,8 @@ local function chat_for(root)
   return chats[root]
 end
 
+local has_capability
+
 local function refresh_commands(client)
   local project = project_for_client(client)
   if not project then
@@ -115,6 +118,7 @@ local function refresh_commands(client)
           project.commands_by_name[command.name] = command
         end
       end
+      commands.administrative_workflows = has_capability(client, "administrative_workflows")
       chat_for(client.root):set_commands(commands)
     end
   end)
@@ -170,7 +174,7 @@ local function refresh_state(client)
   end)
 end
 
-local function has_capability(client, capability)
+has_capability = function(client, capability)
   for _, advertised in ipairs((client.session or {}).rpcCapabilities or {}) do
     if advertised == capability then
       return true
@@ -298,6 +302,7 @@ local function reload_session(client)
     project.session_action_generation = project.session_action_generation + 1
   end
   dialog.discard(client)
+  invoke_ui_action("admin_discard", client)
   refresh_state(client)
   refresh_stats(client)
   if project then
@@ -398,6 +403,13 @@ local function attach(client)
       })
     elseif event.type == "extension_ui_cancel" then
       dialog.cancel(client, event.id)
+    elseif
+      event.type == "auth_prompt"
+      or event.type == "auth_prompt_cancel"
+      or event.type == "auth_notice"
+      or event.type == "auth_complete"
+    then
+      invoke_ui_action("admin_event", client, event)
     elseif event.type == "agent_start" then
       chat:set_activity("working")
     elseif event.type == "agent_settled" then
@@ -431,6 +443,7 @@ local function attach(client)
     elseif event.type == "client_exit" then
       project.direct_bash_request_id = nil
       dialog.discard(client)
+      invoke_ui_action("admin_discard", client)
       chat:reset_permission_mode()
       chat:clear_widgets()
       if not event.expected then
@@ -581,6 +594,7 @@ local function stop(root)
       project.unsubscribe = nil
     end
     dialog.discard(client)
+    invoke_ui_action("admin_discard", client)
     client:stop()
   end
   local chat = chats[root]
@@ -634,6 +648,51 @@ local function open_session_picker(options)
   return session_picker.open(options)
 end
 
+local function open_admin_select(options)
+  return admin_ui.select(options)
+end
+
+local function open_admin_confirm(options)
+  return admin_ui.confirm(options)
+end
+
+local function open_admin_input(options)
+  return admin_ui.input(options)
+end
+
+local function open_admin_multi_select(options)
+  return admin_ui.multi_select(options)
+end
+
+local function show_admin_markdown(options)
+  return admin_ui.show_markdown(options)
+end
+
+local function refresh_administrative_state(client)
+  if not client_is_current(client) then
+    return
+  end
+  refresh_state(client)
+  refresh_commands(client)
+  client:request("get_available_models", {}, function(success, _, err)
+    if client_is_current(client) and not success then
+      notify_error(err or "Unable to refresh available models")
+    end
+  end)
+end
+
+local function replace_extension_projection(client)
+  if not client_is_current(client) then
+    return
+  end
+  dialog.discard(client)
+  local chat = chat_for(client.root)
+  chat:reset_permission_mode()
+  chat:clear_widgets()
+  refresh_stats(client)
+  refresh_administrative_state(client)
+end
+
 M.clients = clients
 M.chats = chats
 M.notify_error = notify_error
@@ -643,11 +702,20 @@ M.chat_for = chat_for
 M.refresh_commands = refresh_commands
 M.refresh_stats = refresh_stats
 M.refresh_state = refresh_state
+M.refresh_administrative_state = refresh_administrative_state
+M.replace_extension_projection = replace_extension_projection
+M.has_capability = has_capability
+M.client_is_current = client_is_current
 M.reload_session = reload_session
 M.load_older_history = load_older_history
 M.begin_session_action = begin_session_action
 M.session_action_current = session_action_current
 M.open_session_picker = open_session_picker
+M.open_admin_select = open_admin_select
+M.open_admin_confirm = open_admin_confirm
+M.open_admin_input = open_admin_input
+M.open_admin_multi_select = open_admin_multi_select
+M.show_admin_markdown = show_admin_markdown
 M.get_client = get_client
 M.with_prompt = with_prompt
 M.send_prompt = send_prompt
