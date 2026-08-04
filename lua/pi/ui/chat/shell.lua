@@ -101,6 +101,7 @@ function Shell:layout()
   end
 
   local permission_active = self.deps.permission_active()
+  local inline_menu_active = not permission_active and self.deps.inline_menu_active()
   if self.position == "bottom" then
     if permission_active then
       if not self.permission_restore_height then
@@ -118,7 +119,7 @@ function Shell:layout()
   local height = vim.api.nvim_win_get_height(self.win)
   local transcript_width_changed = self.deps.update_transcript_width(width)
   local footer_height = 1
-  local widget_hidden = permission_active or self.deps.command_menu_visible()
+  local widget_hidden = permission_active or inline_menu_active or self.deps.command_menu_visible()
   local widget_budget = widget_hidden and 0 or math.max(0, height - footer_height - 7)
   local above_widget_height, below_widget_height = self.deps.measure_widgets(width, widget_budget)
   local widget_height = above_widget_height + below_widget_height
@@ -130,6 +131,12 @@ function Shell:layout()
   local input_row = math.max(0, height - footer_height - below_widget_height - input_height - 2)
   local footer_row = math.max(0, height - footer_height)
   self.deps.set_permission_height(input_row)
+
+  local inline_menu_height = 0
+  if inline_menu_active then
+    inline_menu_height = math.min(self.deps.inline_menu_height(), math.max(1, input_row))
+    self.deps.layout_inline_menu(math.max(0, input_row - inline_menu_height), width, inline_menu_height)
+  end
 
   local input_config = self.deps.input_window_config(input_row, math.max(1, width - 2), input_height)
   input_config.focusable = not permission_active
@@ -150,7 +157,7 @@ function Shell:layout()
   end
   self.deps.layout_widgets(width, input_row, input_height, above_widget_height, below_widget_height)
 
-  local overlay_height = input_height + footer_height + 2 + widget_height
+  local overlay_height = input_height + footer_height + 2 + widget_height + inline_menu_height
   local overlay_changed = self.overlay_height ~= overlay_height
   self.overlay_height = overlay_height
   self.deps.render_status()
@@ -165,6 +172,7 @@ function Shell:close()
   self.deps.clear_transcript_images()
   self.deps.cancel_permissions()
   self.deps.close_command_menu()
+  self.deps.close_inline_menu({ focus = false, layout = false })
   self.deps.close_widget_windows()
   self.deps.close_input_windows()
   if self.win and vim.api.nvim_win_is_valid(self.win) then

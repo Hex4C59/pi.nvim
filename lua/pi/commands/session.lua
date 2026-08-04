@@ -3,7 +3,6 @@ local session_file = require("pi.session_file")
 local text_content = require("pi.message").text_content
 local compact_count = require("pi.format").compact_count
 local truncate_display = require("pi.format").truncate_display
-local catalog = require("pi.commands.catalog")
 
 local M = {}
 
@@ -128,109 +127,146 @@ end
 function M.tree(root)
   local client = runtime.get_client(root)
   local action_token = runtime.begin_session_action(client)
+  local tree_surface = runtime.open_inline_select(client.root, {
+    title = "Pi session tree",
+    items = {},
+    loading = true,
+  })
   client:request("get_tree", {}, function(success, data, err)
-    if not action_current(client, action_token) then
+    if not action_current(client, action_token) or tree_surface.closed then
       return
     end
     if not success then
+      tree_surface:set_error(err)
       notify_error(err)
       return
     end
     local items = flatten_tree(data.tree, data.leafId)
-    vim.ui.select(items, {
-      prompt = "Pi session tree",
+    tree_surface = tree_surface:replace({
+      title = "Pi session tree",
+      items = items,
+      keep_open = true,
+      current_key = data.leafId,
+      key_item = function(item)
+        return item.node.entry.id
+      end,
       format_item = function(item)
         return item.label
       end,
-    }, function(item)
-      if not item or not action_current(client, action_token) then
-        return
-      end
-      local entry = item.node.entry
-      local choices = {}
-      if has_capability(client, "navigate_tree") and entry.id ~= data.leafId then
-        table.insert(choices, "Navigate here")
-        table.insert(choices, "Navigate here with summary")
-      end
-      local user_message = entry.type == "message" and entry.message and entry.message.role == "user"
-      if user_message then
-        table.insert(choices, "Fork from this message")
-        table.insert(choices, "Copy message")
-      end
-      if #choices == 0 then
-        vim.notify(
-          "The installed Pi RPC can inspect this node but does not advertise navigate_tree",
-          vim.log.levels.INFO,
-          { title = "Pi" }
-        )
-        return
-      end
-      vim.ui.select(choices, { prompt = "Tree action" }, function(selected_action)
-        if not selected_action or not action_current(client, action_token) then
+      on_select = function(item)
+        if not item or not action_current(client, action_token) then
           return
         end
-        if selected_action == "Navigate here" or selected_action == "Navigate here with summary" then
-          client:request("navigate_tree", {
-            entryId = entry.id,
-            summarize = selected_action == "Navigate here with summary",
-          }, function(ok, result, navigate_err)
-            if not action_current(client, action_token) then
-              return
-            end
-            if not ok then
-              notify_error(navigate_err)
-            elseif not result.cancelled then
-              runtime.reload_session(client)
-              if result.editorText ~= nil then
-                runtime.chat_for(client.root):set_input(result.editorText)
-              end
-            end
-          end, 0)
-        elseif selected_action == "Fork from this message" then
-          client:request("fork", { entryId = entry.id }, function(ok, result, fork_err)
-            if not action_current(client, action_token) then
-              return
-            end
-            if not ok then
-              notify_error(fork_err)
-            elseif not result.cancelled then
-              runtime.reload_session(client)
-              runtime.chat_for(client.root):set_input(result.text or "")
-            end
-          end)
-        elseif selected_action == "Copy message" then
-          vim.fn.setreg("+", text_content(entry.message.content))
+        local entry = item.node.entry
+        local choices = {}
+        if has_capability(client, "navigate_tree") and entry.id ~= data.leafId then
+          table.insert(choices, { action = "navigate", label = "Navigate here" })
+          table.insert(choices, { action = "navigate_summary", label = "Navigate here with summary" })
         end
-      end)
-    end)
+        local user_message = entry.type == "message" and entry.message and entry.message.role == "user"
+        if user_message then
+          table.insert(choices, { action = "fork", label = "Fork from this message" })
+          table.insert(choices, { action = "copy", label = "Copy message" })
+        end
+        if #choices == 0 then
+          vim.notify(
+            "The installed Pi RPC can inspect this node but does not advertise navigate_tree",
+            vim.log.levels.INFO,
+            { title = "Pi" }
+          )
+          return
+        end
+        tree_surface:push({
+          title = "Tree action",
+          items = choices,
+          format_item = function(choice)
+            return choice.label
+          end,
+          on_select = function(selected_action)
+            if not selected_action or not action_current(client, action_token) then
+              return
+            end
+            if selected_action.action == "navigate" or selected_action.action == "navigate_summary" then
+              client:request("navigate_tree", {
+                entryId = entry.id,
+                summarize = selected_action.action == "navigate_summary",
+              }, function(ok, result, navigate_err)
+                if not action_current(client, action_token) then
+                  return
+                end
+                if not ok then
+                  notify_error(navigate_err)
+                elseif not result.cancelled then
+                  runtime.reload_session(client)
+                  if result.editorText ~= nil then
+                    runtime.chat_for(client.root):set_input(result.editorText)
+                  end
+                end
+              end, 0)
+            elseif selected_action.action == "fork" then
+              client:request("fork", { entryId = entry.id }, function(ok, result, fork_err)
+                if not action_current(client, action_token) then
+                  return
+                end
+                if not ok then
+                  notify_error(fork_err)
+                elseif not result.cancelled then
+                  runtime.reload_session(client)
+                  runtime.chat_for(client.root):set_input(result.text or "")
+                end
+              end)
+            elseif selected_action.action == "copy" then
+              vim.fn.setreg("+", text_content(entry.message.content))
+            end
+          end,
+        })
+      end,
+    })
   end)
 end
 
 function M.fork(root)
   local client = runtime.get_client(root)
+  local action_token = runtime.begin_session_action(client)
+  local fork_surface = runtime.open_inline_select(client.root, {
+    title = "Fork Pi session",
+    items = {},
+    loading = true,
+  })
   client:request("get_fork_messages", {}, function(success, data, err)
+    if not action_current(client, action_token) or fork_surface.closed then
+      return
+    end
     if not success then
+      fork_surface:set_error(err)
       notify_error(err)
       return
     end
-    vim.ui.select(data.messages or {}, {
-      prompt = "Fork Pi session",
+    fork_surface:replace({
+      title = "Fork Pi session",
+      items = data.messages or {},
+      key_item = function(item)
+        return item.entryId
+      end,
       format_item = function(item)
         return item.text:gsub("%s+", " ")
       end,
-    }, function(item)
-      if not item then
-        return
-      end
-      client:request("fork", { entryId = item.entryId }, function(ok, result, fork_err)
-        if not ok then
-          notify_error(fork_err)
-        elseif not result.cancelled then
-          runtime.reload_session(client)
-          runtime.chat_for(client.root):set_input(result.text or item.text)
+      on_select = function(item)
+        if not item or not action_current(client, action_token) then
+          return
         end
-      end)
-    end)
+        client:request("fork", { entryId = item.entryId }, function(ok, result, fork_err)
+          if not action_current(client, action_token) then
+            return
+          elseif not ok then
+            notify_error(fork_err)
+          elseif not result.cancelled then
+            runtime.reload_session(client)
+            runtime.chat_for(client.root):set_input(result.text or item.text)
+          end
+        end)
+      end,
+    })
   end)
 end
 
@@ -262,22 +298,10 @@ function M.name_session(name, root)
   if name and vim.trim(name) ~= "" then
     apply(name)
   else
-    vim.ui.input({ prompt = "Pi session name: ", default = client.session.sessionName or "" }, apply)
+    local chat = runtime.chat_for(client.root)
+    chat:open(true)
+    chat:set_input("/name " .. (client.session.sessionName or ""))
   end
-end
-
-function M.export_session(path, root)
-  local payload = {}
-  if path and vim.trim(path) ~= "" then
-    payload.outputPath = vim.fn.expand(vim.trim(path))
-  end
-  runtime.get_client(root):request("export_html", payload, function(success, data, err)
-    if not success then
-      notify_error(err)
-    else
-      vim.notify("Exported Pi session to " .. data.path, vim.log.levels.INFO, { title = "Pi" })
-    end
-  end)
 end
 
 function M.resume(path, root)
@@ -324,7 +348,9 @@ function M.resume(path, root)
     if not action_current(client, action_token) then
       return
     end
-    vim.ui.input({ prompt = "Pi session file: " }, switch_path)
+    local chat = runtime.chat_for(client.root)
+    chat:open(true)
+    chat:set_input("/resume ")
   end
   if path and vim.trim(path) ~= "" then
     switch_path(path)
@@ -356,79 +382,68 @@ function M.resume(path, root)
       end
     end)
   end
-  client:request("list_sessions", { limit = 50 }, function(success, data, err)
-    if not action_current(client, action_token) then
-      return
-    end
-    if not success then
-      notify_error(err)
-      return
-    end
-    runtime.open_session_picker({
-      sessions = data.sessions or {},
-      next_cursor = data.nextCursor,
-      on_more = load_more,
-      on_path = prompt_for_path,
-      on_select = function(session)
-        if not action_current(client, action_token) then
-          return
-        end
-        if type(session.path) ~= "string" or type(session.cwd) ~= "string" then
-          notify_error("Pi returned incomplete session metadata")
-          return
-        end
-        local same, roots = session_file.same_root(client.root, session.cwd)
-        if not same then
-          if type(roots) == "string" then
-            notify_error(roots)
-          else
-            notify_error(
-              ("Cross-project session resume is blocked. Current root: %s; session root: %s"):format(
-                roots.current,
-                roots.session
-              )
-            )
-          end
-          return
-        end
-        client:request("switch_session", { sessionPath = session.path }, function(ok, result, switch_err)
+  local function load_catalog(active_surface)
+    client:request("list_sessions", { limit = 50 }, function(success, data, err)
+      if not action_current(client, action_token) or active_surface.closed then
+        return
+      end
+      if not success then
+        active_surface:set_error(err)
+        notify_error(err)
+        return
+      end
+      active_surface:close()
+      runtime.open_session_picker({
+        root = client.root,
+        sessions = data.sessions or {},
+        next_cursor = data.nextCursor,
+        on_more = load_more,
+        on_path = prompt_for_path,
+        on_select = function(session)
           if not action_current(client, action_token) then
             return
           end
-          if not ok then
-            notify_error(switch_err)
-          elseif result and not result.cancelled then
-            runtime.reload_session(client)
+          if type(session.path) ~= "string" or type(session.cwd) ~= "string" then
+            notify_error("Pi returned incomplete session metadata")
+            return
           end
-        end)
-      end,
-    })
-  end)
-end
-
-function M.commands(root)
-  local client = runtime.get_client(root)
-  client:request("get_commands", {}, function(success, data, err)
-    if not success then
-      notify_error(err)
-      return
-    end
-    local dynamic_commands = data.commands or {}
-    dynamic_commands.administrative_workflows = runtime.has_capability(client, "administrative_workflows")
-    local commands = catalog.merge(dynamic_commands)
-    vim.ui.select(commands, {
-      prompt = "Pi commands",
-      format_item = function(command)
-        local hint = command.argument_hint and (" " .. command.argument_hint) or ""
-        local availability = command.tui_only and "  [Pi TUI only]" or ""
-        return ("/%-32s %s%s"):format(command.name .. hint, command.description or "", availability)
-      end,
-    }, function(command)
-      if command then
-        runtime.chat_for(client.root):set_input("/" .. command.name .. " ")
-      end
+          local same, roots = session_file.same_root(client.root, session.cwd)
+          if not same then
+            if type(roots) == "string" then
+              notify_error(roots)
+            else
+              notify_error(
+                ("Cross-project session resume is blocked. Current root: %s; session root: %s"):format(
+                  roots.current,
+                  roots.session
+                )
+              )
+            end
+            return
+          end
+          client:request("switch_session", { sessionPath = session.path }, function(ok, result, switch_err)
+            if not action_current(client, action_token) then
+              return
+            end
+            if not ok then
+              notify_error(switch_err)
+            elseif result and not result.cancelled then
+              runtime.reload_session(client)
+            end
+          end)
+        end,
+      })
     end)
-  end)
+  end
+  local resume_surface = runtime.open_inline_select(client.root, {
+    title = "Pi sessions",
+    items = {},
+    loading = true,
+    on_more = function(_, active_surface)
+      load_catalog(active_surface)
+    end,
+  })
+  load_catalog(resume_surface)
 end
 
 return M

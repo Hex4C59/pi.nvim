@@ -12,6 +12,17 @@ end
 
 local pi = require("pi")
 assert(type(pi.setup) == "function", "require('pi').setup is no longer callable")
+assert(type(pi.abort) == "function", "require('pi').abort is no longer callable")
+for _, name in ipairs({
+  "commands",
+  "copy_last_response",
+  "export_session",
+  "import_session",
+  "share",
+  "changelog",
+}) do
+  assert(pi[name] == nil, "removed public Lua API is still exported: " .. name)
+end
 
 local aliases = {
   { legacy = "pi.ui.transcript_view", owner = "pi.ui.transcript.view" },
@@ -103,7 +114,6 @@ local public_commands = {
   PiTree = "0",
   PiFork = "0",
   PiClone = "0",
-  PiCommands = "0",
   PiNew = "0",
   PiCompact = "?",
   PiStatus = "0",
@@ -113,5 +123,6 @@ for name, nargs in pairs(public_commands) do
   local command = assert(commands[name], name .. " is no longer registered")
   assert(command.nargs == nargs, ("%s nargs changed from %s to %s"):format(name, nargs, tostring(command.nargs)))
 end
+assert(commands.PiCommands == nil, ":PiCommands remains registered after its public removal")
 
 print("compatibility_spec: ok")

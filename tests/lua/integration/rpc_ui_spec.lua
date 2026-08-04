@@ -111,6 +111,35 @@ local function run()
   )
   local login_completion = chat.command_menu:complete(0, "/login")
   assert(#login_completion == 1 and login_completion[1].kind == "PI", "administrative capability stayed TUI-only")
+  local function has_completion(word, base)
+    for _, match in ipairs(chat.command_menu:complete(0, base)) do
+      if match.word == word then
+        return true
+      end
+    end
+    return false
+  end
+  assert(not has_completion("/mode", "/mode"), "removed /mode command reappeared from Pi discovery")
+  assert(not has_completion("/llama", "/llama"), "removed /llama command reappeared from Pi discovery")
+
+  pi.select_model(root)
+  assert(
+    vim.wait(3000, function()
+      return chat:inline_menu_active() and chat.inline_menu:_frame() and #chat.inline_menu:_frame().items == 2
+    end, 20),
+    "model command did not open the inline selector"
+  )
+  local model_menu_buf = assert(find_buffer("inline-menu"), "inline model menu buffer was not created")
+  assert(not buffers_contain("Pi model\nPi model"), "model selector leaked into the transcript")
+  chat.inline_menu:move(1)
+  chat.inline_menu:submit()
+  assert(
+    vim.wait(3000, function()
+      return not chat:inline_menu_active() and chat.model == "fixture-alt"
+    end, 20),
+    "inline model selection did not set and refresh authoritative state"
+  )
+  assert(vim.api.nvim_buf_is_valid(model_menu_buf), "completed inline menu discarded its reusable buffer")
 
   local authentication_notifications = {}
   vim.notify = function(message, level, options)
@@ -290,8 +319,8 @@ local function run()
   assert(status:find("Auto", 1, true), "permission mode is missing from the footer")
   assert(not status:find("permissions", 1, true), "permission label should not be repeated in the footer")
   local wide_status = table.concat(chat:_status_text(120), "\n")
-  assert(wide_status:find("fixture · high", 1, true), "model state is missing from the wide footer")
-  assert(wide_status:find("fixture · high", 1, true) == 3, "model state is not aligned with the composer")
+  assert(wide_status:find("fixture-alt · high", 1, true), "model state is missing from the wide footer")
+  assert(wide_status:find("fixture-alt · high", 1, true) == 3, "model state is not aligned with the composer")
   assert(wide_status:find("Auto", 1, true), "wide footer is missing the permission mode")
   assert(not wide_status:find("permissions", 1, true), "wide footer should not repeat the permission label")
   assert(not status:find("idle", 1, true), "idle state should be hidden")
@@ -315,7 +344,7 @@ local function run()
   assert(notification:find("Auto-compact: on", 1, true), "session details are missing compaction state")
   assert(notification:find("Auto-retry: on", 1, true), "session details are missing retry state")
 
-  pi.submit("/clear", root)
+  pi.submit("/new", root)
   assert(
     vim.wait(3000, function()
       local cleared_transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
@@ -325,7 +354,7 @@ local function run()
         and cleared_status:find("context 0%", 1, true) ~= nil
         and chat.widget_area:window("aboveEditor") == nil
     end, 20),
-    "/clear did not reset the Pi session transcript and context usage"
+    "/new did not reset the Pi session transcript and context usage"
   )
   local cleared_transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
   assert(not cleared_transcript:find("Run RPC tests", 1, true), "clearing a session retained stale todo content")

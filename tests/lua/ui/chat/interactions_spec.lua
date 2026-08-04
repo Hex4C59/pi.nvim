@@ -187,25 +187,15 @@ local function run()
   assert(vim.deep_equal(plain.message.content, plain_content), "empty thinking toggle mutated the message")
   chat:toggle_thinking()
 
-  complete_assistant(chat, {
-    { type = "text", text = "latest line one\nlatest line two" },
-    { type = "thinking", thinking = "do not copy this" },
-    { type = "text", text = "tail" },
-  })
-  complete_assistant(chat, { { type = "thinking", thinking = "thinking only" } })
-  assert(chat:copy_last_assistant(), "copy did not skip the latest thinking-only assistant")
-  assert(
-    copied[#copied] == "latest line one\nlatest line two\ntail",
-    "copy did not preserve latest public multiline text"
-  )
-  assert(not copied[#copied]:find("do not copy", 1, true), "copy leaked private thinking")
+  assert(chat:_copy_text("visible line one\nvisible line two"), "visible transcript text was not copied")
+  assert(copied[#copied] == "visible line one\nvisible line two", "copy changed the visible transcript selection")
   assert(notifications[#notifications].level == vim.log.levels.INFO, "successful copy did not report completion")
 
   local transcript_before_failure = vim.deepcopy(chat.transcript.items)
   chat.copy_to_clipboard = function()
     error("clipboard offline")
   end
-  assert(not chat:copy_last_assistant(), "clipboard adapter failure was reported as success")
+  assert(not chat:_copy_text("visible selection"), "clipboard adapter failure was reported as success")
   assert(
     notifications[#notifications].message:find("clipboard offline", 1, true)
       and notifications[#notifications].level == vim.log.levels.ERROR,
@@ -213,11 +203,9 @@ local function run()
   )
   assert(vim.deep_equal(chat.transcript.items, transcript_before_failure), "clipboard failure mutated transcript state")
 
-  chat:clear()
-  complete_assistant(chat, { { type = "thinking", thinking = "no public answer" } })
   local notice_count = #notifications
-  assert(not chat:copy_last_assistant(), "thinking-only transcript produced clipboard content")
-  assert(#notifications == notice_count, "no eligible assistant should remain a quiet no-op")
+  assert(not chat:_copy_text(""), "empty transcript selection produced clipboard content")
+  assert(#notifications == notice_count, "empty transcript selection should remain a quiet no-op")
 
   chat:clear()
   chat:add_user("", {
@@ -323,6 +311,14 @@ local function run()
   view.image_at_mouse = original_image_at_mouse
   chat.image_preview.open = preview_open
   chat.image_preview.close = preview_close
+
+  local gesture = assert(
+    chat.transcript_view:begin_mouse_gesture({ winid = chat.win, line = 1, column = 1 }),
+    "Chat mouse cleanup fixture did not begin"
+  )
+  assert(gesture == chat.transcript_view.mouse_gesture.generation, "Chat mouse generation was not retained")
+  chat:close()
+  assert(chat.transcript_view.mouse_gesture == nil, "closing Chat retained an active mouse gesture")
 
   local preview_buffer = vim.api.nvim_create_buf(false, true)
   table.insert(scratch_buffers, preview_buffer)

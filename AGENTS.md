@@ -417,6 +417,7 @@ lua/pi/ui/render.lua          Stable rendering facade
 lua/pi/ui/render/             Focused pure-ish transcript renderers
 lua/pi/ui/input.lua           Prompt/status buffers, windows, and overlays
 lua/pi/ui/command_menu.lua    Completion buffer/window and selection state
+lua/pi/ui/inline_menu.lua     Bounded Chat-owned selection/input menu stack
 lua/pi/ui/widget.lua          Widget state, buffers, windows, and projection
 lua/pi/ui/dialog.lua          Generic Extension UI protocol adapter
 lua/pi/ui/permission.lua      Native permission presentation only

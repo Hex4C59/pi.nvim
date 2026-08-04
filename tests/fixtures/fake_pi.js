@@ -23,6 +23,7 @@ let freshSession = false;
 let autoRetryEnabled = true;
 let resourceGeneration = 0;
 let permissionMode = "manual";
+let activeModel = { provider: "fake", id: "fixture", contextWindow: 100000 };
 
 const runPrompt = (request, userText = request.message) => {
   respond(request);
@@ -68,7 +69,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
 
   if (request.type === "get_state") {
     respondToRequest({
-      model: { provider: "fake", id: "fixture", contextWindow: 100000 },
+      model: activeModel,
       thinkingLevel: "high",
       isStreaming: false,
       autoCompactionEnabled: true,
@@ -165,6 +166,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       { name: "fixture-clear", description: "Clear editor", source: "extension" },
       { name: "fixture-dialog-cancel", description: "Cancel a dialog", source: "extension" },
       { name: "permissions", description: "Select permission mode", source: "extension" },
+      { name: "mode", description: "Removed alias", source: "extension" },
+      { name: "llama", description: "Removed backend command", source: "extension" },
       { name: "todos", description: "Show or hide todos", source: "extension" },
       { name: "fixture-template", description: "Fixture prompt template", source: "prompt" },
     ] });
@@ -212,7 +215,17 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       cancelled: true,
     });
   } else if (request.type === "get_available_models") {
-    respondToRequest({ models: [{ provider: "fake", id: "fixture", contextWindow: 100000 }] });
+    respondToRequest({ models: [
+      { provider: "fake", id: "fixture", contextWindow: 100000 },
+      { provider: "fake", id: "fixture-alt", contextWindow: 64000 },
+    ] });
+  } else if (request.type === "set_model") {
+    activeModel = {
+      provider: request.provider,
+      id: request.modelId,
+      contextWindow: request.modelId === "fixture-alt" ? 64000 : 100000,
+    };
+    respondToRequest();
   } else if (request.type === "reload_resources") {
     resourceGeneration += 1;
     respondToRequest({
@@ -231,12 +244,6 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (request.type === "get_model_scope" || request.type === "set_model_scope") {
     const available = [{ provider: "fake", id: "fixture" }];
     respondToRequest({ available, enabled: available, allEnabled: true, persistedPatterns: [] });
-  } else if (request.type === "import_session") {
-    respondToRequest({ cancelled: true });
-  } else if (request.type === "share_session") {
-    respondToRequest({ url: "https://pi.invalid/view", gistUrl: "https://gist.invalid/id" });
-  } else if (request.type === "get_changelog") {
-    respondToRequest({ entries: [{ version: "0.83.0", markdown: "Fixture changelog" }] });
   } else if (request.type === "logout_provider") {
     respondToRequest();
   } else if (request.type === "prompt") {

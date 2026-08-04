@@ -21,7 +21,7 @@ The following surfaces are public compatibility commitments:
   README.
 - The `:PiChat`, `:PiAsk`, `:PiVisual`, `:PiBuffer`, `:PiAbort`, `:PiModel`,
   `:PiThinking`, `:PiPermissions`, `:PiSettings`, `:PiLayout`, `:PiTree`,
-  `:PiFork`, `:PiClone`, `:PiCommands`, `:PiNew`, `:PiCompact`, `:PiStatus`, and
+  `:PiFork`, `:PiClone`, `:PiNew`, `:PiCompact`, `:PiStatus`, and
   `:PiStop` commands, including their documented argument cardinality.
 - Slash commands and user-visible keymaps documented in the README. Their Lua
   implementation owner may change without changing the user-facing behavior.
@@ -39,6 +39,50 @@ a stable programmatic API until documented here. Modules below `pi.client`,
 `pi.ui.render.*`, and `pi.ui.transcript.*` are internal owners, except for the
 four compatibility aliases listed above.
 
+The main prompt is a text-entry surface locked to Insert mode whenever its
+window owns focus. `Esc` may dismiss completion or interrupt active work, but it
+does not leave the prompt. Buffer-local `Ctrl-Q` returns to the most recently
+used non-Pi editor window in Normal mode without closing Chat, discarding the
+draft, or stopping the RPC process; an invalid return window falls back to the
+Pi canvas in Normal mode. This contract applies equally to right, bottom, tab,
+and float layouts. Permission prompts retain their separate fail-closed
+`Ctrl-Q` cancellation behavior.
+
+Pi-owned selectors opened by slash commands or their `:PiModel`, `:PiThinking`,
+`:PiPermissions`, `:PiSettings`, `:PiLayout`, `:PiTree`, `:PiFork`, and
+`:PiClone` counterparts use one Chat-owned inline menu. The menu is a
+borderless, full-width, canvas-relative `nofile` surface above the prompt; it is
+temporary UI and must not create transcript messages or authoritative state.
+Printable keys filter, arrows and `Ctrl-P`/`Ctrl-N` navigate, `Backspace` edits,
+`Enter` submits, and `Tab` toggles multi-selection. `Esc` pops one bounded
+submenu or closes the root, and `Ctrl-Q` cancels the entire group before
+returning to the prior editor window. Confirmation defaults to Cancel.
+
+Opening an ordinary inline menu closes slash completion. A permission request
+cancels the ordinary menu and remains fail-closed. Chat close/destruction,
+session replacement, and process/client replacement invalidate menu callbacks
+and release its window; focus restoration must not steal focus from a newer or
+non-Chat surface. `Ctrl-L` and idle `Ctrl-P` prefill `/model `, `Alt-P` prefills
+`/permissions `, and idle `Shift-Tab` prefills `/thinking `; slash completion
+keeps priority for `Ctrl-P` and `Shift-Tab` navigation.
+
+Ordinary administrative select, confirm, multi-select, and non-sensitive auth
+input use the inline menu. RPC input marked `sensitive=true` remains isolated in
+the concealed scratch buffer. Generic Extension dialogs, tool permission
+requests, and image previews are not inline-menu surfaces.
+On Pi processes without `list_sessions`, `/resume` prefills an exact-path slash
+command; argument-less `/name` uses the same prompt-prefill pattern.
+
+Transcript mouse state is display-only and generation-scoped. A left press in
+the transcript records its owned buffer/window and byte position; a drag enters
+Neovim character selection, and release copies exactly the visible selected
+text to the `+` register. A release without a drag retains semantic tool,
+process, and image clicks. Chat close/destruction, buffer invalidation, and
+`WinClosed` invalidate the gesture before any stale callback can act. Right
+click in the prompt focuses the clicked byte position and uses the existing
+clipboard reader, attaching images or inserting text. pi.nvim does not change
+global `mouse`, `mousemodel`, or `clipboard` options.
+
 ### Process Launch Context
 
 Every Pi process started by pi.nvim appends a fixed frontend identity with
@@ -54,6 +98,15 @@ change meaning silently. A removal requires an explicitly declared breaking
 release. Before that release, document the replacement in the README and this
 file, retain a compatibility path where technically safe, and add a warning
 when it does not expose secrets or disrupt headless use.
+
+The command-surface cleanup is an intentional breaking change. `/mode`,
+`/permission`, `/clear`, `/commands`, `/changelog`, `/export`, `/import`,
+`/share`, `/abort`, `/llama`, and `/copy` are neither completed nor forwarded;
+this also filters names returned dynamically by Pi. Manual entry reports that
+the command is unsupported by pi.nvim. `:PiCommands` and the public Lua fields
+`commands`, `copy_last_response`, `export_session`, `import_session`, `share`,
+and `changelog` were removed. The lower-level `abort` Lua function, `:PiAbort`,
+prompt `Esc`, and `Ctrl-C` remain supported cancellation paths.
 
 ### State And Security
 
@@ -78,10 +131,10 @@ backend, even if startup happens to succeed.
 | `extension_ui_cancel` | Required baseline capability/event | Close exactly the matching Extension dialog and reject any late client response | Permission-sensitive requests still fail closed, but the backend is unsupported because Pi-owned timeout/cancellation cannot be projected reliably | `tests/lua/ui/dialog_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua`, `tests/smoke/extensions_smoke.mjs` |
 | `agent_settled` | Required baseline event | Mark the frontend idle only after retries, compaction retries, and queued continuations are complete | Do not reinterpret `agent_end` as a final idle event; the backend lacks the required lifecycle signal | `tests/lua/runtime_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua` |
 | `auto_retry_state` and `get_state.autoRetryEnabled` | Optional capability/state | Read the authoritative boolean; change it with `set_auto_retry`; refresh state after success before updating the display mirror | If the field is absent, show `unknown` and require an explicit Enable or Disable selection instead of guessing current state; a rejected command leaves the mirror unchanged | `tests/lua/commands/ui_spec.lua`, `tests/smoke/client_smoke.lua`, `tests/smoke/extensions_smoke.mjs` |
-| `list_sessions` | Optional capability | Request bounded, Pi-owned session catalogue pages with opaque cursors | Accept an exact session path; never scan or parse Pi's session store in Lua | `tests/lua/commands/session_spec.lua`, `tests/smoke/extensions_smoke.mjs` |
+| `list_sessions` | Optional capability | Request bounded, Pi-owned session catalogue pages with opaque cursors and append them to the inline session menu | Prefill `/resume ` for an exact session path; never scan or parse Pi's session store in Lua | `tests/lua/commands/session_spec.lua`, `tests/smoke/extensions_smoke.mjs` |
 | `navigate_tree` | Optional capability | Navigate by structured entry ID and refresh only after Pi confirms the new leaf | Allow tree inspection but report that navigation is unavailable; never simulate a branch change locally | `tests/lua/commands/session_spec.lua`, `tests/smoke/extensions_smoke.mjs` |
 | `history_pagination` | Optional capability | Use bounded `get_messages_page` responses, Pi-owned opaque cursors, and the active-leaf snapshot | Use the complete `get_messages` compatibility command; do not implement Pi context reconstruction in Lua | `tests/lua/runtime_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua`, `tests/smoke/extensions_smoke.mjs` |
-| `administrative_workflows` | Optional capability | Use structured RPC for authentication, project trust, resource reload, model scope, import, sharing, and changelog workflows | Keep commands discoverable as unavailable/TUI-only and report a precise limitation; never send them as model prompts | `tests/lua/commands/admin_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua`, `tests/smoke/client_smoke.lua` |
+| `administrative_workflows` | Optional capability | Use structured RPC for authentication, project trust, resource reload, and model scope workflows | Keep the remaining administrative commands discoverable as unavailable/TUI-only and report a precise limitation; never send them as model prompts | `tests/lua/commands/admin_spec.lua`, `tests/lua/integration/rpc_ui_spec.lua`, `tests/smoke/client_smoke.lua` |
 
 Capability dependencies are explicit. Native session discovery needs
 `list_sessions`; moving the active tree leaf independently needs

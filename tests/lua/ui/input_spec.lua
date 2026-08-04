@@ -44,6 +44,10 @@ local input_buf
 local status_buf
 local input_win
 local status_win
+local original_notify = vim.notify
+local original_mouse = vim.o.mouse
+local original_mousemodel = vim.o.mousemodel
+local original_clipboard = vim.o.clipboard
 
 local function run()
   group = vim.api.nvim_create_augroup("PiNvimInputSpec", { clear = true })
@@ -68,6 +72,9 @@ local function run()
     cycle_permission_mode = 0,
     cycle_thinking_level = 0,
     left_mouse = 0,
+    attachments = {},
+    return_to_editor = 0,
+    prefilled = {},
     submissions = {},
   }
   local flags = {
@@ -113,7 +120,8 @@ local function run()
     take_image_attachments = function()
       return { { type = "image", mimeType = "image/png", path = "/tmp/attachment.png" } }
     end,
-    add_image_attachment = function()
+    add_image_attachment = function(image)
+      table.insert(calls.attachments, image)
       return true
     end,
     submit = function(prompt, behavior, images)
@@ -139,10 +147,16 @@ local function run()
     cycle_thinking_level = function()
       calls.cycle_thinking_level = calls.cycle_thinking_level + 1
     end,
-    close = function() end,
+    prefill_command = function(command)
+      table.insert(calls.prefilled, command)
+    end,
+    return_to_editor = function()
+      calls.return_to_editor = calls.return_to_editor + 1
+      vim.api.nvim_set_current_win(parent_win)
+      vim.cmd("stopinsert")
+    end,
     toggle_tools = function() end,
     toggle_thinking = function() end,
-    copy_last_assistant = function() end,
     left_mouse = function()
       calls.left_mouse = calls.left_mouse + 1
       return true
@@ -159,6 +173,14 @@ local function run()
       return parent_win
     end,
     actions = actions,
+    clipboard = {
+      read_image = function()
+        return flags.clipboard_image, flags.clipboard_image_error
+      end,
+      read_text = function()
+        return flags.clipboard_text
+      end,
+    },
   })
 
   assert(not input:owns_buffer(nil), "InputArea claimed a buffer before construction")
@@ -214,9 +236,13 @@ local function run()
     { mode = "i", lhs = "<M-p>" },
     { mode = "i", lhs = "<C-c>" },
     { mode = "i", lhs = "<C-l>" },
+    { mode = "n", lhs = "<C-q>" },
+    { mode = "i", lhs = "<C-q>" },
+    { mode = "v", lhs = "<C-q>" },
     { mode = "n", lhs = "<C-p>" },
     { mode = "n", lhs = "<S-Tab>" },
     { mode = "i", lhs = "<LeftMouse>" },
+    { mode = "i", lhs = "<RightMouse>" },
   }) do
     local map = mapping(input_buf, case.mode, case.lhs)
     assert(type(map.callback) == "function", "prompt mapping is missing: " .. case.lhs)
@@ -224,6 +250,9 @@ local function run()
   end
   assert(mapping(input_buf, "i", "<CR>").expr == 0, "Insert Enter must not run under expression-map textlock")
   assert(mapping(input_buf, "i", "<Down>").expr == 0, "command navigation must redraw outside expression-map textlock")
+  assert(mapping(input_buf, "n", "q").lhs == nil, "prompt retained a Normal-mode close shortcut")
+  assert(mapping(input_buf, "n", "<C-x>").lhs == nil, "prompt retained Normal-mode Ctrl-X copy")
+  assert(mapping(input_buf, "i", "<C-x>").lhs == nil, "prompt retained Insert-mode Ctrl-X copy")
 
   mapping(input_buf, "i", "<Down>").callback()
   mapping(input_buf, "i", "<Up>").callback()
@@ -234,13 +263,19 @@ local function run()
   mapping(input_buf, "n", "<C-p>").callback()
   mapping(input_buf, "n", "<S-Tab>").callback()
   mapping(input_buf, "i", "<LeftMouse>").callback()
-  assert(
-    calls.cycle_permission_mode == 1 and state.permission_mode == nil,
-    "permission shortcut changed local authority"
-  )
+  assert(state.permission_mode == nil, "permission shortcut changed local authority")
   assert(calls.abort == 1, "abort shortcut did not delegate")
-  assert(calls.select_model == 1 and calls.cycle_model == 1, "model shortcuts did not delegate")
-  assert(calls.cycle_thinking_level == 1, "thinking shortcut did not delegate")
+  assert(
+    vim.deep_equal(calls.prefilled, { "/permissions ", "/model ", "/model ", "/thinking " }),
+    "selection shortcuts did not prefill their slash commands"
+  )
+  assert(
+    calls.select_model == 0
+      and calls.cycle_model == 0
+      and calls.cycle_permission_mode == 0
+      and calls.cycle_thinking_level == 0,
+    "selection shortcuts bypassed the shared inline command entry points"
+  )
   assert(calls.left_mouse == 1, "prompt mouse mapping did not delegate to the transcript action")
 
   flags.command_menu_visible = true
@@ -423,9 +458,110 @@ local function run()
   )
   local cursor = vim.api.nvim_win_get_cursor(input_win)
   assert(cursor[1] == 2 and cursor[2] == #"second", "set_input did not place the cursor at the prompt end")
+  local start_insert_windows = {}
+  input._start_insert = function()
+    table.insert(start_insert_windows, vim.api.nvim_get_current_win())
+  end
   input:focus()
   assert(vim.api.nvim_get_current_win() == input_win, "focus did not select the prompt window")
-  vim.cmd("stopinsert")
+  assert(vim.deep_equal(start_insert_windows, { input_win }), "focus did not request Insert mode for the prompt window")
+
+  vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "alpha", "beta" })
+  flags.clipboard_text = "XX\nYY"
+  assert(input:paste_at_mouse({ winid = input_win, line = 1, column = 3 }), "right-click text paste was not handled")
+  assert(
+    vim.deep_equal(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), { "alXX", "YYpha", "beta" }),
+    "right-click text paste ignored the clicked byte position"
+  )
+  assert(
+    vim.deep_equal(vim.api.nvim_win_get_cursor(input_win), { 2, 2 }),
+    "right-click text paste did not leave the cursor after inserted text"
+  )
+
+  flags.clipboard_text = nil
+  flags.clipboard_image = { type = "image", mimeType = "image/png", data = "fixture" }
+  local before_image_lines = vim.api.nvim_buf_get_lines(input_buf, 0, -1, false)
+  assert(input:paste_at_mouse({ winid = input_win, line = 3, column = 2 }), "right-click image paste was not handled")
+  assert(#calls.attachments == 1 and calls.attachments[1] == flags.clipboard_image, "clipboard image was not attached")
+  assert(
+    vim.deep_equal(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), before_image_lines),
+    "image paste changed prompt text"
+  )
+
+  local clipboard_notifications = {}
+  vim.notify = function(message, level, options)
+    table.insert(clipboard_notifications, { message = message, level = level, options = options })
+  end
+  flags.clipboard_image = nil
+  flags.clipboard_image_error = "image clipboard unavailable"
+  flags.clipboard_text = "fallback"
+  assert(
+    input:paste_at_mouse({ winid = input_win, line = 3, column = 1 }),
+    "clipboard image failure did not recover with text"
+  )
+  assert(
+    vim.api.nvim_buf_get_lines(input_buf, 2, 3, false)[1] == "fallbackbeta",
+    "clipboard failure fallback inserted text at the wrong position"
+  )
+  assert(
+    #clipboard_notifications == 1 and clipboard_notifications[1].message:find("image clipboard unavailable", 1, true),
+    "clipboard image failure was not reported"
+  )
+  vim.notify = original_notify
+  flags.clipboard_image_error = nil
+  flags.clipboard_text = nil
+  assert(
+    vim.o.mouse == original_mouse and vim.o.mousemodel == original_mousemodel and vim.o.clipboard == original_clipboard,
+    "prompt mouse paste changed a global mouse or clipboard option"
+  )
+  vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "first", "second" })
+  vim.api.nvim_win_set_cursor(input_win, { 2, #"second" })
+  start_insert_windows = { input_win }
+
+  local abort_before_idle_escape = calls.abort
+  mapping(input_buf, "i", "<Esc>").callback()
+  assert(calls.abort == abort_before_idle_escape, "idle Escape interrupted work")
+  assert(#start_insert_windows == 1, "idle Escape scheduled an unnecessary mode transition")
+
+  vim.api.nvim_exec_autocmds("InsertLeave", { buffer = input_buf })
+  assert(
+    vim.wait(300, function()
+      return #start_insert_windows == 2
+    end, 5),
+    "InsertLeave guard did not request Insert mode"
+  )
+  assert(start_insert_windows[2] == input_win, "InsertLeave guard targeted the wrong window")
+
+  vim.api.nvim_exec_autocmds("InsertLeave", { buffer = input_buf })
+  vim.api.nvim_set_current_win(parent_win)
+  local guard_drained = false
+  vim.schedule(function()
+    guard_drained = true
+  end)
+  assert(
+    vim.wait(300, function()
+      return guard_drained
+    end, 5),
+    "InsertLeave guard did not drain"
+  )
+  assert(#start_insert_windows == 2, "InsertLeave guard ran after leaving the prompt")
+  assert(vim.api.nvim_get_current_win() == parent_win, "InsertLeave guard stole focus after leaving the prompt")
+  assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "n", "leaving the prompt did not preserve Normal mode")
+
+  vim.api.nvim_set_current_win(input_win)
+  assert(
+    vim.wait(300, function()
+      return #start_insert_windows == 3
+    end, 5),
+    "re-entering the prompt did not request Insert mode"
+  )
+  assert(start_insert_windows[3] == input_win, "WinEnter guard targeted the wrong window")
+  mapping(input_buf, "i", "<C-q>").callback()
+  assert(calls.return_to_editor == 1, "Ctrl-Q did not delegate prompt exit")
+  assert(vim.api.nvim_get_current_win() == parent_win, "Ctrl-Q did not leave the prompt window")
+  assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "n", "Ctrl-Q did not return in Normal mode")
+  input:focus()
+  assert(#start_insert_windows == 4, "prompt focus did not request Insert mode after Ctrl-Q")
 
   flags.accept_completion = false
   state.pending_image_count = 0
@@ -473,6 +609,7 @@ local function run()
 end
 
 local ok, err = xpcall(run, debug.traceback)
+vim.notify = original_notify
 if input then
   pcall(input.destroy, input)
 end

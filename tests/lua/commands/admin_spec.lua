@@ -3,8 +3,7 @@ local notifications = {}
 local errors = {}
 local refreshes = 0
 local projection_replacements = 0
-local session_reloads = 0
-local command_refreshes = 0
+local chat_generation = 0
 
 local client = {
   root = root,
@@ -45,6 +44,9 @@ local fake_runtime = {
   client_is_current = function(candidate)
     return candidate == client
   end,
+  chat_action_generation = function()
+    return chat_generation
+  end,
   has_capability = function(candidate, capability)
     return candidate == client
       and capability == "administrative_workflows"
@@ -61,16 +63,10 @@ local fake_runtime = {
     assert(candidate == client)
     projection_replacements = projection_replacements + 1
   end,
-  reload_session = function(candidate)
-    assert(candidate == client)
-    session_reloads = session_reloads + 1
-  end,
-  refresh_commands = function(candidate)
-    assert(candidate == client)
-    command_refreshes = command_refreshes + 1
-  end,
   chat_for = function()
-    return { update_state = function() end }
+    return {
+      update_state = function() end,
+    }
   end,
 }
 
@@ -101,15 +97,10 @@ function fake_ui.multi_select(options)
   fake_ui.last_multi = options
   return surface()
 end
-function fake_ui.show_markdown(options)
-  fake_ui.last_markdown = options
-  return surface()
-end
 fake_runtime.open_admin_select = fake_ui.select
 fake_runtime.open_admin_confirm = fake_ui.confirm
 fake_runtime.open_admin_input = fake_ui.input
 fake_runtime.open_admin_multi_select = fake_ui.multi_select
-fake_runtime.show_admin_markdown = fake_ui.show_markdown
 
 local previous_runtime = package.loaded["pi.runtime"]
 local previous_admin = package.loaded["pi.commands.admin"]
@@ -286,25 +277,16 @@ local function run()
   })
   assert(refreshes == 3, "model scope did not refresh Pi state")
 
-  admin.import_session(root, "/tmp/export.jsonl")
-  assert(latest("import_session").payload.path == "/tmp/export.jsonl", "import lost its path")
-  respond("import_session", { cancelled = false })
-  assert(session_reloads == 1 and command_refreshes == 1, "import did not reload session-owned projection")
-
-  admin.share(root)
-  assert(fake_ui.last_confirm.title == "Share Pi session", "share skipped explicit external-write confirmation")
-  fake_ui.last_confirm.on_confirm(true)
-  assert(latest("share_session").timeout == 0, "share retained a client timeout")
-  respond("share_session", { url = "https://pi.invalid/view", gistUrl = "https://gist.invalid/id" })
-  assert(notifications[#notifications].message:find("https://gist.invalid/id", 1, true), "share omitted the gist URL")
-
-  admin.changelog(root)
-  assert(latest("get_changelog").payload.limit == 10, "changelog request lost its bound")
-  respond("get_changelog", { entries = { { version = "0.83.0", markdown = "Changes" } } })
-  assert(
-    fake_ui.last_markdown.lines[1] == "# Pi 0.83.0" and fake_ui.last_markdown.lines[2] == "Changes",
-    "changelog lost structured versioned Markdown"
-  )
+  local previous_select_options = fake_ui.last_select
+  admin.login(root, "")
+  chat_generation = chat_generation + 1
+  respond("get_auth_providers", {
+    providers = {
+      { id = "stale-one", name = "Stale one", methods = { { type = "oauth", interactive = true } } },
+      { id = "stale-two", name = "Stale two", methods = { { type = "oauth", interactive = true } } },
+    },
+  })
+  assert(fake_ui.last_select == previous_select_options, "a response after Chat close reopened an admin menu")
 
   client.session.rpcCapabilities = {}
   local request_count = #client.requests

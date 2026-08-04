@@ -27,7 +27,7 @@ pi.ui.chat
      -> pi.ui.transcript.projection / retention / history
   -> pi.ui.transcript.view -> pi.ui.render
   -> pi.ui.image.window / pi.ui.image.backend
-  -> pi.ui.input / command_menu / permission / widget
+  -> pi.ui.input / command_menu / inline_menu / permission / widget
 
 pi.ui.image
   -> pi.ui.image.source / preview / scheduler
@@ -61,14 +61,16 @@ through a late top-level require.
 | Bounded content copies and summaries | `pi.ui.transcript.projection` |
 | Release candidate ordering and retained-byte total calculation | `pi.ui.transcript.retention` |
 | Persisted-message to display-event ordering | `pi.ui.transcript.history` |
-| Transcript buffer, render cache/timer, semantic ranges, image placements | `pi.ui.transcript.view` |
-| UI namespace, Chat registry, global UI autocmds, shared welcome timer | `pi.ui.chat.registry` |
+| Transcript buffer, render cache/timer, semantic ranges, image placements, mouse gesture generation | `pi.ui.transcript.view` |
+| UI namespace, Chat registry, global UI autocmds, shared welcome timer, closed-window gesture invalidation | `pi.ui.chat.registry` |
 | Layout choice, top-level chat window, responsive geometry | `pi.ui.chat.shell` |
 | Component composition, display mirrors, activity state, frontend delegation | `pi.ui.chat` |
-| Prompt and footer buffers/windows | `pi.ui.input` |
+| Prompt and footer buffers/windows, right-click clipboard insertion | `pi.ui.input` |
 | Command-menu buffer/window/matches/selection | `pi.ui.command_menu` |
+| Bounded inline-menu stack/query/items/selection/buffer/window | `pi.ui.inline_menu` |
 | Administrative action generations and active authentication prompt correlation | `pi.commands.admin` |
-| Administrative selectors, concealed input, model-scope picker, changelog window | `pi.ui.admin` / `pi.ui.dialog_surface` |
+| Administrative menu adaptation | `pi.runtime` -> Chat-owned `pi.ui.inline_menu` |
+| Concealed sensitive input | `pi.ui.admin` / `pi.ui.dialog_surface` |
 | Permission queue, inline projection, focus trap | `pi.ui.permission` |
 | Generic Extension dialog queue and request correlation | `pi.ui.dialog` |
 | Native generic dialog buffers, windows, and mappings | `pi.ui.dialog_surface` |
@@ -124,15 +126,32 @@ Administrative commands are capability-gated from each Client's authoritative
 command table, so projects connected to different Pi versions cannot alter one
 another's command availability. `pi.commands.admin` retains only transient
 request generations, flow/prompt IDs, and presentation handles; provider
-credentials, trust, resources, model scope, imported sessions, sharing, and
-changelog data remain Pi-owned. Runtime routes authentication events and the
+credentials, trust, resources, and model scope remain Pi-owned. Runtime routes authentication events and the
 adapter validates them against the current Client and active flow before any UI
 action.
 
 Chat is the only composition root that knows all child components. InputArea,
-CommandMenu, PermissionPanel, and WidgetArea receive explicit dependency tables
+CommandMenu, InlineMenu, PermissionPanel, and WidgetArea receive explicit dependency tables
 and never read a sibling field. Shell receives window, buffer, state, and action
 providers from Chat; it does not own component behavior.
+
+TranscriptView owns each left-button gesture as a generation-scoped projection
+of one valid transcript buffer/window pair. It converts mouse byte columns to
+UTF-8 character boundaries, uses Neovim's character selection for drags, and
+copies only the rendered buffer slice through Chat's clipboard boundary. A
+non-drag release delegates the structured tool/process/image hit to Chat.
+Registry `WinClosed`, Chat close/destruction, buffer invalidation, and view
+clearing cancel the generation. InputArea independently owns prompt right-click
+focus, cursor placement, clipboard image attachment, and text insertion; it
+does not mutate global mouse or clipboard options.
+
+Runtime converts structured command and administrative options into
+`select`, `multi_select`, `confirm`, and non-sensitive `input` frames without
+letting command adapters import Chat. InlineMenu owns only a bounded stack,
+candidate copies, filter query, current row, selected keys, generation, and its
+canvas-relative buffer/window. Shell reserves its measured height above the
+prompt. Final selection closes the group before invoking a layout or RPC action;
+Pi state changes remain projected only from successful responses or refreshes.
 
 ## Rendering
 
@@ -173,7 +192,8 @@ and `pi.ui.image_preview` paths are compatibility aliases without state.
 Closing a Chat delegates window reset to Shell: it stops the per-Chat activity
 animation, closes the image preview, clears transcript image placements,
 cancels permission requests fail-closed, discards generic Extension dialogs,
-closes component windows, and closes the top-level window. Destroying
+invalidates ordinary inline menus, closes component windows, and closes the
+top-level window. Destroying
 additionally stops the transcript render timer, deletes owned scratch buffers,
 releases transcript images and counters, clears component state, and unregisters
 the project from Registry. The shared welcome timer stops when no registered
@@ -188,9 +208,11 @@ and client exit, session replacement, or Chat destruction discard all remaining
 generic dialogs without fabricating answers. `pi.ui.dialog_surface` owns the
 native responsive select, confirm, input, and editor presentation.
 
-`pi.ui.admin` owns native administrative selection, confirmation, model-scope,
-and read-only Markdown surfaces. Authentication sensitivity comes from the RPC
-event, never prompt prose. Sensitive input stores plaintext only in an
+Reachable administrative selection, confirmation, model-scope, and
+non-sensitive authentication input use the Chat-owned InlineMenu.
+`pi.ui.admin` retains the isolated sensitive input. Authentication sensitivity
+comes from the RPC event, never prompt prose.
+Sensitive input stores plaintext only in an
 ephemeral Lua field while its nofile buffer holds a mask with swap and
 persistent undo disabled. The active surface intercepts Neovim's paste hook so
 pasted plaintext follows the same memory-only path as typed input; closing the
@@ -227,7 +249,7 @@ focused shared helpers. No aggregate security index or policy state remains.
 | Chat shell and responsive layout | `tests/lua/ui/chat/shell_spec.lua` |
 | Chat transcript and input interactions | `tests/lua/ui/chat/interaction_spec.lua`, `interactions_spec.lua` |
 | Chat activity and component lifecycle | `tests/lua/ui/chat/lifecycle_spec.lua` |
-| Input and command-menu ownership | `tests/lua/ui/input_spec.lua`, `command_menu_spec.lua` |
+| Input, command-menu, and inline-menu ownership | `tests/lua/ui/input_spec.lua`, `command_menu_spec.lua`, `inline_menu_spec.lua` |
 | Settings and session-state controls | `tests/lua/commands/ui_spec.lua`, `session_spec.lua` |
 | Administrative adapters and sensitive native surfaces | `tests/lua/commands/admin_spec.lua`, `tests/lua/ui/admin_spec.lua` |
 | Widget and permission ownership | `tests/lua/ui/widget_spec.lua`, `permission_spec.lua` |

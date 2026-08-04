@@ -4,6 +4,7 @@ local setup_count = 0
 local refresh_count = 0
 local layout_count = 0
 local clamp_count = 0
+local mouse_cancel_count = 0
 local current_window = vim.api.nvim_get_current_win()
 local registry
 
@@ -37,6 +38,9 @@ local function run()
       clamp_count = clamp_count + 1
     end,
     clear_images = function() end,
+    cancel_mouse = function()
+      mouse_cancel_count = mouse_cancel_count + 1
+    end,
   }
   registry:register("registry-project", entry)
 
@@ -46,6 +50,8 @@ local function run()
   assert(layout_count == 1, "registry did not route resize to the open Chat")
   vim.api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(current_window) })
   assert(clamp_count == 1, "registry did not clamp the scrolled Chat window")
+  vim.api.nvim_exec_autocmds("WinClosed", { pattern = tostring(current_window) })
+  assert(mouse_cancel_count == 1, "registry did not clear mouse state for a closed Chat window")
 
   registry:sync_welcome_animation()
   assert(registry.welcome_animation_timer ~= nil, "registry did not own the shared welcome timer")

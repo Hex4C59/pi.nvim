@@ -1,8 +1,6 @@
 local base = vim.fn.tempname()
 local previous_runtime = package.loaded["pi.runtime"]
 local previous_session_commands = package.loaded["pi.commands.session"]
-local previous_select = vim.ui.select
-local previous_input = vim.ui.input
 local previous_columns = vim.o.columns
 local function run()
   local first = vim.fs.joinpath(base, "first")
@@ -29,6 +27,7 @@ local function run()
   local errors = {}
   local next_result = { success = true, data = { cancelled = false } }
   local action_generation = 0
+  local inline_menus = {}
   local picker_options
   local picker = {
     closed = false,
@@ -42,12 +41,39 @@ local function run()
   }
   local client = {
     root = first,
-    session = { rpcCapabilities = { "list_sessions", "navigate_tree" } },
+    session = { rpcCapabilities = { "list_sessions", "navigate_tree" }, sessionName = "Fixture session" },
     request = function(_, name, payload, callback)
       table.insert(requests, { name = name, payload = payload })
       callback(next_result.success, next_result.data, next_result.err)
     end,
   }
+
+  local function inline_surface(options)
+    local surface = { closed = false, options = options }
+    function surface:close()
+      self.closed = true
+    end
+    function surface:replace(replacement)
+      self.closed = true
+      return inline_surface(replacement)
+    end
+    function surface:push(child)
+      return inline_surface(child)
+    end
+    function surface:set_error(message)
+      self.error = message
+    end
+    function surface:set_loading(cursor)
+      self.loading_cursor = cursor
+      return true
+    end
+    function surface:append(items, next_cursor)
+      self.appended = items
+      self.next_cursor = next_cursor
+    end
+    table.insert(inline_menus, surface)
+    return surface
+  end
 
   package.loaded["pi.runtime"] = {
     get_client = function()
@@ -67,12 +93,19 @@ local function run()
     session_action_current = function(_, action)
       return action == action_generation
     end,
+    client_is_current = function(candidate)
+      return candidate == client
+    end,
     chat_for = function()
       return {
+        open = function() end,
         set_input = function(_, value)
           client.input = value
         end,
       }
+    end,
+    open_inline_select = function(_, options)
+      return inline_surface(options)
     end,
     open_session_picker = function(options)
       picker_options = options
@@ -81,6 +114,10 @@ local function run()
   }
   package.loaded["pi.commands.session"] = nil
   local commands = require("pi.commands.session")
+
+  commands.name_session(nil, first)
+  assert(client.input == "/name Fixture session", "empty session name did not prefill the shared prompt")
+  client.input = nil
 
   commands.resume(other_path, first)
   assert(#requests == 0, "cross-project resume sent switch_session")
@@ -109,6 +146,16 @@ local function run()
   commands.resume(same_path, first)
   assert(reloads == 1, "failed resume cleared or reloaded the active session")
   assert(errors[#errors] == "fixture failure", "RPC resume failure was not reported")
+
+  requests = {}
+  next_result = { success = false, data = nil, err = "catalog failure" }
+  commands.resume(nil, first)
+  local failed_catalog = inline_menus[#inline_menus]
+  assert(failed_catalog.error == "catalog failure", "initial session catalogue error was not shown")
+  next_result = { success = true, data = { sessions = {}, nextCursor = "retry-page" } }
+  failed_catalog.options.on_more(nil, failed_catalog)
+  assert(#requests == 2 and requests[2].payload.cursor == nil, "initial session catalogue retry changed the cursor")
+  assert(picker_options.next_cursor == "retry-page", "retried session catalogue did not open the picker")
 
   requests = {}
   next_result = {
@@ -154,17 +201,12 @@ local function run()
 
   requests = {}
   client.session.rpcCapabilities = {}
-  local prompted_for_path = false
-  vim.ui.input = function(_, callback)
-    prompted_for_path = true
-    callback(nil)
-  end
+  client.input = nil
   commands.resume(nil, first)
-  assert(prompted_for_path, "older Pi fallback did not offer exact-path resume")
+  assert(client.input == "/resume ", "older Pi fallback did not prefill exact-path resume")
   assert(#requests == 0, "older Pi fallback sent the unsupported list_sessions command")
   client.session.rpcCapabilities = { "list_sessions", "navigate_tree" }
 
-  local selected_items
   next_result = {
     success = true,
     data = {
@@ -182,18 +224,15 @@ local function run()
     },
   }
   vim.o.columns = 24
-  vim.ui.select = function(items, _, callback)
-    selected_items = items
-    callback(nil)
-  end
   commands.tree(first)
+  local tree_menu = inline_menus[#inline_menus]
+  local selected_items = tree_menu.options.items
   assert(#selected_items == 1, "tree picker did not receive the authoritative node")
   local label = selected_items[1].label
   assert(pcall(vim.str_utfindex, label), "tree preview split a UTF-8 code point")
   assert(vim.fn.strdisplaywidth(label) <= 22, "tree preview exceeded the narrow picker budget")
   assert(label:find(" ← active", 1, true), "narrow tree preview lost the active-leaf marker")
 
-  local select_step = 0
   next_result = {
     success = true,
     data = {
@@ -210,22 +249,17 @@ local function run()
       },
     },
   }
-  vim.ui.select = function(items, _, callback)
-    select_step = select_step + 1
-    if select_step == 1 then
-      callback(items[1])
-    else
-      next_result = { success = true, data = { cancelled = false, leafId = "target" } }
-      callback("Navigate here")
-    end
-  end
   local reloads_before_navigation = reloads
   commands.tree(first)
+  tree_menu = inline_menus[#inline_menus]
+  tree_menu.options.on_select(tree_menu.options.items[1])
+  local action_menu = inline_menus[#inline_menus]
+  next_result = { success = true, data = { cancelled = false, leafId = "target" } }
+  action_menu.options.on_select(action_menu.options.items[1])
   assert(requests[#requests].name == "navigate_tree", "tree action did not use the structured navigation RPC")
   assert(requests[#requests].payload.entryId == "target", "tree navigation did not preserve the structured entry id")
   assert(reloads == reloads_before_navigation + 1, "successful tree navigation did not reload authoritative state")
 
-  local tree_selections = {}
   next_result = {
     success = true,
     data = {
@@ -238,19 +272,17 @@ local function run()
       },
     },
   }
-  vim.ui.select = function(items, _, callback)
-    table.insert(tree_selections, { items = items, callback = callback })
-  end
+  local menus_before_stale = #inline_menus
   commands.tree(first)
+  local first_tree = inline_menus[#inline_menus]
   commands.tree(first)
-  assert(#tree_selections == 2, "overlapping tree reads did not open both test selectors")
-  tree_selections[1].callback(tree_selections[1].items[1])
-  assert(#tree_selections == 2, "a stale tree selector opened an action menu")
+  assert(#inline_menus == menus_before_stale + 4, "overlapping tree reads did not replace both loading menus")
+  local menus_before_stale_selection = #inline_menus
+  first_tree.options.on_select(first_tree.options.items[1])
+  assert(#inline_menus == menus_before_stale_selection, "a stale tree selector opened an action menu")
 end
 
 local ok, err = xpcall(run, debug.traceback)
-vim.ui.select = previous_select
-vim.ui.input = previous_input
 vim.o.columns = previous_columns
 vim.fn.delete(base, "rf")
 package.loaded["pi.runtime"] = previous_runtime

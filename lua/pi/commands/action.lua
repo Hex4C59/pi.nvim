@@ -48,10 +48,6 @@ function M.abort(root)
   runtime.abort(root)
 end
 
-function M.copy_last_response(root)
-  runtime.chat_for(root or runtime.client_root()):copy_last_assistant()
-end
-
 function M.bash(command, root)
   command = vim.trim(command or "")
   if command == "" then

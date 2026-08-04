@@ -1,12 +1,12 @@
 local config = require("pi.config")
 local renderer = require("pi.ui.render")
 local command_menu = require("pi.ui.command_menu")
+local inline_menu = require("pi.ui.inline_menu")
 local input_area = require("pi.ui.input")
 local permission_panel = require("pi.ui.permission")
 local widget_panel = require("pi.ui.widget")
 local permission_modes = require("pi.permission_mode")
 local image_backend = require("pi.ui.image.backend")
-local text_content = require("pi.message").text_content
 local Transcript = require("pi.ui.transcript").Transcript
 local TranscriptView = require("pi.ui.transcript.view").TranscriptView
 local ImagePreview = require("pi.ui.image.window").ImagePreview
@@ -53,6 +53,13 @@ local function boundary(actions, name, fallback)
   return type(actions) == "table" and type(actions[name]) == "function" and actions[name] or fallback
 end
 
+local function is_non_pi_window(win)
+  if type(win) ~= "number" or not vim.api.nvim_win_is_valid(win) then
+    return false
+  end
+  return vim.b[vim.api.nvim_win_get_buf(win)].pi_kind == nil
+end
+
 function Chat.new(root, frontend_actions)
   registry:prepare()
   local chat = setmetatable({
@@ -66,6 +73,8 @@ function Chat.new(root, frontend_actions)
     animation_frame = 0,
     animation_timer = nil,
     activity_started_at = nil,
+    prompt_return_win = nil,
+    interaction_generation = 0,
     path = root,
     activity = "starting",
     model = "loading",
@@ -78,7 +87,7 @@ function Chat.new(root, frontend_actions)
       cost = 0,
     },
     copy_to_clipboard = boundary(frontend_actions, "copy_to_clipboard", function(text)
-      return vim.fn.setreg("+", text)
+      return vim.fn.setreg("+", text, "v")
     end),
     notify = boundary(frontend_actions, "notify", vim.notify),
     on_destroy = action(frontend_actions, "destroy_dialogs"),
@@ -154,8 +163,12 @@ function Chat.new(root, frontend_actions)
       cycle_model = action(frontend_actions, "cycle_model"),
       cycle_permission_mode = action(frontend_actions, "cycle_permission_mode"),
       cycle_thinking_level = action(frontend_actions, "cycle_thinking_level"),
-      close = function()
-        chat:close()
+      prefill_command = function(command)
+        chat:set_input(command)
+        chat:_update_command_menu()
+      end,
+      return_to_editor = function()
+        chat:_return_to_editor()
       end,
       toggle_tools = function()
         chat:toggle_tools()
@@ -163,13 +176,36 @@ function Chat.new(root, frontend_actions)
       toggle_thinking = function()
         chat:toggle_thinking()
       end,
-      copy_last_assistant = function()
-        chat:copy_last_assistant()
-      end,
-      left_mouse = function()
-        return chat:_handle_left_mouse()
+      left_mouse = function(mouse)
+        return chat.transcript_view and chat.transcript_view:begin_mouse_gesture(mouse) ~= nil
       end,
     },
+  })
+  chat.inline_menu = inline_menu.InlineMenu.new({
+    root = root,
+    namespace = namespace,
+    name_buffer = input_area.name_buffer,
+    main_window = function()
+      return chat.shell and chat.shell:window() or nil
+    end,
+    layout = function()
+      if chat.shell then
+        chat:_layout()
+      end
+    end,
+    focus_input = function()
+      if chat.destroying or chat.inline_menu:active() then
+        return
+      end
+      local current_buf = vim.api.nvim_get_current_buf()
+      if not chat:owns_buffer(current_buf) then
+        return
+      end
+      chat:_focus_input()
+    end,
+    return_to_editor = function()
+      chat:_return_to_editor()
+    end,
   })
   chat.permission_area = permission_panel.PermissionPanel.new({
     root = root,
@@ -276,13 +312,11 @@ function Chat.new(root, frontend_actions)
       toggle_thinking = function()
         chat:toggle_thinking()
       end,
-      copy_last_assistant = function()
-        chat:copy_last_assistant()
+      copy_text = function(text)
+        return chat:_copy_text(text)
       end,
-      left_mouse = function()
-        input_area.dispatch_left_mouse(function()
-          return chat:_handle_left_mouse()
-        end)
+      left_mouse = function(mouse)
+        return chat:_handle_left_mouse(mouse)
       end,
       open_image_preview = function(descriptor)
         return chat:_open_image_preview(descriptor)
@@ -385,6 +419,18 @@ function Chat.new(root, frontend_actions)
     close_command_menu = function()
       chat.command_menu:close()
     end,
+    inline_menu_active = function()
+      return chat.inline_menu:active()
+    end,
+    inline_menu_height = function()
+      return chat.inline_menu:desired_height()
+    end,
+    layout_inline_menu = function(row, width, height)
+      return chat.inline_menu:layout(row, width, height)
+    end,
+    close_inline_menu = function(options)
+      chat.inline_menu:close(options)
+    end,
     measure_widgets = function(width, available)
       return chat.widget_area:measure(width, available)
     end,
@@ -448,6 +494,9 @@ function Chat.new(root, frontend_actions)
     clear_images = function()
       chat.image_backend:clear()
     end,
+    cancel_mouse = function()
+      chat.transcript_view:cancel_mouse_gesture()
+    end,
   }
   registry:register(root, chat.registry_entry)
   return chat
@@ -469,6 +518,15 @@ function Chat:current_layout()
   return self.shell:current_layout()
 end
 
+function Chat:action_generation()
+  return self.interaction_generation
+end
+
+function Chat:invalidate_action_callbacks()
+  self.interaction_generation = self.interaction_generation + 1
+  self:_close_inline_menu({ focus = false })
+end
+
 function Chat:process_details_enabled()
   return self.process_expanded == true
 end
@@ -483,6 +541,8 @@ function Chat:display_state()
 end
 
 function Chat:reset_session_projection()
+  self.interaction_generation = self.interaction_generation + 1
+  self:_close_inline_menu({ focus = false })
   self:clear()
   self:update_stats({ tokens = {}, contextUsage = {}, cost = 0 })
 end
@@ -498,8 +558,33 @@ function Chat:owns_buffer(bufnr)
   return self.transcript_view:owns_buffer(bufnr)
     or self.input_area:owns_buffer(bufnr)
     or self.command_menu:owns_buffer(bufnr)
+    or self.inline_menu:owns_buffer(bufnr)
     or self.widget_area:owns_buffer(bufnr)
     or self.image_preview:owns_buffer(bufnr)
+end
+
+function Chat:_remember_prompt_return_window()
+  local win = vim.api.nvim_get_current_win()
+  if is_non_pi_window(win) then
+    self.prompt_return_win = win
+  end
+end
+
+function Chat:_return_to_editor()
+  self:_close_command_menu()
+  self:_close_inline_menu({ focus = false })
+  local target = self.prompt_return_win
+  local switched = false
+  if is_non_pi_window(target) then
+    switched = pcall(vim.api.nvim_set_current_win, target)
+  end
+  if not switched then
+    local canvas = self.shell:window()
+    if canvas and vim.api.nvim_win_is_valid(canvas) then
+      pcall(vim.api.nvim_set_current_win, canvas)
+    end
+  end
+  vim.cmd("stopinsert")
 end
 
 function Chat:_stop_animation()
@@ -575,6 +660,8 @@ function Chat:_sync_animation()
 end
 
 function Chat:close()
+  self.interaction_generation = self.interaction_generation + 1
+  self.transcript_view:cancel_mouse_gesture()
   self.shell:close()
 end
 
@@ -591,8 +678,10 @@ function Chat:destroy()
   self.pending_images = {}
   self.widget_area:destroy()
   self.command_menu:destroy()
+  self.inline_menu:destroy()
   self.input_area:destroy()
   self.permission_area:destroy()
+  self.prompt_return_win = nil
   registry:unregister(self.root)
   self.registry_entry = nil
   self.destroyed = true
@@ -726,6 +815,52 @@ function Chat:_close_command_menu()
   end
 end
 
+function Chat:_close_inline_menu(options)
+  if not self.inline_menu then
+    return
+  end
+  self.inline_menu:close(options)
+end
+
+function Chat:close_inline_menu(options)
+  return self:_close_inline_menu(options)
+end
+
+function Chat:inline_menu_active()
+  return self.inline_menu and self.inline_menu:active() or false
+end
+
+function Chat:open_inline_menu(options)
+  self:open(false)
+  self:_close_command_menu()
+  if self.permission_area:active() then
+    return { closed = true }
+  end
+  options = options or {}
+  if options.stack == "push" and self.inline_menu:active() then
+    return self.inline_menu:push(options)
+  elseif options.stack == "replace" and self.inline_menu:active() then
+    return self.inline_menu:replace(options)
+  end
+  return self.inline_menu:open(options)
+end
+
+function Chat:push_inline_menu(options)
+  options = options or {}
+  options.stack = "push"
+  return self:open_inline_menu(options)
+end
+
+function Chat:replace_inline_menu(options)
+  options = options or {}
+  options.stack = "replace"
+  return self:open_inline_menu(options)
+end
+
+function Chat:append_inline_menu(surface, items, next_cursor)
+  return surface and surface:append(items, next_cursor) or false
+end
+
 function Chat:_layout_command_menu()
   return self.command_menu:layout()
 end
@@ -782,8 +917,13 @@ function Chat:set_input(text)
   self.input_area:set_input(text)
 end
 function Chat:_focus_input()
+  self:_remember_prompt_return_window()
   if self.permission_area:active() then
     self.permission_area:focus()
+    return
+  end
+  if self.inline_menu:active() then
+    self.inline_menu:focus()
     return
   end
   self.input_area:focus()
@@ -791,6 +931,9 @@ end
 
 function Chat:confirm(request, callback)
   self:open(false)
+  if self:inline_menu_active() then
+    self.inline_menu:cancel_group(false)
+  end
   local display = vim.deepcopy(request)
   display.options = { "Block", "Allow once" }
   self.permission_area:show(display, function(decision)
@@ -800,6 +943,9 @@ end
 
 function Chat:select_permission(request, callback)
   self:open(false)
+  if self:inline_menu_active() then
+    self.inline_menu:cancel_group(false)
+  end
   self.permission_area:show(request, callback)
 end
 
@@ -821,10 +967,12 @@ function Chat:_open_image_preview(descriptor)
 end
 
 function Chat:set_position(position)
+  self:_remember_prompt_return_window()
   return self.shell:set_position(position)
 end
 
 function Chat:open(focus_input)
+  self:_remember_prompt_return_window()
   return self.shell:open(focus_input)
 end
 
@@ -838,6 +986,7 @@ function Chat:_render_transcript()
   return self.transcript_view:render()
 end
 function Chat:clear()
+  self:_close_inline_menu({ focus = false })
   self.transcript:clear()
   self.transcript_view:clear()
   self:reset_permission_mode()
@@ -945,7 +1094,7 @@ end
 
 function Chat:_handle_left_mouse(mouse)
   mouse = mouse or vim.fn.getmousepos()
-  if not self.win or not vim.api.nvim_win_is_valid(self.win) or mouse.winid ~= self.win then
+  if not self.win or not vim.api.nvim_win_is_valid(self.win) or tonumber(mouse.winid) ~= self.win then
     return false
   end
   local item = self:_tool_at_row(mouse.line)
@@ -1000,28 +1149,22 @@ function Chat:toggle_thinking()
   self:toggle_process()
 end
 
-function Chat:copy_last_assistant()
-  for index = #self.transcript.items, 1, -1 do
-    local item = self.transcript.items[index]
-    if item.type == "assistant" then
-      local text = text_content(item.message.content)
-      if text ~= "" then
-        local ok, copied, copy_err = pcall(self.copy_to_clipboard, text)
-        if not ok or copied == false then
-          local detail = ok and copy_err or copied
-          self.notify(
-            "Could not copy the last Pi response: " .. tostring(detail or "unknown error"),
-            vim.log.levels.ERROR,
-            { title = "Pi" }
-          )
-          return false
-        end
-        self.notify("Copied the last Pi response", vim.log.levels.INFO, { title = "Pi" })
-        return true
-      end
-    end
+function Chat:_copy_text(text)
+  if type(text) ~= "string" or text == "" then
+    return false
   end
-  return false
+  local ok, copied, copy_err = pcall(self.copy_to_clipboard, text)
+  if not ok or copied == false then
+    local detail = ok and copy_err or copied
+    self.notify(
+      "Could not copy the transcript selection: " .. tostring(detail or "unknown error"),
+      vim.log.levels.ERROR,
+      { title = "Pi" }
+    )
+    return false
+  end
+  self.notify("Copied transcript selection", vim.log.levels.INFO, { title = "Pi" })
+  return true
 end
 
 function Chat:render_history(messages)

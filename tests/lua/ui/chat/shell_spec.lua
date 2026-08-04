@@ -20,6 +20,22 @@ local function buffer_text(buf)
   return table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
 end
 
+local function mapping(buf, mode, lhs)
+  return vim.api.nvim_buf_call(buf, function()
+    return vim.fn.maparg(lhs, mode, false, true)
+  end)
+end
+
+local function return_from_prompt(chat, target, expected_draft, label)
+  local ctrl_q = mapping(chat.input_area:buffer(), "i", "<C-q>")
+  assert(type(ctrl_q.callback) == "function", label .. " prompt is missing Ctrl-Q")
+  ctrl_q.callback()
+  assert(vim.api.nvim_get_current_win() == target, label .. " Ctrl-Q selected the wrong return window")
+  assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "n", label .. " Ctrl-Q did not enter Normal mode")
+  assert(chat:is_open(), label .. " Ctrl-Q closed the Chat shell")
+  assert(buffer_text(chat.input_area:buffer()) == expected_draft, label .. " Ctrl-Q discarded the prompt draft")
+end
+
 local function has_highlight(buf, name)
   for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })) do
     local details = mark[4] or {}
@@ -133,6 +149,26 @@ local function assert_horizontal_alignment(chat, label)
   )
 end
 
+local function assert_inline_menu(chat, label)
+  local menu_win = assert(chat.inline_menu:window(), label .. " inline menu window is missing")
+  local menu_config = vim.api.nvim_win_get_config(menu_win)
+  local input_config = vim.api.nvim_win_get_config(chat.input_area:window())
+  assert(menu_config.relative == "win" and menu_config.win == chat.win, label .. " menu lost its canvas parent")
+  assert(
+    menu_config.col == 0 and menu_config.width == vim.api.nvim_win_get_width(chat.win),
+    label .. " menu is not full-width"
+  )
+  assert(menu_config.row + menu_config.height <= input_config.row, label .. " menu overlaps the prompt")
+  assert(
+    menu_config.border == nil
+      or menu_config.border == ""
+      or menu_config.border == "none"
+      or (type(menu_config.border) == "table" and #menu_config.border == 0),
+    label .. " menu gained a detached border"
+  )
+  assert_window_in_editor(menu_win, label .. " inline menu")
+end
+
 config.setup({
   chat = {
     position = "right",
@@ -145,9 +181,11 @@ config.setup({
 
 local function run()
   local root = vim.fs.joinpath(vim.fn.getcwd(), "shell-project")
+  local editor_window = vim.api.nvim_get_current_win()
   local chat = track_chat(root)
   local components = {
     chat.command_menu,
+    chat.inline_menu,
     chat.input_area,
     chat.permission_area,
     chat.widget_area,
@@ -236,6 +274,35 @@ local function run()
   )
   chat:open(true)
   assert(vim.api.nvim_get_current_win() == input_window, "open(true) did not focus the prompt")
+  local right_menu = chat:open_inline_menu({
+    kind = "select",
+    title = "Right menu",
+    items = { "one", "two" },
+  })
+  assert_inline_menu(chat, "right layout")
+  right_menu:close()
+  chat:set_input("right-layout draft")
+  return_from_prompt(chat, editor_window, "right-layout draft", "right layout")
+
+  vim.cmd("new")
+  local second_editor_window = vim.api.nvim_get_current_win()
+  local second_editor_buffer = track_buffer(vim.api.nvim_get_current_buf())
+  chat:open(true)
+  return_from_prompt(chat, second_editor_window, "right-layout draft", "updated editor target")
+
+  chat:open(true)
+  vim.api.nvim_win_close(second_editor_window, true)
+  assert(vim.api.nvim_buf_is_valid(second_editor_buffer), "closing the return window unexpectedly deleted its buffer")
+  local ctrl_q = mapping(chat.input_area:buffer(), "i", "<C-q>")
+  ctrl_q.callback()
+  assert(vim.api.nvim_get_current_win() == chat.win, "invalid return target did not fall back to the Pi canvas")
+  assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "n", "invalid return target fallback did not enter Normal mode")
+  assert(chat:is_open(), "invalid return target fallback closed Chat")
+  assert(buffer_text(chat.input_area:buffer()) == "right-layout draft", "invalid return target fallback lost the draft")
+
+  vim.api.nvim_set_current_win(editor_window)
+  chat:open(true)
+  chat:set_input("")
 
   vim.api.nvim_win_close(status_window, true)
   assert(not chat:is_open(), "is_open ignored an invalid component window")
@@ -248,7 +315,13 @@ local function run()
     "window recovery replaced stable component buffers"
   )
 
-  local owned = { transcript_buffer, input_buffer, status_buffer, chat.command_menu:ensure_buffer() }
+  local owned = {
+    transcript_buffer,
+    input_buffer,
+    status_buffer,
+    chat.command_menu:ensure_buffer(),
+    chat.inline_menu:buffer(),
+  }
   for _, buf in ipairs(owned) do
     assert(chat:owns_buffer(buf), "Chat did not delegate ownership for a component buffer")
   end
@@ -409,6 +482,11 @@ local function run()
   assert(input_config.relative == "win" and input_config.win == chat.win, "float prompt lost its canvas parent")
   assert(status_config.relative == "win" and status_config.win == chat.win, "float status lost its canvas parent")
   assert_horizontal_alignment(chat, "float")
+  local float_menu = chat:open_inline_menu({ kind = "select", title = "Float menu", items = { "one" } })
+  assert_inline_menu(chat, "float layout")
+  float_menu:close()
+  chat:set_input("layout-preserved draft")
+  return_from_prompt(chat, editor_window, "layout-preserved draft", "float layout")
 
   chat:set_position("bottom")
   main = vim.api.nvim_win_get_config(chat.win)
@@ -417,8 +495,22 @@ local function run()
   assert_window_in_editor(chat.win, "short bottom Chat")
   assert_window_in_editor(chat.input_area:window(), "short bottom prompt")
   assert_window_in_editor(chat.input_area:status_window(), "short bottom status")
+  return_from_prompt(chat, editor_window, "layout-preserved draft", "bottom layout")
+  chat:open(true)
   local bottom_height = vim.api.nvim_win_get_height(chat.win)
+  local menu_cancelled = false
+  local bottom_menu = chat:open_inline_menu({
+    kind = "select",
+    title = "Bottom menu",
+    items = { "one" },
+    on_cancel = function()
+      menu_cancelled = true
+    end,
+  })
+  assert_inline_menu(chat, "bottom layout")
   chat:confirm({ id = "bottom-permission", method = "confirm", title = "Confirm", message = "fixture" }, function() end)
+  assert(bottom_menu.closed and not chat:inline_menu_active(), "permission request did not preempt the ordinary menu")
+  assert(menu_cancelled, "permission preemption did not cancel the ordinary menu workflow")
   assert(vim.api.nvim_win_get_height(chat.win) >= 16, "permission UI did not expand the short bottom split")
   chat.permission_area:_resolve(false)
   assert(vim.api.nvim_win_get_height(chat.win) == bottom_height, "bottom split height was not restored")
@@ -428,12 +520,17 @@ local function run()
   assert(vim.api.nvim_win_get_config(chat.win).relative == "", "tab layout must use a normal window")
   assert(vim.fn.tabpagenr("$") == tab_count + 1, "tab layout did not create a dedicated tab")
   assert_horizontal_alignment(chat, "tab")
+  local tab_menu = chat:open_inline_menu({ kind = "select", title = "Tab menu", items = { "one" } })
+  assert_inline_menu(chat, "tab layout")
+  tab_menu:close()
   assert(
     chat.transcript_view:buffer() == stable_buffers.transcript
       and chat.input_area:buffer() == stable_buffers.input
       and chat.input_area:status_buffer() == stable_buffers.status,
     "responsive relayout replaced component-owned buffers"
   )
+  return_from_prompt(chat, editor_window, "layout-preserved draft", "tab layout")
+  chat:set_input("")
 
   assert(registry.welcome_animation_timer ~= nil, "open Chat did not start the shared welcome timer")
   local frame = registry.welcome_animation_frame

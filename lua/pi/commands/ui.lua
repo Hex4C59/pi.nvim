@@ -23,7 +23,7 @@ local function set_auto_retry(client, enabled)
   end)
 end
 
-function M.layout(position, root)
+function M.layout(position, root, options)
   root = root or runtime.client_root()
   local chat = runtime.chat_for(root)
   local choices = { "tab", "float", "right", "bottom" }
@@ -42,10 +42,33 @@ function M.layout(position, root)
     end
   end
   position = vim.trim(position or "")
-  if position ~= "" then
+  if position ~= "" and vim.tbl_contains(choices, position) then
     apply(position)
   else
-    vim.ui.select(choices, { prompt = "Pi layout" }, apply)
+    local matches = choices
+    if position ~= "" then
+      matches = {}
+      local query = position:lower()
+      for _, choice in ipairs(choices) do
+        if choice:lower():find(query, 1, true) then
+          table.insert(matches, choice)
+        end
+      end
+      if #matches == 0 then
+        notify_error("Unknown Pi layout: " .. position)
+        return
+      elseif #matches == 1 then
+        apply(matches[1])
+        return
+      end
+    end
+    runtime.open_inline_select(root, {
+      title = position ~= "" and ("Pi layout - " .. position) or "Pi layout",
+      items = matches,
+      current = chat:current_layout(),
+      stack = type(options) == "table" and options.stack or nil,
+      on_select = apply,
+    })
   end
 end
 
@@ -69,73 +92,92 @@ function M.settings(root)
       action = "details",
     },
   }
-  vim.ui.select(options, {
-    prompt = "Pi settings",
+  local settings_surface
+  local function close_settings()
+    if settings_surface and not settings_surface.closed then
+      settings_surface:close()
+    end
+  end
+  settings_surface = runtime.open_inline_select(client.root, {
+    title = "Pi settings",
+    items = options,
+    keep_open = true,
     format_item = function(item)
-      return ("%-18s %s"):format(item.label, item.value)
+      return item.label
     end,
-  }, function(item)
-    if not item then
-      return
-    elseif item.action == "model" then
-      model_cmds.select_model(client.root)
-    elseif item.action == "thinking" then
-      model_cmds.select_thinking_level(client.root)
-    elseif item.action == "permissions" then
-      permission_cmds.select(client.root)
-    elseif item.action == "compact" then
-      local enabled = not state.autoCompactionEnabled
-      client:request("set_auto_compaction", { enabled = enabled }, function(ok, _, err)
-        if not ok then
-          notify_error(err)
-        else
-          state.autoCompactionEnabled = enabled
-          chat:update_state(state)
-        end
-      end)
-    elseif item.action == "retry" then
-      if type(state.autoRetryEnabled) == "boolean" then
-        set_auto_retry(client, not state.autoRetryEnabled)
-      else
-        local choices = {
-          { label = "Enable", enabled = true },
-          { label = "Disable", enabled = false },
-        }
-        vim.ui.select(choices, {
-          prompt = "Set Pi auto-retry",
-          format_item = function(choice)
-            return choice.label
-          end,
-        }, function(choice)
-          if choice then
-            set_auto_retry(client, choice.enabled)
+    describe_item = function(item)
+      return item.value
+    end,
+    on_select = function(item)
+      if not item then
+        return
+      elseif item.action == "model" then
+        model_cmds.select_model(client.root, nil, { stack = "push" })
+      elseif item.action == "thinking" then
+        model_cmds.select_thinking_level(client.root, nil, { stack = "push" })
+      elseif item.action == "permissions" then
+        permission_cmds.select(client.root, nil, { stack = "push" })
+      elseif item.action == "compact" then
+        close_settings()
+        local enabled = not state.autoCompactionEnabled
+        client:request("set_auto_compaction", { enabled = enabled }, function(ok, _, err)
+          if not ok then
+            notify_error(err)
+          else
+            runtime.refresh_state(client)
           end
         end)
+      elseif item.action == "retry" then
+        if type(state.autoRetryEnabled) == "boolean" then
+          close_settings()
+          set_auto_retry(client, not state.autoRetryEnabled)
+        else
+          local choices = {
+            { label = "Enable", enabled = true },
+            { label = "Disable", enabled = false },
+          }
+          runtime.open_inline_select(client.root, {
+            title = "Set Pi auto-retry",
+            items = choices,
+            stack = "push",
+            format_item = function(choice)
+              return choice.label
+            end,
+            on_select = function(choice)
+              if choice then
+                set_auto_retry(client, choice.enabled)
+              end
+            end,
+          })
+        end
+      elseif item.action == "steering" then
+        close_settings()
+        local mode = state.steeringMode == "all" and "one-at-a-time" or "all"
+        client:request("set_steering_mode", { mode = mode }, function(ok, _, err)
+          if not ok then
+            notify_error(err)
+          else
+            runtime.refresh_state(client)
+          end
+        end)
+      elseif item.action == "followup" then
+        close_settings()
+        local mode = state.followUpMode == "all" and "one-at-a-time" or "all"
+        client:request("set_follow_up_mode", { mode = mode }, function(ok, _, err)
+          if not ok then
+            notify_error(err)
+          else
+            runtime.refresh_state(client)
+          end
+        end)
+      elseif item.action == "layout" then
+        M.layout(nil, client.root, { stack = "push" })
+      elseif item.action == "details" then
+        close_settings()
+        chat:toggle_process()
       end
-    elseif item.action == "steering" then
-      local mode = state.steeringMode == "all" and "one-at-a-time" or "all"
-      client:request("set_steering_mode", { mode = mode }, function(ok, _, err)
-        if not ok then
-          notify_error(err)
-        else
-          state.steeringMode = mode
-        end
-      end)
-    elseif item.action == "followup" then
-      local mode = state.followUpMode == "all" and "one-at-a-time" or "all"
-      client:request("set_follow_up_mode", { mode = mode }, function(ok, _, err)
-        if not ok then
-          notify_error(err)
-        else
-          state.followUpMode = mode
-        end
-      end)
-    elseif item.action == "layout" then
-      M.layout(nil, client.root)
-    elseif item.action == "details" then
-      chat:toggle_process()
-    end
-  end)
+    end,
+  })
 end
 
 function M.hotkeys()
@@ -143,15 +185,18 @@ function M.hotkeys()
     table.concat({
       "Enter          submit",
       "Ctrl-J         new line",
-      "Esc / Ctrl-C   interrupt",
+      "Esc            close completion or interrupt",
+      "Ctrl-C         interrupt",
+      "Ctrl-Q         return to editor",
       "Alt-Enter      queue follow-up",
-      "Ctrl-L         select model",
-      "Ctrl-P         cycle model",
-      "Alt-P          cycle permission mode",
-      "Shift-Tab      cycle thinking",
+      "Ctrl-L         prefill /model",
+      "Ctrl-P         prefill /model",
+      "Alt-P          prefill /permissions",
+      "Shift-Tab      prefill /thinking",
       "Ctrl-O         toggle process details",
       "Ctrl-T         toggle process details",
-      "Ctrl-X         copy last response",
+      "Left-drag      copy transcript selection",
+      "Right-click    paste into prompt",
       "/               open command completion",
       "/permissions    select permission mode",
       "Tab / Shift-Tab select command",

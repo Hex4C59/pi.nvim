@@ -4,7 +4,6 @@ local chat_ui = require("pi.ui.chat")
 local Chat = chat_ui.Chat
 local text_content = require("pi.message").text_content
 local dialog = require("pi.ui.dialog")
-local session_picker = require("pi.ui.session_picker")
 local admin_ui = require("pi.ui.admin")
 
 local M = {}
@@ -76,9 +75,6 @@ end
 
 local rpc_unavailable_commands = {
   ["scoped-models"] = "The installed Pi process does not advertise structured model-scope administration; use /scoped-models in the Pi TUI.",
-  import = "The installed Pi process does not advertise structured JSONL import. Use /resume <path> for an existing Pi session.",
-  share = "The installed Pi process does not advertise structured session sharing. Use /export or run /share in the Pi TUI.",
-  changelog = "The installed Pi process does not advertise structured changelog access. Run /changelog in the Pi TUI.",
   trust = "The installed Pi process does not advertise structured project trust. Update project_trust in pi.nvim setup and restart Pi.",
   login = "The installed Pi process does not advertise structured authentication. Run /login in the Pi TUI, then restart the Pi client.",
   logout = "The installed Pi process does not advertise structured authentication. Run /logout in the Pi TUI, then restart the Pi client.",
@@ -444,6 +440,11 @@ local function attach(client)
       project.direct_bash_request_id = nil
       dialog.discard(client)
       invoke_ui_action("admin_discard", client)
+      if type(chat.invalidate_action_callbacks) == "function" then
+        chat:invalidate_action_callbacks()
+      elseif type(chat.close_inline_menu) == "function" then
+        chat:close_inline_menu({ focus = false })
+      end
       chat:reset_permission_mode()
       chat:clear_widgets()
       if not event.expected then
@@ -632,7 +633,14 @@ local function begin_session_action(client)
     return nil
   end
   project.session_action_generation = project.session_action_generation + 1
-  return { project = project, generation = project.session_action_generation }
+  local chat = chat_for(client.root)
+  if type(chat.close_inline_menu) == "function" then
+    chat:close_inline_menu({ focus = false })
+  end
+  return {
+    project = project,
+    generation = project.session_action_generation,
+  }
 end
 
 local function session_action_current(client, action)
@@ -644,28 +652,108 @@ local function session_action_current(client, action)
     and project_is_current(project)
 end
 
+local function chat_action_generation(root)
+  local chat = chat_for(root)
+  return type(chat.action_generation) == "function" and chat:action_generation() or nil
+end
+
+local function inline_options(kind, options)
+  local result = {}
+  for key, value in pairs(options or {}) do
+    result[key] = value
+  end
+  result.kind = kind
+  result.root = nil
+  return result
+end
+
+local function open_inline(root, kind, options)
+  root = root or (options and options.root) or client_root()
+  return chat_for(root):open_inline_menu(inline_options(kind, options))
+end
+
+local function open_inline_select(root, options)
+  return open_inline(root, "select", options)
+end
+
+local function open_inline_confirm(root, options)
+  return open_inline(root, "confirm", options)
+end
+
+local function open_inline_input(root, options)
+  return open_inline(root, "input", options)
+end
+
+local function open_inline_multi_select(root, options)
+  return open_inline(root, "multi_select", options)
+end
+
+local function session_label(session)
+  local title = session.name or session.preview or session.id or session.path or "Unnamed session"
+  title = tostring(title):gsub("%s+", " ")
+  local details = { ("%d msgs"):format(tonumber(session.messageCount) or 0) }
+  if session.model and session.model.provider and session.model.id then
+    table.insert(details, session.model.provider .. "/" .. session.model.id)
+  end
+  if session.updatedAt then
+    table.insert(details, tostring(session.updatedAt):gsub("T", " "):sub(1, 16))
+  end
+  return title, table.concat(details, " | ")
+end
+
 local function open_session_picker(options)
-  return session_picker.open(options)
+  local path_item = { __pi_session_path = true, label = "Enter an exact session path..." }
+  local items = vim.list_slice(options.sessions or {})
+  table.insert(items, path_item)
+  return open_inline_select(options.root, {
+    title = "Pi sessions",
+    items = items,
+    next_cursor = options.next_cursor,
+    key_item = function(item)
+      return item.__pi_session_path and "\0path" or item.path or item.id
+    end,
+    format_item = function(item)
+      if item.__pi_session_path then
+        return item.label
+      end
+      return session_label(item)
+    end,
+    describe_item = function(item)
+      if item.__pi_session_path then
+        return ""
+      end
+      local _, details = session_label(item)
+      return details
+    end,
+    on_more = options.on_more,
+    on_cancel = options.on_cancel,
+    on_select = function(item)
+      if item and item.__pi_session_path then
+        options.on_path()
+      elseif item then
+        options.on_select(item)
+      end
+    end,
+  })
 end
 
 local function open_admin_select(options)
-  return admin_ui.select(options)
+  return open_inline_select(options.root, options)
 end
 
 local function open_admin_confirm(options)
-  return admin_ui.confirm(options)
+  return open_inline_confirm(options.root, options)
 end
 
 local function open_admin_input(options)
-  return admin_ui.input(options)
+  if options.sensitive == true then
+    return admin_ui.input(options)
+  end
+  return open_inline_input(options.root, options)
 end
 
 local function open_admin_multi_select(options)
-  return admin_ui.multi_select(options)
-end
-
-local function show_admin_markdown(options)
-  return admin_ui.show_markdown(options)
+  return open_inline_multi_select(options.root, options)
 end
 
 local function refresh_administrative_state(client)
@@ -710,12 +798,16 @@ M.reload_session = reload_session
 M.load_older_history = load_older_history
 M.begin_session_action = begin_session_action
 M.session_action_current = session_action_current
+M.chat_action_generation = chat_action_generation
 M.open_session_picker = open_session_picker
+M.open_inline_select = open_inline_select
+M.open_inline_confirm = open_inline_confirm
+M.open_inline_input = open_inline_input
+M.open_inline_multi_select = open_inline_multi_select
 M.open_admin_select = open_admin_select
 M.open_admin_confirm = open_admin_confirm
 M.open_admin_input = open_admin_input
 M.open_admin_multi_select = open_admin_multi_select
-M.show_admin_markdown = show_admin_markdown
 M.get_client = get_client
 M.with_prompt = with_prompt
 M.send_prompt = send_prompt

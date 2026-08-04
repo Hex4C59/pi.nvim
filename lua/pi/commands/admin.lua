@@ -16,10 +16,18 @@ local function unavailable(command)
   notify(runtime.rpc_unavailable_commands[command], vim.log.levels.WARN, "Pi /" .. command)
 end
 
+local function chat_generation(root)
+  return type(runtime.chat_action_generation) == "function" and runtime.chat_action_generation(root) or nil
+end
+
 local function with_capability(command, root, callback)
   local client = runtime.get_client(root)
+  local action_generation = chat_generation(client.root)
   local function continue_with_state()
     if not runtime.client_is_current(client) then
+      return
+    end
+    if action_generation ~= nil and chat_generation(client.root) ~= action_generation then
       return
     end
     if runtime.has_capability(client, "administrative_workflows") then
@@ -34,6 +42,9 @@ local function with_capability(command, root, callback)
   end
   client:request("get_state", {}, function(success, data, err)
     if not runtime.client_is_current(client) then
+      return
+    end
+    if action_generation ~= nil and chat_generation(client.root) ~= action_generation then
       return
     end
     if not success then
@@ -57,13 +68,22 @@ local function begin_action(client)
   if previous then
     close_surface(previous.surface)
   end
-  local action = { generation = (previous and previous.generation or 0) + 1 }
+  local action = {
+    generation = (previous and previous.generation or 0) + 1,
+    chat_generation = chat_generation(client.root),
+  }
   actions[client] = action
   return action
 end
 
 local function action_current(client, action)
-  return runtime.client_is_current(client) and actions[client] == action
+  return runtime.client_is_current(client)
+    and actions[client] == action
+    and (action.chat_generation == nil or chat_generation(client.root) == action.chat_generation)
+end
+
+local function commit_action(action)
+  action.chat_generation = nil
 end
 
 local function bind_surface(client, action, surface)
@@ -122,6 +142,7 @@ local function choose_provider(client, action, providers, query, title, callback
       client,
       action,
       runtime.open_admin_select({
+        root = client.root,
         title = title,
         items = providers,
         format_item = function(provider)
@@ -187,6 +208,7 @@ local function open_auth_prompt(client, event)
 
   if event.promptType == "select" then
     flow.surface = runtime.open_admin_select({
+      root = client.root,
       title = event.message or "Pi authentication",
       items = event.options or {},
       format_item = function(option)
@@ -204,6 +226,7 @@ local function open_auth_prompt(client, event)
     })
   else
     flow.surface = runtime.open_admin_input({
+      root = client.root,
       title = event.message or "Pi authentication",
       placeholder = event.placeholder,
       sensitive = event.sensitive == true,
@@ -244,6 +267,15 @@ function M.handle_event(client, event)
   end
   local flow = auth_flows[client]
   if not flow then
+    return
+  end
+  if flow.chat_generation ~= nil and chat_generation(client.root) ~= flow.chat_generation then
+    close_surface(flow.surface)
+    auth_flows[client] = nil
+    local flow_id = event.flowId or flow.flow_id
+    if flow_id then
+      client:request("cancel_auth", { flowId = flow_id }, function() end)
+    end
     return
   end
   if event.type == "auth_prompt" then
@@ -315,10 +347,17 @@ function M.login(root, query)
           if not method or not action_current(client, action) then
             return
           end
-          local flow = { flow_id = nil, surface = nil }
+          local flow = { flow_id = nil, surface = nil, chat_generation = chat_generation(client.root) }
           auth_flows[client] = flow
           client:request("begin_auth", { provider = provider.id, method = method.type }, function(success, result, err)
             if auth_flows[client] ~= flow or not runtime.client_is_current(client) then
+              return
+            end
+            if flow.chat_generation ~= nil and chat_generation(client.root) ~= flow.chat_generation then
+              auth_flows[client] = nil
+              if success and result and result.flowId then
+                client:request("cancel_auth", { flowId = result.flowId }, function() end)
+              end
               return
             end
             if not success then
@@ -336,6 +375,7 @@ function M.login(root, query)
             client,
             action,
             runtime.open_admin_select({
+              root = client.root,
               title = "Pi authentication method",
               items = provider.methods,
               format_item = function(method)
@@ -369,12 +409,14 @@ function M.logout(root, query)
           client,
           action,
           runtime.open_admin_confirm({
+            root = client.root,
             title = "Remove provider credential",
             message = ("Remove Pi's stored credential for %s?"):format(provider.name or provider.id),
             on_confirm = function(confirmed)
               if not confirmed or not action_current(client, action) then
                 return
               end
+              commit_action(action)
               request(client, action, "logout_provider", { provider = provider.id }, function()
                 notify("Removed stored credential for " .. (provider.name or provider.id))
                 runtime.refresh_administrative_state(client)
@@ -406,6 +448,7 @@ function M.trust(root)
         client,
         action,
         runtime.open_admin_select({
+          root = client.root,
           title = "Pi project trust - " .. (data.cwd or client.root),
           items = choices,
           format_item = function(choice)
@@ -415,6 +458,7 @@ function M.trust(root)
             if not choice or not action_current(client, action) then
               return
             end
+            commit_action(action)
             request(client, action, "set_project_trust", { decision = choice.decision }, function(result)
               local restart = result.restartRequired and "\nRestart Pi to apply the saved decision." or ""
               notify(
@@ -433,6 +477,7 @@ end
 function M.reload(root)
   with_capability("reload", root, function(client)
     local action = begin_action(client)
+    commit_action(action)
     request(client, action, "reload_resources", {}, function(data)
       runtime.replace_extension_projection(client)
       local resources = data.resources or {}
@@ -460,9 +505,16 @@ function M.scoped_models(root)
         client,
         action,
         runtime.open_admin_multi_select({
+          root = client.root,
           title = "Pi model cycling scope",
           items = available,
           selected = selected,
+          key_item = function(model)
+            return model.provider .. "\0" .. model.id
+          end,
+          format_item = function(model)
+            return model.provider .. "/" .. model.id
+          end,
           on_empty = function()
             notify_error("Select at least one model for the cycling scope")
           end,
@@ -470,6 +522,7 @@ function M.scoped_models(root)
             if not action_current(client, action) then
               return
             end
+            commit_action(action)
             if #models == #available then
               models = {}
             end
@@ -481,76 +534,6 @@ function M.scoped_models(root)
           end,
         })
       )
-    end)
-  end)
-end
-
-function M.import_session(root, path)
-  with_capability("import", root, function(client)
-    local action = begin_action(client)
-    local function apply(value)
-      if not action_current(client, action) or not value or vim.trim(value) == "" then
-        return
-      end
-      request(client, action, "import_session", { path = vim.fn.expand(vim.trim(value)) }, function(data)
-        if not data.cancelled then
-          runtime.reload_session(client)
-          runtime.refresh_commands(client)
-        end
-      end, 0)
-    end
-    if path and vim.trim(path) ~= "" then
-      apply(path)
-    else
-      bind_surface(
-        client,
-        action,
-        runtime.open_admin_input({
-          title = "Import Pi session",
-          placeholder = "/path/to/export.jsonl",
-          on_submit = apply,
-        })
-      )
-    end
-  end)
-end
-
-function M.share(root)
-  with_capability("share", root, function(client)
-    local action = begin_action(client)
-    bind_surface(
-      client,
-      action,
-      runtime.open_admin_confirm({
-        title = "Share Pi session",
-        message = "Create a private GitHub gist containing the active session? This writes data outside Neovim.",
-        on_confirm = function(confirmed)
-          if not confirmed or not action_current(client, action) then
-            return
-          end
-          request(client, action, "share_session", {}, function(data)
-            notify(("Viewer: %s\nGist: %s"):format(data.url or "", data.gistUrl or ""), vim.log.levels.INFO, "Pi share")
-          end, 0)
-        end,
-      })
-    )
-  end)
-end
-
-function M.changelog(root)
-  with_capability("changelog", root, function(client)
-    local action = begin_action(client)
-    request(client, action, "get_changelog", { limit = 10 }, function(data)
-      local lines = {}
-      for _, entry in ipairs(data.entries or {}) do
-        table.insert(lines, "# Pi " .. (entry.version or ""))
-        vim.list_extend(lines, vim.split(entry.markdown or "", "\n", { plain = true }))
-        table.insert(lines, "")
-      end
-      if #lines == 0 then
-        lines = { "No changelog entries are available." }
-      end
-      bind_surface(client, action, runtime.show_admin_markdown({ title = "Pi changelog", lines = lines }))
     end)
   end)
 end

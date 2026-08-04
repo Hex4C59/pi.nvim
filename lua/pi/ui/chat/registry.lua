@@ -109,6 +109,20 @@ function Registry:_register_autocmds()
       end
     end,
   })
+  vim.api.nvim_create_autocmd("WinClosed", {
+    group = self.group,
+    callback = function(event)
+      local win = tonumber(event.match)
+      for _, entry in pairs(self.instances) do
+        if entry.window() == win then
+          if type(entry.cancel_mouse) == "function" then
+            entry.cancel_mouse()
+          end
+          break
+        end
+      end
+    end,
+  })
   vim.api.nvim_create_autocmd("VimLeavePre", {
     group = self.group,
     callback = function()

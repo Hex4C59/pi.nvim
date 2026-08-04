@@ -317,19 +317,4 @@ function M.multi_select(options)
   return picker
 end
 
-function M.show_markdown(options)
-  local lines = options.lines or { "" }
-  if #lines == 0 then
-    lines = { "" }
-  end
-  local view = open_scratch(options.title or "Pi", lines, "markdown", "admin_view")
-  vim.wo[view.win].wrap = true
-  for _, key in ipairs({ "q", "<Esc>" }) do
-    vim.keymap.set("n", key, function()
-      view:close()
-    end, { buffer = view.buf, silent = true })
-  end
-  return view
-end
-
 return M

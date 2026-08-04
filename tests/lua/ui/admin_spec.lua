@@ -92,22 +92,6 @@ local function run()
   assert(mapping(empty_picker.buf, "<CR>"), "empty model scope submit mapping is missing")()
   assert(empty_count == 1 and not empty_picker.closed, "empty model scope closed or changed state")
   assert(mapping(empty_picker.buf, "q"), "empty model scope cancel mapping is missing")()
-
-  local changelog = admin.show_markdown({ title = string.rep("Long changelog ", 20), lines = { "# Pi 0.83.0" } })
-  assert(changelog.floating, "normal viewport did not use a native administrative float")
-  local config = vim.api.nvim_win_get_config(changelog.win)
-  local title = type(config.title) == "table" and config.title[1][1] or config.title
-  assert(vim.fn.strdisplaywidth(title or "") <= config.width - 2, "administrative title overflowed its float")
-  assert(vim.bo[changelog.buf].modifiable == false, "changelog view is writable")
-  assert(mapping(changelog.buf, "q"), "changelog close mapping is missing")()
-
-  vim.o.columns = 40
-  vim.o.lines = 9
-  local previous_buf = vim.api.nvim_get_current_buf()
-  local compact = admin.show_markdown({ title = "Pi changelog", lines = { "small viewport" } })
-  assert(not compact.floating, "tiny viewport did not use the current-window fallback")
-  compact:close()
-  assert(vim.api.nvim_get_current_buf() == previous_buf, "administrative fallback did not restore its buffer")
 end
 
 local ok, err = xpcall(run, debug.traceback)

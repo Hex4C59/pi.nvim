@@ -8,7 +8,6 @@ local root = vim.fn.getcwd()
 local direct_panel
 local chat
 local original_send_prompt = runtime.send_prompt
-local original_select = vim.ui.select
 local original_guicursor = vim.o.guicursor
 local previous_runtime_chat = runtime.chats[root]
 
@@ -310,12 +309,25 @@ local function run()
     "permission command was not sent to the Extension"
   )
   assert(chat:permission_mode() == "manual", "Lua updated permission mode before Extension status")
+  sent_permission_command = nil
+  require("pi.commands.permission").select(root, "a")
+  assert(chat:inline_menu_active(), "ambiguous permission query did not open an inline selector")
+  assert(#chat.inline_menu:_frame().items > 1, "ambiguous permission query lost matching modes")
+  assert(sent_permission_command == nil, "ambiguous permission query changed mode before selection")
+  chat.inline_menu:close({ focus = false })
+
+  require("pi.commands.permission").select(root, "acc")
+  assert(sent_permission_command[1] == "/permissions acceptEdits", "unique partial permission mode was not applied")
   chat:reset_permission_mode()
-  vim.ui.select = function(_, _, callback)
-    callback({ value = "plan" })
-  end
   require("pi.commands.permission").cycle(root)
-  vim.ui.select = original_select
+  assert(chat:inline_menu_active(), "unknown mode did not open the inline selector")
+  for index, row in ipairs(chat.inline_menu:_frame().filtered) do
+    if row.value.value == "plan" then
+      chat.inline_menu:_frame().current = index
+      break
+    end
+  end
+  chat.inline_menu:submit()
   runtime.send_prompt = original_send_prompt
   assert(sent_permission_command[1] == "/permissions plan", "unknown mode was guessed instead of explicitly selected")
 
@@ -384,7 +396,6 @@ local function run()
 end
 
 local ok, err = xpcall(run, debug.traceback)
-vim.ui.select = original_select
 runtime.send_prompt = original_send_prompt
 runtime.chats[root] = previous_runtime_chat
 if chat then

@@ -14,14 +14,13 @@ state, live footer, settings, session discovery and tree navigation, fork/clone,
 compaction, bounded history pagination, and native Extension select, confirm,
 input, and editor dialogs. When Pi advertises structured administrative
 workflows, provider login/logout, project trust, resource reload, model cycling
-scope, JSONL import, session sharing, and the installed changelog also stay
-inside the native Neovim frontend.
+scope, and their native selection flows also stay inside the Neovim frontend.
 The bundled todo Extension makes the agent decompose complex implementation work
 into a branch-aware plan, keep it current during execution, and render its
 compact live plan inside the conversation transcript.
 
 When Pi advertises the `list_sessions` and `navigate_tree` RPC capabilities,
-`/resume` opens a bounded native session picker and the tree UI can move the
+`/resume` opens a bounded inline session menu and the tree UI can move the
 active leaf to an existing entry. Older RPC processes retain exact-path resume
 and tree inspection, and report the missing capability without sending an
 unsupported command.
@@ -88,7 +87,6 @@ The `snacks.nvim` dependency is optional. Remove it when using
 | `:PiTree` | Inspect or navigate the current session tree |
 | `:PiFork` | Fork from a previous user message |
 | `:PiClone` | Clone the active session branch |
-| `:PiCommands` | Browse extension, prompt, and skill commands |
 | `:PiNew` | Start a new session |
 | `:PiCompact [instructions]` | Compact the current session |
 | `:PiStatus` | Show session usage and cost |
@@ -148,22 +146,44 @@ before the local mirror changes; a failed request leaves the displayed value
 alone. Backends without the state field show `unknown` and require an explicit
 Enable or Disable choice instead of guessing the current value.
 
-The prompt editor focuses automatically and mirrors Pi's primary controls:
+Pi-owned selection workflows render as a temporary, borderless, full-width menu
+inside the Chat canvas above the prompt. This includes model, thinking,
+permission mode, layout, settings, tree/fork, resume, and structured
+administrative selection and confirmation. Printable characters filter the
+current menu, including `j` and `k`; use arrows or `Ctrl-P`/`Ctrl-N` to move,
+`Backspace` to edit the filter, and `Enter` to select. `Tab` toggles an item in a
+multi-select menu. `Esc` returns through settings/tree submenus before closing
+the group, while `Ctrl-Q` closes the whole group and returns to the previous
+editor window. Confirmations start on Cancel. Menus are bounded, disappear
+after use, and never add synthetic messages to Pi's transcript.
+
+The prompt editor focuses automatically and stays locked in Insert mode while
+it owns focus. Printable keys always edit text instead of invoking Neovim
+Normal or Visual commands. `Esc` closes slash-command completion or interrupts
+active work without leaving the prompt. `Ctrl-Q` is the explicit way back to
+the most recently used non-Pi editor window; it enters Normal mode while the
+chat, draft, and Pi process continue running. If that window no longer exists,
+focus falls back to the Pi canvas in Normal mode.
+
+The prompt mirrors Pi's primary controls:
 
 | Key | Action |
 | --- | --- |
 | `Enter` | Accept a selected slash command, otherwise submit or steer |
 | `Ctrl-J` | Insert a newline |
 | `Alt-Enter` | Queue a follow-up |
-| `Esc` / `Ctrl-C` | Interrupt active work |
-| `Ctrl-L` | Select a model |
-| `Ctrl-P` | Cycle models |
-| `Alt-P` | Cycle permission mode |
-| `Shift-Tab` | Cycle thinking level |
+| `Esc` | Close slash-command completion or interrupt active work; remain in the prompt |
+| `Ctrl-C` | Interrupt active work |
+| `Ctrl-Q` | Return to the most recent non-Pi editor window in Normal mode |
+| `Ctrl-L` | Prefill `/model ` |
+| `Ctrl-P` | Navigate slash completion, otherwise prefill `/model ` |
+| `Alt-P` | Prefill `/permissions ` |
+| `Shift-Tab` | Navigate slash completion, otherwise prefill `/thinking ` |
 | `Ctrl-O` | Toggle the tool under the cursor, or the complete process from the prompt |
 | Left click | Toggle the clicked process summary or tool output |
+| Left drag | Select rendered transcript text and copy it to the system `+` clipboard on release |
+| Right click in prompt | Move the cursor to the click and paste text or add a clipboard image attachment |
 | `Ctrl-T` | Toggle complete process details (compatibility alias) |
-| `Ctrl-X` | Copy the last assistant response |
 | `gH` | Load the next older bounded history page from the transcript |
 | `Ctrl-V` / `Ctrl-Shift-V` | Paste an image from the system clipboard (text paste is preserved as a fallback) |
 | `/` | Open slash-command completion |
@@ -173,7 +193,9 @@ While a permission prompt is open, Pi renders it inline at the end of the
 conversation and captures its navigation keys while the chat stays read-only,
 so completion, search, cursor-line, and other editor plugins cannot alter it.
 Use `j`/`k` or arrows to select, `Enter` to confirm, `Esc` to block, and `Ctrl-Q`
-to cancel safely and return to the Pi canvas in Neovim Normal mode.
+to cancel safely and return to the Pi canvas in Neovim Normal mode. This
+permission-panel behavior is separate from the main prompt's editor-return
+shortcut.
 
 Generic Extension dialogs use pi.nvim-owned scratch buffers instead of
 plugin-overridden `vim.ui` surfaces. They are queued and correlated by request
@@ -192,10 +214,12 @@ hook is removed when the surface closes. Secrets are never added to the prompt
 buffer, transcript, notifications, or command history.
 
 `/resume` uses Pi's authoritative, current-project session catalogue. The
-native picker displays the stored name or preview, message count, model, and
+inline menu displays the stored name or preview, message count, model, and
 update date, and loads additional bounded pages through Pi-owned opaque
 cursors. It never scans or parses the Pi session directory in Lua. An explicit
-path remains available from the picker and on older Pi processes. Cross-project
+path remains available from the menu. On older Pi processes, `/resume` and
+`/name` restore the prompt with the corresponding slash command prefilled
+instead of opening an editor-level input popup. Cross-project
 resume remains blocked in every security mode. `:PiTree` and `/tree` use
 structured entry IDs; successful navigation reloads the transcript and session
 state only after Pi confirms the new leaf, while cancellation, failure, or a
@@ -213,11 +237,10 @@ Typing `/` opens Pi's borderless command menu containing built-ins plus commands
 loaded from extensions, prompt templates, and skills. Command names are fuzzy
 matched and ranked while matched characters, the active row, parameter hints,
 and descriptions retain distinct semantic highlighting. Commands implemented by the RPC
-frontend include `/settings`, `/model`, `/copy`, `/name`, `/session`, `/hotkeys`,
-`/fork`, `/clone`, `/tree`, `/new`, `/compact`, `/resume`, `/export`, `/login`,
-`/logout`, `/trust`, `/reload`, `/scoped-models`, `/import`, `/share`,
-`/changelog`, and `/quit`.
-pi.nvim also provides `/thinking`, `/permissions`, `/mode`, `/layout`, `/commands`, `/abort`, and `/clear`.
+frontend include `/settings`, `/model`, `/name`, `/session`, `/hotkeys`,
+`/fork`, `/clone`, `/tree`, `/new`, `/compact`, `/resume`, `/login`, `/logout`,
+`/trust`, `/reload`, `/scoped-models`, and `/quit`.
+pi.nvim also provides `/thinking`, `/permissions`, and `/layout`.
 The bundled `/todos [show|hide]` command controls the task plan rendered inline
 at the end of the conversation. The agent's
 `todo` tool creates an ordered plan atomically with `plan`, then supports `list`,
@@ -226,14 +249,18 @@ meaningful steps, the Extension tells the agent to establish a 3-7 step plan
 before substantive implementation, update each item immediately after
 verification, and resolve the list before its final response. Pending,
 in-progress, and completed state is restored from the active Pi session branch.
-Both `/new` and `/clear` start a fresh Pi session, so `/clear` resets the model
-conversation and context usage instead of only hiding the rendered transcript.
+`/new` starts a fresh Pi session and resets the model conversation and context
+usage instead of only hiding the rendered transcript.
 Administrative commands are enabled per project only when that Pi process
 advertises `administrative_workflows`. Older processes keep the commands
 searchable as TUI-only and report a precise limitation instead of sending them
 to the model. Input beginning
 with `!` runs through Pi's RPC bash command. Unknown slash commands pass through
-to Pi so extension, prompt-template, and skill commands continue to work.
+to Pi so extension, prompt-template, and skill commands continue to work, except
+for the deliberately removed `/mode`, `/permission`, `/clear`, `/commands`,
+`/changelog`, `/export`, `/import`, `/share`, `/abort`, `/llama`, and `/copy`.
+Those names are filtered from static and Pi-discovered completion and manual
+entry reports that pi.nvim does not support them without sending a model prompt.
 
 On an `administrative_workflows` capable process, `/trust` changes Pi's saved
 decision through structured RPC. Pi reports active and saved decisions
@@ -245,9 +272,14 @@ Browser URLs and device codes are reported as structured notices, while values
 marked `sensitive` use the concealed scratch input described above. Successful
 authentication refreshes Pi state, models, and commands. `/reload` asks Pi to
 reload its resources in place, then clears stale Extension status/widgets and
-accepts the replacement state published by reloaded Extensions. `/share`
-requires explicit confirmation because Pi creates an external private gist;
-pi.nvim never implements GitHub access itself.
+accepts the replacement state published by reloaded Extensions.
+
+Administrative provider/method selection, logout confirmation, model
+scope multi-selection, and non-sensitive authentication input use the same
+inline menu. Structurally sensitive API keys and passwords remain the sole input
+exception and use the concealed scratch surface described above. Extension
+dialogs, tool permission requests, and image previews keep
+their existing owners and surfaces.
 
 Example visual-mode mapping:
 
@@ -361,7 +393,7 @@ to `cache_max_age_days`. Pending prompt images are additionally bounded by
 ### Session permission modes
 
 With the default `security.mode = "confirm"`, the active session permission mode
-can be changed without restarting Pi. Use `Alt-P`, `/permissions`, `/mode`, or
+can be changed without restarting Pi. Use `Alt-P`, `/permissions`, or
 `:PiPermissions`:
 
 | Mode | Behavior |

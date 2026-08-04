@@ -40,10 +40,58 @@ function TranscriptView.new(deps)
     process_ranges = {},
     image_placements = {},
     image_generation = 0,
+    mouse_generation = 0,
+    mouse_gesture = nil,
     preserve_prepend = false,
     destroyed = false,
   }, TranscriptView)
   return self
+end
+
+local function character_start(line, column)
+  if line == "" then
+    return 0
+  end
+  column = math.max(0, math.min(column, #line - 1))
+  while column > 0 do
+    local byte = line:byte(column + 1)
+    if not byte or byte < 0x80 or byte >= 0xC0 then
+      break
+    end
+    column = column - 1
+  end
+  return column
+end
+
+local function character_end(line, column)
+  if column >= #line then
+    return #line
+  end
+  column = character_start(line, column)
+  local byte = line:byte(column + 1) or 0
+  local width = byte < 0x80 and 1 or byte < 0xE0 and 2 or byte < 0xF0 and 3 or 4
+  return math.min(#line, column + width)
+end
+
+local function position_after(left, right)
+  return left.row > right.row or (left.row == right.row and left.column > right.column)
+end
+
+local function selected_text(buf, anchor, cursor)
+  local first, last = anchor, cursor
+  if position_after(first, last) then
+    first, last = last, first
+  end
+  local lines = vim.api.nvim_buf_get_lines(buf, first.row - 1, last.row, false)
+  if #lines == 0 then
+    return ""
+  end
+  if #lines == 1 then
+    return lines[1]:sub(first.column + 1, character_end(lines[1], last.column))
+  end
+  lines[1] = lines[1]:sub(first.column + 1)
+  lines[#lines] = lines[#lines]:sub(1, character_end(lines[#lines], last.column))
+  return table.concat(lines, "\n")
 end
 
 function TranscriptView:window()
@@ -60,6 +108,144 @@ end
 
 function TranscriptView:body_bytes()
   return self.body_bytes_provider()
+end
+
+function TranscriptView:cancel_mouse_gesture()
+  local gesture = self.mouse_gesture
+  if
+    gesture
+    and vim.api.nvim_win_is_valid(gesture.win)
+    and vim.api.nvim_get_current_win() == gesture.win
+    and vim.api.nvim_get_mode().mode:match("^[vV\22sS\19]")
+  then
+    vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
+  end
+  self.mouse_generation = self.mouse_generation + 1
+  self.mouse_gesture = nil
+end
+
+function TranscriptView:_mouse_position(mouse)
+  local win = self:window()
+  if
+    self.destroyed
+    or not self.buf
+    or not vim.api.nvim_buf_is_valid(self.buf)
+    or not win
+    or not vim.api.nvim_win_is_valid(win)
+    or tonumber(mouse and mouse.winid) ~= win
+    or vim.api.nvim_win_get_buf(win) ~= self.buf
+  then
+    return nil
+  end
+  local row = tonumber(mouse.line)
+  local column = tonumber(mouse.column)
+  local count = vim.api.nvim_buf_line_count(self.buf)
+  if not row or not column or row < 1 or row > count then
+    return nil
+  end
+  local line = vim.api.nvim_buf_get_lines(self.buf, row - 1, row, false)[1] or ""
+  return { row = row, column = character_start(line, column - 1) }
+end
+
+function TranscriptView:_active_mouse_gesture(generation)
+  local gesture = self.mouse_gesture
+  if not gesture or (generation and gesture.generation ~= generation) then
+    return nil
+  end
+  local win = self:window()
+  if
+    self.destroyed
+    or self.buf ~= gesture.buf
+    or not vim.api.nvim_buf_is_valid(gesture.buf)
+    or win ~= gesture.win
+    or not vim.api.nvim_win_is_valid(gesture.win)
+    or vim.api.nvim_win_get_buf(gesture.win) ~= gesture.buf
+  then
+    self:cancel_mouse_gesture()
+    return nil
+  end
+  return gesture
+end
+
+function TranscriptView:begin_mouse_gesture(mouse)
+  local position = self:_mouse_position(mouse)
+  if not position then
+    self:cancel_mouse_gesture()
+    return nil
+  end
+  self.mouse_generation = self.mouse_generation + 1
+  local generation = self.mouse_generation
+  self.mouse_gesture = {
+    generation = generation,
+    buf = self.buf,
+    win = self:window(),
+    anchor = position,
+    cursor = position,
+    mouse = vim.deepcopy(mouse),
+    dragged = false,
+    visual_started = false,
+  }
+  if vim.api.nvim_get_mode().mode:match("^[vV\22sS\19]") then
+    vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
+  end
+  vim.api.nvim_set_current_win(self.mouse_gesture.win)
+  pcall(vim.api.nvim_win_set_cursor, self.mouse_gesture.win, { position.row, position.column })
+  return generation
+end
+
+function TranscriptView:drag_mouse_gesture(mouse, generation)
+  local gesture = self:_active_mouse_gesture(generation)
+  if not gesture then
+    return false
+  end
+  local position = self:_mouse_position(mouse)
+  if not position then
+    self:cancel_mouse_gesture()
+    return false
+  end
+  gesture.cursor = position
+  gesture.mouse = vim.deepcopy(mouse)
+  gesture.dragged = gesture.dragged or position.row ~= gesture.anchor.row or position.column ~= gesture.anchor.column
+  if not gesture.dragged then
+    return false
+  end
+  local ok = pcall(function()
+    vim.api.nvim_set_current_win(gesture.win)
+    if not gesture.visual_started or vim.api.nvim_get_mode().mode ~= "v" then
+      vim.api.nvim_win_set_cursor(gesture.win, { gesture.anchor.row, gesture.anchor.column })
+      vim.cmd("normal! v")
+      gesture.visual_started = true
+    end
+    vim.api.nvim_win_set_cursor(gesture.win, { position.row, position.column })
+  end)
+  if not ok then
+    self:cancel_mouse_gesture()
+    return false
+  end
+  return true
+end
+
+function TranscriptView:release_mouse_gesture(mouse, generation)
+  local gesture = self:_active_mouse_gesture(generation)
+  if not gesture then
+    return false
+  end
+  if not self:drag_mouse_gesture(mouse, generation) and not self:_active_mouse_gesture(generation) then
+    return false
+  end
+  gesture = self:_active_mouse_gesture(generation)
+  if not gesture then
+    return false
+  end
+  self.mouse_gesture = nil
+  if not gesture.dragged then
+    return self.actions.left_mouse(gesture.mouse) == true
+  end
+  local text = selected_text(gesture.buf, gesture.anchor, gesture.cursor)
+  if text == "" then
+    return false
+  end
+  return self.actions.copy_text(text) ~= false
 end
 
 local function slice(items, first, last)
@@ -215,6 +401,7 @@ function TranscriptView:_ensure_buffer()
         self.image_backend:clear(event.buf)
       end
       if self.buf == event.buf then
+        self:cancel_mouse_gesture()
         self.buf = nil
         self.render_frame = nil
       end
@@ -247,14 +434,17 @@ function TranscriptView:_ensure_buffer()
   vim.keymap.set("n", "<C-t>", function()
     self.actions.toggle_thinking()
   end, { buffer = self.buf, silent = true })
-  vim.keymap.set("n", "<C-x>", function()
-    self.actions.copy_last_assistant()
-  end, { buffer = self.buf, silent = true })
   vim.keymap.set("n", "gH", function()
     self.actions.load_older_history()
   end, { buffer = self.buf, silent = true })
-  vim.keymap.set("n", "<LeftMouse>", function()
-    self.actions.left_mouse()
+  vim.keymap.set({ "n", "x" }, "<LeftMouse>", function()
+    self:begin_mouse_gesture(vim.fn.getmousepos())
+  end, { buffer = self.buf, silent = true })
+  vim.keymap.set({ "n", "x" }, "<LeftDrag>", function()
+    self:drag_mouse_gesture(vim.fn.getmousepos())
+  end, { buffer = self.buf, silent = true })
+  vim.keymap.set({ "n", "x" }, "<LeftRelease>", function()
+    self:release_mouse_gesture(vim.fn.getmousepos())
   end, { buffer = self.buf, silent = true })
   vim.keymap.set("n", "<CR>", function()
     local descriptor = self:image_at_row(vim.api.nvim_win_get_cursor(self:window())[1])
@@ -716,6 +906,7 @@ function TranscriptView:invalidate_item(item)
 end
 
 function TranscriptView:clear()
+  self:cancel_mouse_gesture()
   self.image_generation = self.image_generation + 1
   self.render_cache = nil
   self.render_frame = nil
@@ -816,6 +1007,7 @@ function TranscriptView:destroy()
     return
   end
   self.destroyed = true
+  self:cancel_mouse_gesture()
   if self.render_timer then
     self.render_timer:stop()
     self.render_timer:close()

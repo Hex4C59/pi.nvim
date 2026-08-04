@@ -4,8 +4,6 @@ local previous_modules = {
   permission = package.loaded["pi.commands.permission"],
   ui = package.loaded["pi.commands.ui"],
 }
-local previous_select = vim.ui.select
-
 local client = {
   root = "/settings-project",
   session = {
@@ -32,11 +30,32 @@ local chat = {
     }
   end,
   toggle_process = function() end,
+  current_layout = function()
+    return "right"
+  end,
+  is_open = function()
+    return true
+  end,
+  set_position = function(self, value)
+    self.selected_layout = value
+  end,
+  open = function(self)
+    self.opened = true
+  end,
 }
 
 local errors = {}
 local refresh_count = 0
 local refresh_value
+local menus = {}
+local function open_menu(_, options)
+  local surface = { closed = false, options = options }
+  function surface:close()
+    self.closed = true
+  end
+  table.insert(menus, surface)
+  return surface
+end
 package.loaded["pi.runtime"] = {
   get_client = function()
     return client
@@ -52,12 +71,23 @@ package.loaded["pi.runtime"] = {
     refresh_count = refresh_count + 1
     refreshed_client.session.autoRetryEnabled = refresh_value
   end,
+  open_inline_select = open_menu,
 }
+local model_calls = {}
 package.loaded["pi.commands.model"] = {
-  select_model = function() end,
-  select_thinking_level = function() end,
+  select_model = function(...)
+    table.insert(model_calls, { kind = "model", args = { ... } })
+  end,
+  select_thinking_level = function(...)
+    table.insert(model_calls, { kind = "thinking", args = { ... } })
+  end,
 }
-package.loaded["pi.commands.permission"] = { select = function() end }
+local permission_calls = {}
+package.loaded["pi.commands.permission"] = {
+  select = function(...)
+    table.insert(permission_calls, { ... })
+  end,
+}
 package.loaded["pi.commands.ui"] = nil
 
 local function find_item(items, label)
@@ -69,23 +99,45 @@ local function find_item(items, label)
 end
 
 local function open_settings(commands)
-  local selection = {}
-  vim.ui.select = function(items, options, callback)
-    selection.items = items
-    selection.options = options
-    selection.callback = callback
-  end
   commands.settings(client.root)
-  return selection
+  return menus[#menus]
 end
 
 local function run()
   local commands = require("pi.commands.ui")
 
+  local model_menu = open_settings(commands)
+  model_menu.options.on_select(assert(find_item(model_menu.options.items, "Model")))
+  assert(
+    model_calls[1].kind == "model" and model_calls[1].args[3].stack == "push",
+    "settings model action did not request an inline submenu"
+  )
+
+  local permission_menu = open_settings(commands)
+  permission_menu.options.on_select(assert(find_item(permission_menu.options.items, "Permission mode")))
+  assert(permission_calls[1][3].stack == "push", "settings permission action did not request an inline submenu")
+
+  commands.layout(nil, client.root)
+  local layout_menu = menus[#menus]
+  assert(layout_menu.options.title == "Pi layout" and layout_menu.options.current == "right", "layout menu lost state")
+  layout_menu.options.on_select("bottom")
+  assert(chat.selected_layout == "bottom", "layout selection did not reach the Chat shell")
+
+  chat.selected_layout = nil
+  commands.layout("t", client.root)
+  local filtered_layout_menu = menus[#menus]
+  assert(filtered_layout_menu.options.title == "Pi layout - t", "ambiguous layout query did not open a menu")
+  assert(#filtered_layout_menu.options.items > 1, "ambiguous layout query lost matching candidates")
+  assert(chat.selected_layout == nil, "ambiguous layout query changed the layout before selection")
+
+  commands.layout("bot", client.root)
+  assert(chat.selected_layout == "bottom", "unique partial layout query was not applied directly")
+
   local menu = open_settings(commands)
-  local retry = assert(find_item(menu.items, "Auto-retry"), "settings omitted auto-retry")
+  local retry = assert(find_item(menu.options.items, "Auto-retry"), "settings omitted auto-retry")
   assert(retry.value == "on", "settings did not display enabled auto-retry")
-  menu.callback(retry)
+  menu.options.on_select(retry)
+  assert(menu.closed, "final settings action did not close the inline menu group")
   local failed = client.requests[#client.requests]
   assert(
     failed.command == "set_auto_retry" and failed.payload.enabled == false,
@@ -97,7 +149,7 @@ local function run()
   assert(refresh_count == 0 and errors[#errors] == "retry setting failed", "failed retry toggle was not reported")
 
   menu = open_settings(commands)
-  menu.callback(assert(find_item(menu.items, "Auto-retry")))
+  menu.options.on_select(assert(find_item(menu.options.items, "Auto-retry")))
   local succeeded = client.requests[#client.requests]
   assert(client.session.autoRetryEnabled == true, "retry state changed before authoritative refresh")
   refresh_value = false
@@ -106,22 +158,55 @@ local function run()
 
   client.session.autoRetryEnabled = nil
   menu = open_settings(commands)
-  retry = assert(find_item(menu.items, "Auto-retry"))
+  retry = assert(find_item(menu.options.items, "Auto-retry"))
   assert(retry.value == "unknown", "missing retry capability did not display unknown")
-  menu.callback(retry)
-  assert(menu.options.prompt == "Set Pi auto-retry", "unknown retry state did not require an explicit choice")
+  menu.options.on_select(retry)
+  local retry_menu = menus[#menus]
+  assert(retry_menu.options.title == "Set Pi auto-retry", "unknown retry state did not require an explicit choice")
+  assert(retry_menu.options.stack == "push", "unknown retry state did not open as a settings submenu")
   assert(#client.requests == 2, "unknown retry state guessed a toggle value")
-  local disable = assert(find_item(menu.items, "Disable"), "explicit disable choice is missing")
-  menu.callback(disable)
+  local disable = assert(find_item(retry_menu.options.items, "Disable"), "explicit disable choice is missing")
+  retry_menu.options.on_select(disable)
   local explicit = client.requests[#client.requests]
   assert(explicit.payload.enabled == false, "explicit unknown-state choice sent the wrong value")
   refresh_value = false
   explicit.callback(true, {})
   assert(refresh_count == 2 and client.session.autoRetryEnabled == false, "explicit retry setting was not refreshed")
+
+  client.session.autoCompactionEnabled = true
+  menu = open_settings(commands)
+  menu.options.on_select(assert(find_item(menu.options.items, "Auto-compact")))
+  local compaction = client.requests[#client.requests]
+  assert(
+    compaction.command == "set_auto_compaction" and compaction.payload.enabled == false,
+    "auto-compact request changed"
+  )
+  assert(client.session.autoCompactionEnabled == true, "auto-compact changed before authoritative refresh")
+  compaction.callback(true, {})
+  assert(
+    refresh_count == 3 and client.session.autoCompactionEnabled == true,
+    "auto-compact did not request a state refresh"
+  )
+
+  menu = open_settings(commands)
+  menu.options.on_select(assert(find_item(menu.options.items, "Steering mode")))
+  local steering = client.requests[#client.requests]
+  assert(
+    steering.command == "set_steering_mode" and steering.payload.mode == "one-at-a-time",
+    "steering request changed"
+  )
+  steering.callback(true, {})
+  assert(refresh_count == 4 and client.session.steeringMode == "all", "steering mode bypassed authoritative refresh")
+
+  menu = open_settings(commands)
+  menu.options.on_select(assert(find_item(menu.options.items, "Follow-up mode")))
+  local followup = client.requests[#client.requests]
+  followup.callback(false, nil, "follow-up setting failed")
+  assert(refresh_count == 4 and client.session.followUpMode == "one-at-a-time", "failed follow-up changed local state")
+  assert(errors[#errors] == "follow-up setting failed", "failed follow-up was not reported")
 end
 
 local ok, err = xpcall(run, debug.traceback)
-vim.ui.select = previous_select
 package.loaded["pi.runtime"] = previous_modules.runtime
 package.loaded["pi.commands.model"] = previous_modules.model
 package.loaded["pi.commands.permission"] = previous_modules.permission

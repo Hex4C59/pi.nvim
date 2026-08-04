@@ -207,11 +207,13 @@ local function run()
   local status_window = chat.input_area:status_window()
   local item_count = #chat.transcript.items
   local normal_maps = mapping_count(input_buffer, "n")
+  local generation_before_close = chat:action_generation()
   chat:set_activity("working")
   assert(chat.animation_timer, "close fixture did not restart activity")
   chat:close()
 
   assert(not chat:is_open(), "close left the complete Chat shell open")
+  assert(chat:action_generation() == generation_before_close + 1, "close did not invalidate async menu callbacks")
   assert(chat.animation_timer == nil, "close retained the activity timer")
   assert(decisions[1] == false and not chat:has_active_permission_request(), "close did not fail closed")
   for _, win in ipairs({ main_window, input_window, status_window, preview_window }) do
@@ -274,7 +276,11 @@ local function run()
   chat:render_history({ { role = "assistant", content = { { type = "text", text = "first history" } } } })
   assert(chat:retained_transcript_bytes() > 0, "history did not populate the local projection")
   chat:update_stats({ tokens = { input = 10 }, contextUsage = { percent = 20 }, cost = 1 })
+  local reset_menu = chat:open_inline_menu({ kind = "select", title = "Reset menu", items = { "one" } })
+  local generation_before_reset = chat:action_generation()
   chat:reset_session_projection()
+  assert(chat:action_generation() == generation_before_reset + 1, "session reset did not invalidate menu callbacks")
+  assert(reset_menu.closed and not chat:inline_menu_active(), "session reset retained an inline menu")
   assert(chat:retained_transcript_bytes() == 0 and not chat.transcript.history_loaded, "session reset retained history")
   assert(next(chat.stats.tokens) == nil and chat.stats.cost == 0, "session reset retained statistics")
   chat:render_history({ { role = "assistant", content = { { type = "text", text = "replacement history" } } } })
@@ -291,6 +297,13 @@ local function run()
   assert(chat:_open_image_preview({ block = image }), "destroy fixture image preview did not open")
   local destroy_preview_buffer = chat.image_preview.buf
   local destroy_preview_window = chat.image_preview.win
+  local destroy_inline_surface = chat:open_inline_menu({
+    kind = "select",
+    title = "Destroy menu",
+    items = { "one", "two" },
+  })
+  local destroy_inline_buffer = chat.inline_menu:buffer()
+  local destroy_inline_window = chat.inline_menu:window()
   chat:start_assistant({ role = "assistant", content = {} })
   chat:update_assistant({ role = "assistant", content = { { type = "text", text = "pending render" } } }, {
     type = "text_delta",
@@ -311,6 +324,7 @@ local function run()
     chat.input_area:status_window(),
     destroy_command_window,
     destroy_preview_window,
+    destroy_inline_window,
   }
   local destroy_buffers = {
     chat.transcript_view:buffer(),
@@ -319,10 +333,12 @@ local function run()
     destroy_command_buffer,
     destroy_widget_buffer,
     destroy_preview_buffer,
+    destroy_inline_buffer,
   }
   chat:destroy()
   chat:destroy()
   assert(chat.destroyed and chat.animation_timer == nil, "destroy did not become idempotently terminal")
+  assert(destroy_inline_surface.closed, "destroy did not invalidate the inline menu callback surface")
   assert(
     chat.transcript_view.render_timer == nil and not chat.transcript_view.render_pending,
     "destroy retained render work"

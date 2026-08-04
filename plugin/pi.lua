@@ -71,10 +71,6 @@ vim.api.nvim_create_user_command("PiClone", function()
   pi().clone()
 end, { desc = "Clone the active Pi branch" })
 
-vim.api.nvim_create_user_command("PiCommands", function()
-  pi().commands()
-end, { desc = "Browse Pi commands" })
-
 vim.api.nvim_create_user_command("PiNew", function()
   pi().new_session()
 end, { desc = "Start a new Pi session" })

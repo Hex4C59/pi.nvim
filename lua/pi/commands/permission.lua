@@ -38,31 +38,62 @@ local function apply(chat, value)
   return true
 end
 
-function M.select(root, requested)
+function M.select(root, requested, options)
   root = root or runtime.client_root()
   local chat = runtime.chat_for(root)
   chat:open(false)
   requested = vim.trim(requested or "")
   if requested ~= "" then
-    apply(chat, requested)
-    return
+    local exact = permission_mode.normalize(requested)
+    if exact then
+      apply(chat, exact)
+      return
+    end
   end
 
   if not mode_guard(chat) then
     return
   end
-  local current = chat:permission_mode()
-  vim.ui.select(permission_mode.options(), {
-    prompt = "Pi permission mode",
-    format_item = function(item)
-      local marker = item.value == current and "●" or " "
-      return ("%s %-13s %s"):format(marker, item.label, item.description)
-    end,
-  }, function(item)
-    if item then
-      apply(chat, item.value)
+  local choices = permission_mode.options()
+  if requested ~= "" then
+    local query = requested:lower()
+    local matches = {}
+    for _, item in ipairs(choices) do
+      local searchable = (item.value .. " " .. item.label):lower()
+      if searchable:find(query, 1, true) then
+        table.insert(matches, item)
+      end
     end
-  end)
+    if #matches == 0 then
+      notify_error(("Unknown Pi permission mode %q. Choose manual, acceptEdits, auto, or plan"):format(requested))
+      return
+    elseif #matches == 1 then
+      apply(chat, matches[1].value)
+      return
+    end
+    choices = matches
+  end
+  local current = chat:permission_mode()
+  runtime.open_inline_select(root, {
+    title = requested ~= "" and ("Pi permission mode - " .. requested) or "Pi permission mode",
+    items = choices,
+    current_key = current,
+    key_item = function(item)
+      return item.value
+    end,
+    format_item = function(item)
+      return item.label
+    end,
+    describe_item = function(item)
+      return item.description
+    end,
+    stack = type(options) == "table" and options.stack or nil,
+    on_select = function(item)
+      if item then
+        apply(chat, item.value)
+      end
+    end,
+  })
 end
 
 function M.cycle(root, delta)

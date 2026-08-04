@@ -63,13 +63,14 @@ local function new_fixture(overrides)
     "cycle_thinking_level",
     "toggle_tools",
     "toggle_thinking",
-    "copy_last_assistant",
+    "copy_text",
     "load_older_history",
     "left_mouse",
     "open_image_preview",
   }) do
     actions[name] = function(...)
       table.insert(observed.actions, { name = name, args = { ... } })
+      return true
     end
   end
   local view = TranscriptView.new({
@@ -182,14 +183,75 @@ with_view({}, function(fixture)
     mappings[mapping.lhs] = true
   end
   assert(
-    mappings.q and mappings.i and mappings.a and mappings.gH and mappings["<CR>"],
+    mappings.q
+      and mappings.i
+      and mappings.a
+      and mappings.gH
+      and mappings["<CR>"]
+      and mappings["<LeftMouse>"]
+      and mappings["<LeftDrag>"]
+      and mappings["<LeftRelease>"],
     "transcript keymaps are incomplete"
   )
+  assert(not mappings["<C-X>"], "transcript retained the removed Ctrl-X copy mapping")
   assert(view:ensure_buffer() == buf, "ensure_buffer replaced a valid owned buffer")
   view:destroy()
   view:destroy()
   assert(not view:has_buffer() and not view:owns_buffer(buf), "destroy retained transcript buffer ownership")
   assert(not vim.api.nvim_buf_is_valid(buf), "destroy left the transcript buffer alive")
+end)
+
+with_view({}, function(fixture)
+  local view = fixture.view
+  local buf, win = fixture:open(50, 8)
+  vim.bo[buf].modifiable = true
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "alpha 中文 omega", "second line", "third" })
+  vim.bo[buf].modifiable = false
+
+  local function mouse(line, column)
+    return { winid = win, line = line, column = column, screenrow = line, screencol = column }
+  end
+
+  local click_generation = assert(view:begin_mouse_gesture(mouse(2, 2)), "transcript click did not begin")
+  assert(view:release_mouse_gesture(mouse(2, 2), click_generation), "transcript click was not delegated")
+  local click = fixture.observed.actions[#fixture.observed.actions]
+  assert(click.name == "left_mouse" and click.args[1].line == 2, "click fallback lost its mouse position")
+
+  local utf8_generation = assert(view:begin_mouse_gesture(mouse(1, 7)), "UTF-8 drag did not begin")
+  assert(view:drag_mouse_gesture(mouse(1, 10), utf8_generation), "UTF-8 drag did not enter character selection")
+  assert(view:release_mouse_gesture(mouse(1, 10), utf8_generation), "UTF-8 drag was not copied")
+  local copied = fixture.observed.actions[#fixture.observed.actions]
+  assert(copied.name == "copy_text" and copied.args[1] == "中文", "UTF-8 drag split or omitted a character")
+
+  local forward_generation = assert(view:begin_mouse_gesture(mouse(1, 14)), "multiline drag did not begin")
+  assert(view:drag_mouse_gesture(mouse(2, 7), forward_generation), "multiline drag did not select")
+  assert(view:release_mouse_gesture(mouse(2, 7), forward_generation), "multiline drag was not copied")
+  copied = fixture.observed.actions[#fixture.observed.actions]
+  assert(copied.args[1] == "omega\nsecond ", "forward multiline drag copied the wrong visible text")
+
+  local reverse_generation = assert(view:begin_mouse_gesture(mouse(2, 7)), "reverse drag did not begin")
+  assert(view:drag_mouse_gesture(mouse(1, 14), reverse_generation), "reverse drag did not select")
+  assert(view:release_mouse_gesture(mouse(1, 14), reverse_generation), "reverse drag was not copied")
+  copied = fixture.observed.actions[#fixture.observed.actions]
+  assert(copied.args[1] == "omega\nsecond ", "reverse multiline drag changed selection ordering")
+
+  local action_count = #fixture.observed.actions
+  local stale_generation = assert(view:begin_mouse_gesture(mouse(1, 1)), "stale gesture fixture did not begin")
+  local current_generation = assert(view:begin_mouse_gesture(mouse(3, 1)), "replacement gesture did not begin")
+  assert(
+    not view:release_mouse_gesture(mouse(1, 2), stale_generation) and #fixture.observed.actions == action_count,
+    "stale mouse generation invoked a callback"
+  )
+  view:cancel_mouse_gesture()
+  assert(
+    not view:release_mouse_gesture(mouse(3, 2), current_generation) and #fixture.observed.actions == action_count,
+    "cancelled mouse generation invoked a callback"
+  )
+
+  local empty_generation = assert(view:begin_mouse_gesture(mouse(3, 1)), "empty selection fixture did not begin")
+  assert(view:release_mouse_gesture(mouse(3, 1), empty_generation), "plain click fallback was lost")
+  assert(fixture.observed.actions[#fixture.observed.actions].name == "left_mouse", "empty drag copied text")
+  vim.api.nvim_feedkeys(vim.keycode("<Esc>"), "nx", false)
 end)
 
 with_view({

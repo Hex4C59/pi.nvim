@@ -2,26 +2,32 @@ local M = {}
 
 local administrative_commands = {
   ["scoped-models"] = true,
-  import = true,
-  share = true,
-  changelog = true,
   trust = true,
   login = true,
   logout = true,
   reload = true,
 }
 
+local removed_commands = {
+  abort = true,
+  changelog = true,
+  clear = true,
+  commands = true,
+  copy = true,
+  export = true,
+  import = true,
+  llama = true,
+  mode = true,
+  permission = true,
+  share = true,
+}
+
 local builtins = {
   { name = "settings", description = "Open settings menu" },
   { name = "model", description = "Select model", argument_hint = "<provider/model>" },
   { name = "scoped-models", description = "Enable models for cycling", tui_only = true },
-  { name = "export", description = "Export session to HTML", argument_hint = "<path.html>" },
-  { name = "import", description = "Import a session from JSONL", argument_hint = "<path.jsonl>", tui_only = true },
-  { name = "share", description = "Share session as a secret GitHub gist", tui_only = true },
-  { name = "copy", description = "Copy last agent message" },
   { name = "name", description = "Set session display name", argument_hint = "<name>" },
   { name = "session", description = "Show session info and statistics" },
-  { name = "changelog", description = "Show Pi changelog", tui_only = true },
   { name = "hotkeys", description = "Show keyboard shortcuts" },
   { name = "fork", description = "Fork from a previous user message" },
   { name = "clone", description = "Duplicate the current session branch" },
@@ -36,16 +42,16 @@ local builtins = {
   { name = "quit", description = "Close the Pi panel" },
   { name = "thinking", description = "Select thinking level", argument_hint = "<level>" },
   { name = "layout", description = "Change the Pi workspace layout", argument_hint = "<layout>" },
-  { name = "commands", description = "Browse available commands" },
-  { name = "abort", description = "Abort the active operation" },
-  { name = "clear", description = "Clear the conversation and start a fresh session" },
   {
     name = "permissions",
     description = "Select the session permission mode",
     argument_hint = "<manual|acceptEdits|auto|plan>",
   },
-  { name = "mode", description = "Alias for /permissions", argument_hint = "<manual|acceptEdits|auto|plan>" },
 }
+
+function M.is_removed(name)
+  return removed_commands[name] == true
+end
 
 function M.builtin_commands(options)
   local commands = vim.deepcopy(builtins)
@@ -68,7 +74,7 @@ function M.merge(dynamic_commands)
     seen[command.name] = true
   end
   for _, command in ipairs(dynamic_commands or {}) do
-    if command.name and not seen[command.name] then
+    if command.name and not removed_commands[command.name] and not seen[command.name] then
       table.insert(commands, vim.deepcopy(command))
       seen[command.name] = true
     end

@@ -65,8 +65,6 @@ if not baseline_only then
   assert(type(trust.active) == "boolean" and type(trust.cwd) == "string", "project trust metadata is incomplete")
   local scope = request("get_model_scope")
   assert(type(scope.available) == "table" and type(scope.enabled) == "table", "model scope metadata is incomplete")
-  local changelog = request("get_changelog", { limit = 1 })
-  assert(type(changelog.entries) == "table" and #changelog.entries <= 1, "bounded changelog request failed")
 end
 
 client:stop()

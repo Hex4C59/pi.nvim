@@ -34,7 +34,7 @@ local function isolate_input_completion(buf)
 end
 
 local function dispatch_left_mouse(action)
-  if not action() then
+  if not action(vim.fn.getmousepos()) then
     vim.api.nvim_feedkeys(vim.keycode("<LeftMouse>"), "n", false)
   end
 end
@@ -133,6 +133,8 @@ function InputArea.new(deps)
     input_win = nil,
     status_buf = nil,
     status_win = nil,
+    clipboard = deps.clipboard or require("pi.clipboard"),
+    insert_guard_generation = 0,
   }, InputArea)
   return self
 end
@@ -400,7 +402,116 @@ function InputArea:focus()
     return
   end
   vim.api.nvim_set_current_win(self.input_win)
+  self:_start_insert()
+end
+
+function InputArea:_start_insert()
   vim.cmd("startinsert")
+end
+
+function InputArea:_schedule_insert_guard()
+  self.insert_guard_generation = self.insert_guard_generation + 1
+  local generation = self.insert_guard_generation
+  local input_buf = self.input_buf
+  local input_win = self.input_win
+  vim.schedule(function()
+    if generation ~= self.insert_guard_generation then
+      return
+    end
+    if self.input_buf ~= input_buf or not input_buf or not vim.api.nvim_buf_is_valid(input_buf) then
+      return
+    end
+    if self.input_win ~= input_win or not input_win or not vim.api.nvim_win_is_valid(input_win) then
+      return
+    end
+    if vim.api.nvim_get_current_win() ~= input_win or vim.api.nvim_get_current_buf() ~= input_buf then
+      return
+    end
+    if vim.api.nvim_get_mode().mode:sub(1, 1) ~= "i" then
+      self:_start_insert()
+    end
+  end)
+end
+
+function InputArea:_insert_text_at_cursor(text)
+  if type(text) ~= "string" or text == "" then
+    return false
+  end
+  if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
+    return false
+  end
+  if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then
+    return false
+  end
+  local cursor = vim.api.nvim_win_get_cursor(self.input_win)
+  local lines = vim.split(text, "\n", { plain = true, trimempty = false })
+  vim.api.nvim_buf_set_text(self.input_buf, cursor[1] - 1, cursor[2], cursor[1] - 1, cursor[2], lines)
+  if #lines == 1 then
+    vim.api.nvim_win_set_cursor(self.input_win, { cursor[1], cursor[2] + #lines[1] })
+  else
+    vim.api.nvim_win_set_cursor(self.input_win, { cursor[1] + #lines - 1, #lines[#lines] })
+  end
+  self:resize()
+  return true
+end
+
+function InputArea:_paste_clipboard(fallback)
+  local image_ok, image, image_err = pcall(self.clipboard.read_image)
+  if not image_ok then
+    image_err = image
+    image = nil
+  end
+  if image then
+    local added, attachment_err = self.actions.add_image_attachment(image)
+    if not added and attachment_err then
+      vim.notify(attachment_err, vim.log.levels.WARN, { title = "Pi clipboard" })
+    end
+    return added == true
+  end
+  if image_err then
+    vim.notify(image_err, vim.log.levels.WARN, { title = "Pi clipboard" })
+  end
+
+  local text_ok, text = pcall(self.clipboard.read_text)
+  if not text_ok then
+    vim.notify(text, vim.log.levels.WARN, { title = "Pi clipboard" })
+    text = nil
+  end
+  if text then
+    return self:_insert_text_at_cursor(text)
+  end
+  if fallback then
+    vim.api.nvim_feedkeys(vim.keycode("<C-v>"), "n", false)
+  end
+  return false
+end
+
+function InputArea:paste_at_mouse(mouse)
+  mouse = mouse or vim.fn.getmousepos()
+  if
+    not self.input_buf
+    or not vim.api.nvim_buf_is_valid(self.input_buf)
+    or not self.input_win
+    or not vim.api.nvim_win_is_valid(self.input_win)
+    or tonumber(mouse.winid) ~= self.input_win
+    or vim.api.nvim_win_get_buf(self.input_win) ~= self.input_buf
+  then
+    return false
+  end
+
+  local row = tonumber(mouse.line)
+  local column = tonumber(mouse.column)
+  if not row or not column then
+    return false
+  end
+  row = math.max(1, math.min(row, vim.api.nvim_buf_line_count(self.input_buf)))
+  local line = vim.api.nvim_buf_get_lines(self.input_buf, row - 1, row, false)[1] or ""
+  column = math.max(0, math.min(column - 1, #line))
+  vim.api.nvim_set_current_win(self.input_win)
+  vim.api.nvim_win_set_cursor(self.input_win, { row, column })
+  local pasted = self:_paste_clipboard(false)
+  self:_start_insert()
+  return pasted
 end
 
 function InputArea:ensure_input_buffer()
@@ -432,11 +543,26 @@ function InputArea:ensure_input_buffer()
       end
     end,
   })
-  vim.api.nvim_create_autocmd({ "BufLeave", "InsertLeave" }, {
+  vim.api.nvim_create_autocmd("BufLeave", {
     group = self.ui_group,
     buffer = input_buf,
     callback = function()
       self.actions.close_command_menu()
+    end,
+  })
+  vim.api.nvim_create_autocmd("InsertLeave", {
+    group = self.ui_group,
+    buffer = input_buf,
+    callback = function()
+      self.actions.close_command_menu()
+      self:_schedule_insert_guard()
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "BufEnter", "WinEnter" }, {
+    group = self.ui_group,
+    buffer = input_buf,
+    callback = function()
+      self:_schedule_insert_guard()
     end,
   })
 
@@ -456,26 +582,6 @@ function InputArea:ensure_input_buffer()
 
   local function feed(key)
     vim.api.nvim_feedkeys(vim.keycode(key), "n", false)
-  end
-
-  local function paste_clipboard()
-    local image, err = require("pi.clipboard").read_image()
-    if image then
-      local added, attachment_err = self.actions.add_image_attachment(image)
-      if not added and attachment_err then
-        vim.notify(attachment_err, vim.log.levels.WARN, { title = "Pi clipboard" })
-      end
-      return
-    end
-    if err then
-      vim.notify(err, vim.log.levels.WARN, { title = "Pi clipboard" })
-    end
-    local text = require("pi.clipboard").read_text()
-    if text then
-      vim.paste(text, -1)
-    else
-      feed("<C-v>")
-    end
   end
 
   vim.keymap.set("n", "<CR>", function()
@@ -502,8 +608,12 @@ function InputArea:ensure_input_buffer()
     end
     feed("<Tab>")
   end, { buffer = input_buf, silent = true })
-  vim.keymap.set("i", "<C-v>", paste_clipboard, { buffer = input_buf, silent = true })
-  vim.keymap.set("i", "<C-S-v>", paste_clipboard, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<C-v>", function()
+    self:_paste_clipboard(true)
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<C-S-v>", function()
+    self:_paste_clipboard(true)
+  end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Down>", function()
     if not self.actions.select_command(1) then
       feed("<Down>")
@@ -519,9 +629,6 @@ function InputArea:ensure_input_buffer()
       feed("<C-n>")
     end
   end, { buffer = input_buf, silent = true })
-  vim.keymap.set("n", "q", function()
-    self.actions.close()
-  end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Esc>", function()
     if self.actions.command_menu_visible() then
       self.actions.close_command_menu()
@@ -530,36 +637,39 @@ function InputArea:ensure_input_buffer()
     local activity = self.state_provider().activity
     if activity ~= "idle" and activity ~= "starting" then
       self.actions.abort()
-      return
     end
-    feed("<Esc>")
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set({ "n", "i", "v" }, "<C-q>", function()
+    self.actions.close_command_menu()
+    vim.cmd("stopinsert")
+    self.actions.return_to_editor()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-c>", function()
     self.actions.abort()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-l>", function()
-    self.actions.select_model()
+    self.actions.prefill_command("/model ")
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("n", "<C-p>", function()
-    self.actions.cycle_model()
+    self.actions.prefill_command("/model ")
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<C-p>", function()
     if self.actions.select_command(-1) then
       return
     end
-    self.actions.cycle_model()
+    self.actions.prefill_command("/model ")
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<M-p>", function()
-    self.actions.cycle_permission_mode()
+    self.actions.prefill_command("/permissions ")
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("n", "<S-Tab>", function()
-    self.actions.cycle_thinking_level()
+    self.actions.prefill_command("/thinking ")
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<S-Tab>", function()
     if self.actions.select_command(-1) then
       return
     end
-    self.actions.cycle_thinking_level()
+    self.actions.prefill_command("/thinking ")
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<C-o>", function()
     self.actions.toggle_tools()
@@ -567,11 +677,11 @@ function InputArea:ensure_input_buffer()
   vim.keymap.set({ "n", "i" }, "<C-t>", function()
     self.actions.toggle_thinking()
   end, { buffer = input_buf, silent = true })
-  vim.keymap.set({ "n", "i" }, "<C-x>", function()
-    self.actions.copy_last_assistant()
-  end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<LeftMouse>", function()
     dispatch_left_mouse(self.actions.left_mouse)
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set({ "n", "i" }, "<RightMouse>", function()
+    self:paste_at_mouse()
   end, { buffer = input_buf, silent = true })
   return input_buf
 end
@@ -612,6 +722,7 @@ function InputArea:status_window()
 end
 
 function InputArea:close_windows()
+  self.insert_guard_generation = self.insert_guard_generation + 1
   for _, win in pairs({ self.status_win, self.input_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_win_close(win, true)

@@ -5,10 +5,39 @@ local M = {}
 
 local notify_error = runtime.notify_error
 
-function M.select_model(root, query)
+local function menu_stack(options)
+  return type(options) == "table" and options.stack or nil
+end
+
+local function chat_generation(root)
+  return type(runtime.chat_action_generation) == "function" and runtime.chat_action_generation(root) or nil
+end
+
+function M.select_model(root, query, options)
   local client = runtime.get_client(root)
+  local action_generation = chat_generation(client.root)
+  local function action_current()
+    return runtime.client_is_current(client)
+      and (action_generation == nil or chat_generation(client.root) == action_generation)
+  end
+  query = vim.trim(query or "")
+  local loading
+  if query == "" then
+    loading = runtime.open_inline_select(client.root, {
+      title = "Pi model",
+      items = {},
+      loading = true,
+      stack = menu_stack(options),
+    })
+  end
   client:request("get_available_models", {}, function(success, data, err)
+    if not action_current() or (loading and loading.closed) then
+      return
+    end
     if not success then
+      if loading then
+        loading:set_error(err)
+      end
       notify_error(err)
       return
     end
@@ -19,6 +48,9 @@ function M.select_model(root, query)
         return
       end
       client:request("set_model", { provider = model.provider, modelId = model.id }, function(ok, _, set_err)
+        if not runtime.client_is_current(client) then
+          return
+        end
         if not ok then
           notify_error(set_err)
         else
@@ -27,7 +59,6 @@ function M.select_model(root, query)
       end)
     end
 
-    query = vim.trim(query or "")
     if query ~= "" then
       local exact = {}
       local partial = {}
@@ -51,21 +82,55 @@ function M.select_model(root, query)
       end
     end
 
-    vim.ui.select(models, {
-      prompt = query ~= "" and ("Pi model · " .. query) or "Pi model",
-      format_item = function(model)
-        local marker = model.provider == current.provider and model.id == current.id and "●" or " "
-        local context_window = model.contextWindow and ("  %s context"):format(compact_count(model.contextWindow)) or ""
-        return ("%s %s/%s%s"):format(marker, model.provider, model.id, context_window)
+    local menu = {
+      title = query ~= "" and ("Pi model - " .. query) or "Pi model",
+      items = models,
+      current = current,
+      key_item = function(model)
+        return model.provider .. "\0" .. model.id
       end,
-    }, apply)
+      format_item = function(model)
+        return ("%s/%s"):format(model.provider, model.id)
+      end,
+      describe_item = function(model)
+        return model.contextWindow and ("%s context"):format(compact_count(model.contextWindow)) or ""
+      end,
+      on_select = apply,
+      stack = menu_stack(options),
+    }
+    if loading then
+      loading:replace(menu)
+    else
+      runtime.open_inline_select(client.root, menu)
+    end
   end)
 end
 
-function M.select_thinking_level(root, requested)
+function M.select_thinking_level(root, requested, options)
   local client = runtime.get_client(root)
+  local action_generation = chat_generation(client.root)
+  local function action_current()
+    return runtime.client_is_current(client)
+      and (action_generation == nil or chat_generation(client.root) == action_generation)
+  end
+  requested = vim.trim(requested or "")
+  local loading
+  if requested == "" then
+    loading = runtime.open_inline_select(client.root, {
+      title = "Pi thinking level",
+      items = {},
+      loading = true,
+      stack = menu_stack(options),
+    })
+  end
   client:request("get_available_thinking_levels", {}, function(success, data, err)
+    if not action_current() or (loading and loading.closed) then
+      return
+    end
     if not success then
+      if loading then
+        loading:set_error(err)
+      end
       notify_error(err)
       return
     end
@@ -76,6 +141,9 @@ function M.select_thinking_level(root, requested)
         return
       end
       client:request("set_thinking_level", { level = level }, function(ok, _, set_err)
+        if not runtime.client_is_current(client) then
+          return
+        end
         if not ok then
           notify_error(set_err)
         else
@@ -84,22 +152,40 @@ function M.select_thinking_level(root, requested)
       end)
     end
 
-    requested = vim.trim(requested or "")
     if requested ~= "" then
-      if not vim.tbl_contains(levels, requested) then
+      local exact = {}
+      local partial = {}
+      local normalized = requested:lower()
+      for _, level in ipairs(levels) do
+        if level:lower() == normalized then
+          table.insert(exact, level)
+        elseif level:lower():find(normalized, 1, true) then
+          table.insert(partial, level)
+        end
+      end
+      levels = #exact > 0 and exact or partial
+      if #levels == 0 then
         notify_error("Unsupported Pi thinking level: " .. requested)
+      elseif #levels == 1 then
+        apply(levels[1])
       else
-        apply(requested)
+        runtime.open_inline_select(client.root, {
+          title = "Pi thinking level - " .. requested,
+          items = levels,
+          current = current,
+          on_select = apply,
+          stack = menu_stack(options),
+        })
       end
       return
     end
 
-    vim.ui.select(levels, {
-      prompt = "Pi thinking level",
-      format_item = function(level)
-        return (level == current and "● " or "  ") .. level
-      end,
-    }, apply)
+    loading:replace({
+      title = "Pi thinking level",
+      items = levels,
+      current = current,
+      on_select = apply,
+    })
   end)
 end
 
