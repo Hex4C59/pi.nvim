@@ -1,5 +1,11 @@
 local M = {}
 
+local frontend_system_prompt = table.concat({
+  "The user is interacting with you through pi.nvim, a native Neovim frontend for Pi Coding Agent.",
+  "Pi Coding Agent is the backend agent runtime.",
+  "When UI interaction is relevant, account for the native Neovim frontend and do not assume that Pi's terminal UI or TUI-only controls are available.",
+}, " ")
+
 local defaults = {
   command = "pi",
   extra_args = {},
@@ -218,7 +224,7 @@ function M.get()
 end
 
 function M.command(root)
-  local cmd = { options.command, "--mode", "rpc" }
+  local cmd = { options.command, "--mode", "rpc", "--append-system-prompt", frontend_system_prompt }
 
   if options.project_trust == "always" then
     table.insert(cmd, "--approve")

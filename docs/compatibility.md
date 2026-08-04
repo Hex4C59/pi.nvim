@@ -39,6 +39,16 @@ a stable programmatic API until documented here. Modules below `pi.client`,
 `pi.ui.render.*`, and `pi.ui.transcript.*` are internal owners, except for the
 four compatibility aliases listed above.
 
+### Process Launch Context
+
+Every Pi process started by pi.nvim appends a fixed frontend identity with
+`--append-system-prompt`. It tells the model that pi.nvim is the native Neovim
+frontend and Pi Coding Agent is the backend agent runtime without replacing
+Pi's default system prompt. It also tells the model not to assume Pi's terminal
+UI or TUI-only controls are available. User-provided `extra_args` remain last
+in the process argument list, so additional `--append-system-prompt` values
+compose with the default identity.
+
 Public commands, configuration keys, or module aliases must not disappear or
 change meaning silently. A removal requires an explicitly declared breaking
 release. Before that release, document the replacement in the README and this

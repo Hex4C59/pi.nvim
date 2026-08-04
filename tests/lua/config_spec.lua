@@ -11,7 +11,12 @@ config.setup({
   provider = "example-provider",
   model = "example-model",
   thinking = "high",
-  extra_args = { "--name", "pi.nvim test" },
+  extra_args = {
+    "--name",
+    "pi.nvim test",
+    "--append-system-prompt",
+    "Custom frontend context.",
+  },
 })
 
 local command = config.command(root)
@@ -20,6 +25,36 @@ assert(config.get().chat.position == "right", "right split must be the default c
 assert(config.get().chat.max_widget_height == 8, "widget height limit must have a stable default")
 assert(command[1] == "pi", "Pi executable must be first")
 assert(joined:find("--mode\nrpc", 1, true), "RPC mode is required")
+local expected_frontend_system_prompt = table.concat({
+  "The user is interacting with you through pi.nvim, a native Neovim frontend for Pi Coding Agent.",
+  "Pi Coding Agent is the backend agent runtime.",
+  "When UI interaction is relevant, account for the native Neovim frontend and do not assume that Pi's terminal UI or TUI-only controls are available.",
+}, " ")
+local append_prompt_count = 0
+local frontend_prompt_index
+for index, argument in ipairs(command) do
+  if argument == "--append-system-prompt" then
+    append_prompt_count = append_prompt_count + 1
+    frontend_prompt_index = frontend_prompt_index or index
+  end
+end
+assert(append_prompt_count == 2, "default and user-provided system prompt additions must both be retained")
+local frontend_prompt = command[frontend_prompt_index + 1]
+assert(frontend_prompt == expected_frontend_system_prompt, "default pi.nvim frontend identity is missing")
+assert(frontend_prompt_index == 4, "default frontend identity must immediately follow --mode rpc")
+assert(frontend_prompt:find("pi.nvim", 1, true), "frontend identity must name pi.nvim")
+assert(frontend_prompt:find("native Neovim frontend", 1, true), "frontend identity must name Neovim")
+assert(
+  frontend_prompt:find("Pi Coding Agent is the backend agent runtime", 1, true),
+  "frontend identity must describe Pi Coding Agent as the backend"
+)
+assert(
+  frontend_prompt:find("do not assume that Pi's terminal UI or TUI-only controls are available", 1, true),
+  "frontend identity must rule out assumptions about Pi's terminal UI"
+)
+assert(joined:find("--name\npi.nvim test", 1, true), "custom process arguments are missing")
+assert(command[#command - 1] == "--append-system-prompt", "custom system prompt flag must remain in extra_args order")
+assert(command[#command] == "Custom frontend context.", "custom system prompt addition must remain last")
 assert(joined:find("--no-approve", 1, true), "project trust flag is missing")
 assert(joined:find("--no-context-files", 1, true), "context file flag is missing")
 assert(joined:find("--no-session", 1, true), "ephemeral session flag is missing")

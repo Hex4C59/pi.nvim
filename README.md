@@ -320,6 +320,14 @@ require("pi").setup({
 })
 ```
 
+`extra_args` is appended after pi.nvim's required RPC, security Extension,
+and frontend-context arguments. Every process receives a short
+`--append-system-prompt` value identifying pi.nvim as the native Neovim
+frontend and Pi Coding Agent as the backend agent runtime. This preserves Pi's
+default coding-assistant prompt and tells the model not to assume Pi's terminal
+UI or TUI-only controls are available. Additional `--append-system-prompt`
+values in `extra_args` remain additive.
+
 `auto` uses terminal images only after the optional provider confirms support;
 `terminal` requests the same backend but reports a health warning when it must
 fall back. When terminal graphics are unavailable, ImageMagick provides a
