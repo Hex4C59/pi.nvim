@@ -48,6 +48,49 @@ Pi canvas in Normal mode. This contract applies equally to right, bottom, tab,
 and float layouts. Permission prompts retain their separate fail-closed
 `Ctrl-Q` cancellation behavior.
 
+Pending prompt images use concealed buffer anchors projected as inline attachment
+tokens. A single image is `[1 image attached]`; multiple images are separate
+`[image N]` tokens. In Insert mode, `Right` immediately before a token focuses it
+and places the real cursor after its anchor, so typing inserts text after that
+image. Repeated `Right` advances through images; `Left` moves backward and
+returns from the first token to the preceding text. With a token focused,
+`Backspace` removes it and selects the previous token when present; `Delete`
+removes it and prefers the next image at the same position, otherwise the new
+last token. `Esc`, text edits, ordinary text movement, mouse positioning,
+programmatic input replacement, submission, clear, close, and destruction
+discard token focus.
+
+Pi processes advertising `ordered_prompt_content` receive the exact visible
+sequence as ordered text and image blocks. Older processes receive the legacy
+`message` plus `images` shape only when all text precedes every image. If text
+appears between or after images, pi.nvim rejects the lossy downgrade, restores
+the full draft, and reports the missing capability. This is an additive RPC
+capability; there is no public Lua API or configuration change.
+
+Submitted user messages containing images are projected as a bounded ordered
+list of copied text and localized image blocks. Rendering replaces each retained
+user image with a sequential `[image N]` token while preserving the text/image
+order. Each token has its own semantic highlight and exact byte-column hit
+range: mouse clicks and Enter under the cursor open the existing image preview
+only inside that range. User token descriptors remain available for interaction
+but are excluded from terminal image backend synchronization. Assistant, tool,
+and supported Markdown image descriptors retain their existing inline behavior.
+Transcript clear, history replacement, budget release, and destruction release
+the localized user image state.
+
+Transcript code presentation uses a stable gutter with semantic extmarks.
+Fenced Markdown code is numbered from one within each fence because it has no
+authoritative file position; `diff` fences also use `+` and `-` symbols with
+addition and deletion highlights. Expanded built-in `read` results use the
+request's one-indexed `offset` (or one when absent) and stop numbering before
+Pi's continuation or truncation notice. Expanded `write` previews number the
+new file from one. Completed built-in `edit` results use Pi 0.83's
+`result.details.diff` rows as the authoritative line numbers and change kinds.
+While an edit is pending, or when those details are absent, pi.nvim may show the
+submitted old/new text with `-` and `+` gutters but does not invent file line
+numbers. This is display-only behavior and adds no RPC capability, configuration
+key, or public Lua API.
+
 Pi-owned selectors opened by slash commands or their `:PiModel`, `:PiThinking`,
 `:PiPermissions`, `:PiSettings`, `:PiLayout`, `:PiTree`, `:PiFork`, and
 `:PiClone` counterparts use one Chat-owned inline menu. The menu is a

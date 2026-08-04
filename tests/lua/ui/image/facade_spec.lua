@@ -56,13 +56,14 @@ local function run()
     image_terminal = true,
     tools_expanded = true,
   })
-  assert(#placements == 3, "user, assistant, and tool images must all produce placements")
+  assert(#placements == 3, "user token, assistant image, and tool image must all produce descriptors")
   assert(#lines < prepared.height * 3, "terminal image anchors duplicated the provider's visual rows")
   assert(placements[1].row >= 0 and placements[1].col > 0, "placement coordinates are invalid")
-  assert(placements[1].path == prepared.path, "placement did not use the prepared cache file")
+  assert(placements[1].token and placements[1].block == image, "user image did not become an attachment token")
+  assert(placements[2].path == prepared.path, "assistant placement did not use the prepared cache file")
   assert(placements[1].key ~= placements[2].key, "repeated image instances must have distinct keys")
   assert(placements[2].key ~= placements[3].key, "tool image instance key collided")
-  for _, placement in ipairs(placements) do
+  for _, placement in ipairs({ placements[2], placements[3] }) do
     assert(placement.range_height == 1 and placement.conceal, "terminal image did not use one concealed anchor row")
   end
 
@@ -70,8 +71,8 @@ local function run()
     width = 40,
     image_terminal = false,
   })
-  assert(#text_placements == 0, "text backend emitted a terminal placement")
-  assert(table.concat(text_lines, "\n"):find("[Image: image/png 1x1]", 1, true), "text fallback was not rendered")
+  assert(#text_placements == 1 and text_placements[1].token, "text backend lost the user attachment token")
+  assert(table.concat(text_lines, "\n"):find("[image 1]", 1, true), "user attachment token was not rendered")
 end
 
 local ok, err = xpcall(run, debug.traceback)

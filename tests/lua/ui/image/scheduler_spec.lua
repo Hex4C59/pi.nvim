@@ -137,7 +137,7 @@ local function run()
   local first_chat_image = image_block()
   local second_chat_image = image_block()
   chat.transcript.items = {
-    { type = "user", content = { first_chat_image, second_chat_image } },
+    { type = "assistant", message = { content = { first_chat_image, second_chat_image } } },
   }
   local render_callbacks = 0
   chat.transcript_view._schedule_render = function()

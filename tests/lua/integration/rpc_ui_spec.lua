@@ -276,6 +276,24 @@ local function run()
   assert(not transcript:find("Edited  example.lua", 1, true), "settled RPC task leaked its edit tool")
   assert(not transcript:find("- local old = true", 1, true), "settled RPC task leaked its diff")
   assert(not transcript:find("final output", 1, true), "collapsed read leaked its output")
+
+  chat:toggle_process()
+  transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+  assert(transcript:find("1 │ final output", 1, true), "expanded RPC read is missing its file line number")
+  assert(transcript:find("- 7 │ local old = true", 1, true), "expanded RPC edit is missing its deleted line")
+  assert(transcript:find("+ 7 │ local ready = true", 1, true), "expanded RPC edit is missing its added line")
+  local expanded_highlights = {}
+  for _, extmark in ipairs(vim.api.nvim_buf_get_extmarks(chat_buf, ui_namespace, 0, -1, { details = true })) do
+    local highlight = extmark[4].hl_group
+    if highlight then
+      expanded_highlights[highlight] = true
+    end
+  end
+  assert(expanded_highlights.PiCodeLineNumber, "expanded RPC code is missing its line-number highlight")
+  assert(expanded_highlights.PiDiffDeleteLine, "expanded RPC diff is missing its deletion highlight")
+  assert(expanded_highlights.PiDiffAddLine, "expanded RPC diff is missing its addition highlight")
+  chat:toggle_process()
+
   local completions = chat.command_menu:complete(0, "/fix")
   assert(#completions >= 1 and completions[1].word:find("/fixture", 1, true), "dynamic commands were not loaded")
 

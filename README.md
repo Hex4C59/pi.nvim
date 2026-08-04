@@ -113,14 +113,19 @@ row toggles the complete process; wide layouts also show the shortcut inline.
 Assistant Markdown is reduced to terminal-native presentation: headings,
 emphasis, inline code, links, lists, quotes, and fenced code keep their semantic
 styling without leaking Markdown delimiters or absolute link targets. Fenced
-code uses Neovim's installed Tree-sitter parser for its declared language and
-falls back to the normal code style when that parser is unavailable. In the
-detailed process view, consecutive tool calls form a single `Actions` timeline.
-Each output remains visually attached to its command, while edits and writes
-show responsive change counts plus collapsed `+`/`-` code previews. A tool under
-the cursor can still be expanded independently with `Ctrl-O` or a mouse click.
-Expanded file reads use the installed Tree-sitter parser selected from the file
-path, with the same graceful fallback as fenced code.
+code has a stable block-local line-number gutter and uses Neovim's installed
+Tree-sitter parser for its declared language, falling back to the normal code
+style when that parser is unavailable. `diff` fences additionally distinguish
+added and deleted lines with `+`/`-` symbols and semantic colors. In the detailed
+process view, consecutive tool calls form a single `Actions` timeline. Each
+output remains visually attached to its command, while edits and writes show
+responsive change counts plus collapsed `+`/`-` code previews. A tool under the
+cursor can still be expanded independently with `Ctrl-O` or a mouse click.
+Expanded file reads show the real file line numbers starting at Pi's requested
+offset and use the installed Tree-sitter parser selected from the file path.
+Completed edits prefer Pi's structured diff, preserving its line numbers and
+coloring additions and deletions; an unavailable structured diff falls back to
+an unnumbered `+`/`-` preview rather than inventing file positions.
 
 The default layout is a focused right sidebar. `:PiLayout` changes the active
 project workspace at runtime without restarting Pi or discarding its
@@ -165,6 +170,22 @@ the most recently used non-Pi editor window; it enters Normal mode while the
 chat, draft, and Pi process continue running. If that window no longer exists,
 focus falls back to the Pi canvas in Normal mode.
 
+Pending image attachments appear as keyboard-focusable tokens inside the prompt.
+One image uses `[1 image attached]`; multiple images use `[image 1]`, `[image 2]`,
+and so on. Paste inserts an image at the current cursor. `Right` enters the next
+token and `Left` moves back; typing while a token is focused inserts text after
+that image, including between images or after the final image. `Backspace`
+removes the focused image and moves to the previous token, while `Delete` removes
+it and keeps the same token position when a following image exists. `Esc` and
+ordinary text movement clear token focus. Submission preserves the visible
+text/image order.
+
+After submission, user attachments remain in that order as clickable
+`[image N]` tokens in the transcript. Click the token itself, or place the
+cursor on it and press Enter, to open the existing enlarged preview. User
+attachment tokens are never drawn by the terminal image backend; assistant,
+tool, and supported Markdown images keep their normal inline rendering.
+
 The prompt mirrors Pi's primary controls:
 
 | Key | Action |
@@ -172,7 +193,9 @@ The prompt mirrors Pi's primary controls:
 | `Enter` | Accept a selected slash command, otherwise submit or steer |
 | `Ctrl-J` | Insert a newline |
 | `Alt-Enter` | Queue a follow-up |
-| `Esc` | Close slash-command completion or interrupt active work; remain in the prompt |
+| `Esc` | Clear attachment focus, close slash-command completion, or interrupt active work; remain in the prompt |
+| `Right` / `Left` | Enter and navigate image attachment tokens in prompt order |
+| `Backspace` / `Delete` | Remove the focused image attachment and select its previous or next neighbor |
 | `Ctrl-C` | Interrupt active work |
 | `Ctrl-Q` | Return to the most recent non-Pi editor window in Normal mode |
 | `Ctrl-L` | Prefill `/model ` |
@@ -369,8 +392,10 @@ debounced, globally concurrency-limited, and terminated after `timeout_ms`.
 `text` never loads the provider or creates colored previews. Terminal images
 use one stable transcript anchor and provider-owned virtual rows, avoiding
 duplicate blank space while
-still pushing later messages below the image. Click an image, or place the
-cursor on its anchor and press Enter, to open a larger preview. Explicit
+still pushing later messages below the image. Click an inline image, or place
+the cursor on its anchor and press Enter, to open a larger preview. Submitted
+user attachments instead remain compact `[image N]` tokens that open the same
+preview only when the token's exact character range is selected. Explicit
 Markdown images and ordinary Markdown links to supported
 raster files in assistant responses are previewed when they resolve inside the
 canonical project root. Ordinary links keep their text and place the preview

@@ -2,6 +2,7 @@ local config = require("pi.config")
 local InputArea = require("pi.ui.input").InputArea
 
 config.setup({ chat = { max_input_height = 6 } })
+require("pi.ui.highlights").setup()
 
 local function styled_text(chunks)
   local parts = {}
@@ -34,6 +35,17 @@ local function has_extmark_highlight(buf, highlight)
     end
   end
   return false
+end
+
+local function attachment_virtual_text(buf)
+  local chunks = {}
+  for _, extmark in ipairs(vim.api.nvim_buf_get_extmarks(buf, -1, 0, -1, { details = true })) do
+    local virt_text = (extmark[4] or {}).virt_text
+    if virt_text and styled_text(virt_text):find("image", 1, true) then
+      vim.list_extend(chunks, virt_text)
+    end
+  end
+  return #chunks > 0 and chunks or nil
 end
 
 local group
@@ -73,6 +85,7 @@ local function run()
     cycle_thinking_level = 0,
     left_mouse = 0,
     attachments = {},
+    removed_attachments = {},
     return_to_editor = 0,
     prefilled = {},
     submissions = {},
@@ -95,6 +108,7 @@ local function run()
     model = "fixture-model",
     thinking = "high",
     pending_image_count = 0,
+    attachment_ids = {},
   }
   local actions = {
     layout = function()
@@ -117,19 +131,70 @@ local function run()
     accept_command_completion = function()
       return flags.accept_completion
     end,
-    take_image_attachments = function()
-      return { { type = "image", mimeType = "image/png", path = "/tmp/attachment.png" } }
+    take_prompt_draft = function(parts)
+      local content = {}
+      local images = {}
+      local text = {}
+      for _, part in ipairs(parts) do
+        if part.type == "text" then
+          table.insert(content, { type = "text", text = part.text })
+          table.insert(text, part.text)
+        else
+          local image = { type = "image", mimeType = "image/png", path = "/tmp/attachment.png" }
+          table.insert(content, image)
+          table.insert(images, image)
+        end
+      end
+      local draft = { parts = vim.deepcopy(parts), attachments = {} }
+      state.attachment_ids = {}
+      state.pending_image_count = 0
+      return { message = table.concat(text), content = content, images = images, draft = draft }
     end,
-    add_image_attachment = function(image)
+    add_image_attachment = function(image, cursor)
       table.insert(calls.attachments, image)
+      local id = 1
+      local used = {}
+      for _, candidate in ipairs(state.attachment_ids) do
+        used[candidate] = true
+      end
+      while used[id] do
+        id = id + 1
+      end
+      table.insert(state.attachment_ids, id)
+      state.pending_image_count = #state.attachment_ids
+      input:insert_attachment(id, cursor)
       return true
     end,
-    submit = function(prompt, behavior, images)
+    remove_image_attachment = function(id)
+      table.insert(calls.removed_attachments, id)
+      local index
+      for candidate, attachment_id in ipairs(state.attachment_ids) do
+        if attachment_id == id then
+          index = candidate
+          break
+        end
+      end
+      if not index then
+        return false
+      end
+      table.remove(state.attachment_ids, index)
+      state.pending_image_count = #state.attachment_ids
+      input:remove_attachment(id)
+      return true
+    end,
+    sync_image_attachments = function(ids)
+      state.attachment_ids = vim.list_slice(ids)
+      state.pending_image_count = #ids
+      return true
+    end,
+    submit = function(prompt, behavior, images, content, draft)
       table.insert(calls.submissions, {
         prompt = prompt,
         root = root,
         behavior = behavior,
         images = images,
+        content = content,
+        draft = draft,
       })
     end,
     abort = function()
@@ -232,6 +297,12 @@ local function run()
     { mode = "i", lhs = "<CR>" },
     { mode = "i", lhs = "<Down>" },
     { mode = "i", lhs = "<Up>" },
+    { mode = "i", lhs = "<Right>" },
+    { mode = "i", lhs = "<Left>" },
+    { mode = "i", lhs = "<Home>" },
+    { mode = "i", lhs = "<End>" },
+    { mode = "i", lhs = "<BS>" },
+    { mode = "i", lhs = "<Del>" },
     { mode = "i", lhs = "<Esc>" },
     { mode = "i", lhs = "<M-p>" },
     { mode = "i", lhs = "<C-c>" },
@@ -421,19 +492,170 @@ local function run()
   assert(queued_status[1]:find("next 1", 1, true), "follow-up queue count is missing")
   assert(not queued_status[1]:find("context", 1, true), "queue status did not take priority over context")
 
-  state.pending_image_count = 2
-  input:render_attachments()
-  local attachment_found = false
-  for _, extmark in ipairs(vim.api.nvim_buf_get_extmarks(input_buf, -1, 0, -1, { details = true })) do
-    local virt_text = (extmark[4] or {}).virt_text
-    if virt_text and vim.inspect(virt_text):find("2 images attached", 1, true) then
-      attachment_found = true
+  local function set_attachments(count, text)
+    state.attachment_ids = {}
+    for id = 1, count do
+      table.insert(state.attachment_ids, id)
     end
+    state.pending_image_count = count
+    input:set_input(text or "")
   end
-  assert(attachment_found, "validated attachment count is missing from the prompt")
+
+  set_attachments(1, "")
+  local empty_attachment = attachment_virtual_text(input_buf)
+  assert(empty_attachment, "attachment hint is missing from the empty prompt")
+  assert(styled_text(empty_attachment) == "[1 image attached]", "empty prompt attachment hint has leading whitespace")
+  assert(empty_attachment[1][2] == "PiInputAttachment", "attachment hint lost its semantic highlight")
+
+  set_attachments(3, "draft")
+  local text_attachment = attachment_virtual_text(input_buf)
+  assert(text_attachment, "attachment hint is missing after prompt text")
+  assert(
+    styled_text(text_attachment) == " [image 1] [image 2] [image 3]",
+    "multiple attachments are not rendered as separated image tokens"
+  )
+  assert(
+    text_attachment[1][1] == " " and text_attachment[1][2] == "PiInputNormal",
+    "prompt/token spacing is not neutral"
+  )
+  for _, index in ipairs({ 2, 4, 6 }) do
+    assert(text_attachment[index][2] == "PiInputAttachment", "unselected attachment lost its semantic highlight")
+  end
+
+  local attachment_hl = vim.api.nvim_get_hl(0, { name = "PiInputAttachment", link = false })
+  local selected_attachment_hl = vim.api.nvim_get_hl(0, { name = "PiInputAttachmentSelected", link = false })
+  local success_hl = vim.api.nvim_get_hl(0, { name = "DiagnosticOk", link = false })
+  local border_hl = vim.api.nvim_get_hl(0, { name = "PiInputBorder", link = false })
+  assert(attachment_hl.fg == success_hl.fg, "attachment hint does not use the theme success color")
+  assert(attachment_hl.fg ~= border_hl.fg, "attachment hint is not distinct from the focused input border")
+  assert(
+    selected_attachment_hl.reverse == true and selected_attachment_hl.bold == true,
+    "selected attachment is not identifiable without color"
+  )
+
+  vim.api.nvim_win_set_cursor(input_win, { 1, 2 })
+  mapping(input_buf, "i", "<Right>").callback()
+  assert(input.selected_attachment_index == nil, "Right selected an attachment from inside prompt text")
+  vim.api.nvim_win_set_cursor(input_win, { 1, #"draft" })
+  mapping(input_buf, "i", "<Right>").callback()
+  assert(input.selected_attachment_index == 1, "Right at the prompt end did not select the first attachment")
+  assert(
+    vim.deep_equal(vim.api.nvim_win_get_cursor(input_win), { 1, #"draft" + 3 }),
+    "attachment focus did not move the real cursor after its anchor"
+  )
+  local selected_attachment = attachment_virtual_text(input_buf)
+  assert(
+    selected_attachment[2][2] == "PiInputAttachmentSelected"
+      and selected_attachment[4][2] == "PiInputAttachment"
+      and selected_attachment[6][2] == "PiInputAttachment",
+    "first attachment focus did not update only its token"
+  )
+  mapping(input_buf, "i", "<Right>").callback()
+  mapping(input_buf, "i", "<Right>").callback()
+  mapping(input_buf, "i", "<Right>").callback()
+  assert(input.selected_attachment_index == 3, "Right crossed the last attachment boundary")
+  mapping(input_buf, "i", "<Left>").callback()
+  mapping(input_buf, "i", "<Left>").callback()
+  assert(input.selected_attachment_index == 1, "Left did not traverse attachments in reverse")
+  mapping(input_buf, "i", "<Left>").callback()
+  assert(input.selected_attachment_index == nil, "Left from the first attachment did not return to prompt text")
+  assert(vim.deep_equal(vim.api.nvim_win_get_cursor(input_win), { 1, #"draft" }), "Left missed the text boundary")
+
+  input:_select_attachment(1)
+  assert(input:_insert_text_at_cursor("between"), "typing after the first attachment was rejected")
+  local between_parts = input:content_parts()
+  assert(
+    vim.deep_equal(between_parts, {
+      { type = "text", text = "draft" },
+      { type = "attachment", id = 1 },
+      { type = "text", text = "between" },
+      { type = "attachment", id = 2 },
+      { type = "attachment", id = 3 },
+    }),
+    "text typed after a selected image did not stay between attachments"
+  )
+  set_attachments(3, "draft")
+  input:_select_attachment(3)
+  assert(input:_insert_text_at_cursor("tail"), "typing after the final attachment was rejected")
+  assert(
+    vim.deep_equal(input:content_parts(), {
+      { type = "text", text = "draft" },
+      { type = "attachment", id = 1 },
+      { type = "attachment", id = 2 },
+      { type = "attachment", id = 3 },
+      { type = "text", text = "tail" },
+    }),
+    "text typed after the final image did not stay on its right"
+  )
+  set_attachments(3, "draft")
+
+  input:_select_attachment(2)
+  local abort_before_attachment_escape = calls.abort
+  mapping(input_buf, "i", "<Esc>").callback()
+  assert(input.selected_attachment_index == nil, "Escape did not clear attachment focus")
+  assert(calls.abort == abort_before_attachment_escape, "Escape aborted work while clearing attachment focus")
+
+  input:_select_attachment(2)
+  vim.api.nvim_buf_set_text(input_buf, 0, 0, 0, 0, { "updated " })
+  vim.api.nvim_exec_autocmds("TextChangedI", { buffer = input_buf })
+  assert(input.selected_attachment_index == nil, "text editing retained attachment focus")
+  assert(
+    styled_text(attachment_virtual_text(input_buf)) == " [image 1] [image 2] [image 3]",
+    "text editing did not redraw attachment spacing"
+  )
+
+  for _, lhs in ipairs({ "<Up>", "<Down>", "<Home>", "<End>" }) do
+    input:_select_attachment(2)
+    mapping(input_buf, "i", lhs).callback()
+    assert(input.selected_attachment_index == nil, lhs .. " did not clear attachment focus")
+  end
+  input:_select_attachment(2)
+  mapping(input_buf, "i", "<LeftMouse>").callback()
+  assert(input.selected_attachment_index == nil, "left-click positioning did not clear attachment focus")
+
+  set_attachments(4, "draft")
+  input:_select_attachment(3)
+  mapping(input_buf, "i", "<BS>").callback()
+  assert(calls.removed_attachments[#calls.removed_attachments] == 3, "Backspace deleted the wrong attachment")
+  assert(
+    state.pending_image_count == 3 and input.selected_attachment_index == 2,
+    "Backspace did not focus the previous attachment"
+  )
+  input:_select_attachment(1)
+  mapping(input_buf, "i", "<BS>").callback()
+  assert(
+    state.pending_image_count == 2 and input.selected_attachment_index == nil,
+    "Backspace at the first token did not return to text"
+  )
+
+  set_attachments(4, "draft")
+  input:_select_attachment(2)
+  mapping(input_buf, "i", "<Del>").callback()
+  assert(calls.removed_attachments[#calls.removed_attachments] == 2, "Delete removed the wrong attachment")
+  assert(
+    state.pending_image_count == 3 and input.selected_attachment_index == 2,
+    "Delete did not retain the original position for the next attachment"
+  )
+  input:_select_attachment(3)
+  mapping(input_buf, "i", "<Del>").callback()
+  assert(
+    state.pending_image_count == 2 and input.selected_attachment_index == 2,
+    "Delete at the last token did not focus the new last attachment"
+  )
+
+  input:_select_attachment(1)
+  flags.clipboard_text = nil
+  flags.clipboard_image = nil
+  input:paste_at_mouse({ winid = input_win, line = 1, column = 1 })
+  assert(input.selected_attachment_index == nil, "right-click positioning did not clear attachment focus")
+  input:_select_attachment(1)
+  input:set_input("programmatic")
+  assert(input.selected_attachment_index == nil, "set_input retained attachment focus")
+  assert(#input:_attachment_positions() == state.pending_image_count, "set_input did not preserve attachment anchors")
+  state.attachment_ids = {}
   state.pending_image_count = 0
 
-  vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "" })
+  input:set_input("")
   assert(input:desired_input_height() == 3, "empty prompt lost its minimum padded height")
   vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "first", "second" })
   assert(input:desired_input_height() == 4, "multiline prompt did not grow with padding")
@@ -484,8 +706,13 @@ local function run()
   assert(input:paste_at_mouse({ winid = input_win, line = 3, column = 2 }), "right-click image paste was not handled")
   assert(#calls.attachments == 1 and calls.attachments[1] == flags.clipboard_image, "clipboard image was not attached")
   assert(
-    vim.deep_equal(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), before_image_lines),
-    "image paste changed prompt text"
+    not vim.deep_equal(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false), before_image_lines)
+      and vim.deep_equal(input:content_parts(), {
+        { type = "text", text = "alXX\nYYpha\nb" },
+        { type = "attachment", id = state.attachment_ids[1] },
+        { type = "text", text = "eta" },
+      }),
+    "image paste did not create an ordered anchor at the clicked position"
   )
 
   local clipboard_notifications = {}
@@ -500,7 +727,7 @@ local function run()
     "clipboard image failure did not recover with text"
   )
   assert(
-    vim.api.nvim_buf_get_lines(input_buf, 2, 3, false)[1] == "fallbackbeta",
+    input:content_parts()[1].text == "alXX\nYYpha\nfallbackb",
     "clipboard failure fallback inserted text at the wrong position"
   )
   assert(
@@ -564,13 +791,15 @@ local function run()
   assert(#start_insert_windows == 4, "prompt focus did not request Insert mode after Ctrl-Q")
 
   flags.accept_completion = false
-  state.pending_image_count = 0
+  set_attachments(1, "first\nsecond")
+  input:_select_attachment(1)
   mapping(input_buf, "i", "<CR>").callback()
   assert(#calls.submissions == 1, "Insert Enter did not submit the prompt")
   assert(calls.submissions[1].prompt == "first\nsecond", "submission lost embedded newlines")
   assert(calls.submissions[1].root == root, "submission lost its project binding")
   assert(calls.submissions[1].behavior == nil, "normal Enter changed queue behavior")
   assert(#calls.submissions[1].images == 1, "submission did not forward validated attachments")
+  assert(input.selected_attachment_index == nil, "submission retained attachment focus")
   assert(vim.api.nvim_buf_get_lines(input_buf, 0, -1, false)[1] == "", "accepted local submission did not clear prompt")
 
   input:set_input("follow-up")
@@ -589,6 +818,8 @@ local function run()
 
   local reusable_input = input_buf
   local reusable_status = status_buf
+  set_attachments(2, "reusable")
+  input:_select_attachment(2)
   vim.api.nvim_win_close(status_win, true)
   input:close_windows()
   assert(not vim.api.nvim_win_is_valid(input_win), "close_windows left the prompt window open")
@@ -597,8 +828,11 @@ local function run()
     "close_windows deleted reusable buffers"
   )
   assert(input:window() == nil and input:status_window() == nil, "close_windows retained invalid handles")
+  assert(input.selected_attachment_index == nil, "close_windows retained attachment focus")
 
   vim.api.nvim_buf_delete(reusable_status, { force = true })
+  set_attachments(1, "destroy")
+  input:_select_attachment(1)
   input:destroy()
   input:destroy()
   assert(not vim.api.nvim_buf_is_valid(reusable_input), "InputArea input buffer survived destroy")
@@ -606,6 +840,7 @@ local function run()
     not input:owns_buffer(reusable_input) and input:buffer() == nil and input:status_buffer() == nil,
     "destroy retained owned resources"
   )
+  assert(input.selected_attachment_index == nil, "destroy retained attachment focus")
 end
 
 local ok, err = xpcall(run, debug.traceback)

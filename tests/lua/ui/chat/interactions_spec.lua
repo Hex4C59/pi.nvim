@@ -211,7 +211,7 @@ local function run()
   chat:add_user("", {
     { type = "image", mimeType = "image/png", data = png_base64 },
   })
-  assert(buffer_text(chat):find("Image", 1, true), "text backend did not render the deterministic image fallback")
+  assert(buffer_text(chat):find("[image 1]", 1, true), "text backend did not render the user attachment token")
   local image_block =
     assert(chat.transcript.items[#chat.transcript.items].content[1], "localized image block is missing")
   local descriptor = { row = 1, col = 0, width = 1, height = 1, range_height = 1, block = image_block }

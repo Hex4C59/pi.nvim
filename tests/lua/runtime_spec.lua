@@ -17,6 +17,7 @@ function FakeChat.new(chat_root)
     commands = {},
     users = {},
     restored_images = {},
+    restored_drafts = {},
     started_tools = {},
     ended_tools = {},
     ended_bash = {},
@@ -73,6 +74,11 @@ end
 
 function FakeChat:restore_image_attachments(images)
   table.insert(self.restored_images, images)
+  return true
+end
+
+function FakeChat:restore_prompt_draft(draft)
+  table.insert(self.restored_drafts, draft)
   return true
 end
 
@@ -392,6 +398,51 @@ local function run()
   })
   assert(chat.users[#chat.users].text == "accepted display", "a failed prompt displaced an earlier display entry")
   respond(accepted_prompt, true, {})
+
+  local ordered_image = { type = "image", mimeType = "image/png", data = "ordered" }
+  local ordered_content = {
+    { type = "text", text = "left" },
+    ordered_image,
+    { type = "text", text = "right" },
+  }
+  local ordered_draft = { parts = { { type = "text", text = "left" } }, attachments = {} }
+  client.session.rpcCapabilities = { "ordered_prompt_content" }
+  runtime.send_prompt("leftright", nil, root, nil, { ordered_image }, ordered_content, ordered_draft)
+  local ordered_prompt = latest_request(client, "prompt")
+  assert(
+    vim.deep_equal(ordered_prompt.payload.content, ordered_content)
+      and ordered_prompt.payload.message == nil
+      and ordered_prompt.payload.images == nil,
+    "ordered-capable Pi did not receive the exact content block sequence"
+  )
+  respond(ordered_prompt, false, nil, "ordered rejection")
+  assert(
+    chat.restored_drafts[#chat.restored_drafts] == ordered_draft,
+    "failed ordered prompt did not restore its draft"
+  )
+
+  client.session.rpcCapabilities = {}
+  local request_count = #client.requests
+  runtime.send_prompt("leftright", nil, root, nil, { ordered_image }, ordered_content, ordered_draft)
+  assert(#client.requests == request_count, "unsupported interleaved prompt was sent with lossy ordering")
+  assert(
+    chat.restored_drafts[#chat.restored_drafts] == ordered_draft
+      and notifications[#notifications].message:find("ordered_prompt_content", 1, true),
+    "unsupported interleaved prompt did not preserve the draft and explain the capability gap"
+  )
+
+  runtime.send_prompt("left", nil, root, nil, { ordered_image }, {
+    { type = "text", text = "left" },
+    ordered_image,
+  }, ordered_draft)
+  local downgraded_prompt = latest_request(client, "prompt")
+  assert(
+    downgraded_prompt.payload.message == "left"
+      and vim.deep_equal(downgraded_prompt.payload.images, { ordered_image })
+      and downgraded_prompt.payload.content == nil,
+    "legacy-representable ordered content did not downgrade for an older Pi process"
+  )
+  respond(downgraded_prompt, true, {})
 
   runtime.run_bash("first", root)
   local first_bash = latest_request(client, "bash")

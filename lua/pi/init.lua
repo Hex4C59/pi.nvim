@@ -54,7 +54,7 @@ function M.chat()
   chat:open()
 end
 
-function M.submit(text, root, behavior, images)
+function M.submit(text, root, behavior, images, content, draft)
   text = vim.trim(text or "")
   if text == "" and (#(images or {}) == 0) then
     return
@@ -110,7 +110,7 @@ function M.submit(text, root, behavior, images)
   elseif text:sub(1, 1) == "!" then
     M.bash(text:sub(text:sub(1, 2) == "!!" and 3 or 2), root)
   else
-    runtime.send_prompt(text, nil, root, behavior, images)
+    runtime.send_prompt(text, nil, root, behavior, images, content, draft)
   end
 end
 

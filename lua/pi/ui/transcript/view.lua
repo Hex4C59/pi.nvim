@@ -447,7 +447,8 @@ function TranscriptView:_ensure_buffer()
     self:release_mouse_gesture(vim.fn.getmousepos())
   end, { buffer = self.buf, silent = true })
   vim.keymap.set("n", "<CR>", function()
-    local descriptor = self:image_at_row(vim.api.nvim_win_get_cursor(self:window())[1])
+    local cursor = vim.api.nvim_win_get_cursor(self:window())
+    local descriptor = self:image_at_row(cursor[1], cursor[2])
     if descriptor then
       self.actions.open_image_preview(descriptor)
     else
@@ -742,7 +743,13 @@ function TranscriptView:_render_transcript()
   end
   self.projection_retained_bytes = (self.render_cache_bytes or 0) + (self.render_frame_bytes or 0)
   if self.image_backend then
-    self.image_backend:sync(self.buf, self:window(), self.image_placements)
+    local visual_images = {}
+    for _, descriptor in ipairs(self.image_placements) do
+      if not descriptor.token then
+        table.insert(visual_images, descriptor)
+      end
+    end
+    self.image_backend:sync(self.buf, self:window(), visual_images)
   end
 
   if self:window() and vim.api.nvim_win_is_valid(self:window()) then
@@ -766,7 +773,7 @@ function TranscriptView:_prepare_images(width, start_index, prepare_preview)
   end
   local generation = self.image_generation
   local seen = {}
-  local function prepare(content, include_markdown, item)
+  local function prepare(content, include_markdown, item, prepare_inline_preview)
     if type(content) ~= "table" then
       return
     end
@@ -776,7 +783,7 @@ function TranscriptView:_prepare_images(width, start_index, prepare_preview)
         self.track_image(block)
         local prepared = image_data.prepare(block, width - 6)
         local retained = self.refresh_image_accounting(item, block)
-        if prepared and prepare_preview and retained then
+        if prepared and prepare_preview and prepare_inline_preview and retained then
           image_data.prepare_preview(block, function()
             if self.destroyed or generation ~= self.image_generation then
               return
@@ -800,11 +807,11 @@ function TranscriptView:_prepare_images(width, start_index, prepare_preview)
   for index = math.max(1, start_index or 1), #self:items() do
     local item = self:items()[index]
     if item.type == "user" then
-      prepare(item.content, false, item)
+      prepare(item.content, false, item, false)
     elseif item.type == "assistant" then
-      prepare(item.message and item.message.content, true, item)
+      prepare(item.message and item.message.content, true, item, true)
     elseif item.type == "tool" then
-      prepare(item.result and item.result.content, false, item)
+      prepare(item.result and item.result.content, false, item, true)
     end
   end
 end
@@ -848,8 +855,9 @@ function TranscriptView:_process_at_row(row)
   end
 end
 
-function TranscriptView:_image_at_row(row)
+function TranscriptView:_image_at_row(row, column)
   row = tonumber(row)
+  column = tonumber(column)
   if not row then
     return nil
   end
@@ -857,7 +865,12 @@ function TranscriptView:_image_at_row(row)
     local descriptor = self.image_placements[index]
     local first = descriptor.row + 1
     local last = first + (descriptor.range_height or descriptor.height or 1) - 1
-    if row >= first and row <= last then
+    local token_hit = descriptor.token
+      and column
+      and row == first
+      and column >= descriptor.col
+      and column < descriptor.col + descriptor.width
+    if token_hit or (not descriptor.token and row >= first and row <= last) then
       return descriptor
     end
   end
@@ -868,20 +881,37 @@ function TranscriptView:_image_at_mouse(mouse)
   if not win or not vim.api.nvim_win_is_valid(win) or not mouse or tonumber(mouse.winid) ~= win then
     return nil
   end
+  local position = tonumber(mouse.column) and self:_mouse_position(mouse) or nil
+  if position then
+    for index = #(self.image_placements or {}), 1, -1 do
+      local descriptor = self.image_placements[index]
+      if
+        descriptor.token
+        and position.row == descriptor.row + 1
+        and position.column >= descriptor.col
+        and position.column < descriptor.col + descriptor.width
+      then
+        return descriptor
+      end
+    end
+  end
+
   local screen_row = tonumber(mouse.screenrow)
   local screen_col = tonumber(mouse.screencol)
   if screen_row and screen_col then
     for index = #(self.image_placements or {}), 1, -1 do
       local descriptor = self.image_placements[index]
-      local position = vim.fn.screenpos(win, descriptor.row + 1, descriptor.col + 1)
-      if
-        position.row > 0
-        and screen_row >= position.row
-        and screen_row < position.row + descriptor.height
-        and screen_col >= position.col
-        and screen_col < position.col + descriptor.width
-      then
-        return descriptor
+      if not descriptor.token then
+        local screen_position = vim.fn.screenpos(win, descriptor.row + 1, descriptor.col + 1)
+        if
+          screen_position.row > 0
+          and screen_row >= screen_position.row
+          and screen_row < screen_position.row + descriptor.height
+          and screen_col >= screen_position.col
+          and screen_col < screen_position.col + descriptor.width
+        then
+          return descriptor
+        end
       end
     end
   end
@@ -994,8 +1024,8 @@ function TranscriptView:process_at_row(row)
   return self:_process_at_row(row)
 end
 
-function TranscriptView:image_at_row(row)
-  return self:_image_at_row(row)
+function TranscriptView:image_at_row(row, column)
+  return self:_image_at_row(row, column)
 end
 
 function TranscriptView:image_at_mouse(mouse)

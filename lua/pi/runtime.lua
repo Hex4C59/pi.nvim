@@ -23,8 +23,8 @@ end
 
 local function chat_actions(root)
   return {
-    submit = function(prompt, behavior, images)
-      return invoke_ui_action("submit", prompt, root, behavior, images)
+    submit = function(prompt, behavior, images, content, draft)
+      return invoke_ui_action("submit", prompt, root, behavior, images, content, draft)
     end,
     abort = function()
       return invoke_ui_action("abort", root)
@@ -120,9 +120,9 @@ local function refresh_commands(client)
   end)
 end
 
-local function pending_display(project, message, display, images)
+local function pending_display(project, message, display, images, content)
   if display ~= nil then
-    return { text = display, images = images }
+    return { text = display, images = images, content = content }
   end
 
   local command_name = message:match("^/([^%s]+)")
@@ -132,7 +132,7 @@ local function pending_display(project, message, display, images)
       return nil
     end
   end
-  return { text = message, images = images }
+  return { text = message, images = images, content = content }
 end
 
 local function remove_pending_display(queue, entry)
@@ -349,8 +349,8 @@ local function attach(client)
         local pending = table.remove(project.display_queue, 1)
         local display = pending and pending.text or text_content(event.message.content)
         local content = event.message.content
-        if (type(content) ~= "table" or #content == 0) and pending and pending.images then
-          content = pending.images
+        if (type(content) ~= "table" or #content == 0) and pending then
+          content = pending.content or pending.images
         end
         chat:add_user(display, content)
       elseif event.message.role == "assistant" then
@@ -497,7 +497,27 @@ local function with_prompt(text, callback)
   end)
 end
 
-local function send_prompt(message, display, root, behavior, images)
+local function ordered_content_as_legacy(content)
+  local text = {}
+  local images = {}
+  local saw_image = false
+  for _, block in ipairs(content or {}) do
+    if block.type == "image" then
+      saw_image = true
+      table.insert(images, block)
+    elseif block.type == "text" then
+      if saw_image and block.text ~= "" then
+        return nil
+      end
+      table.insert(text, block.text or "")
+    else
+      return nil
+    end
+  end
+  return { message = table.concat(text), images = images }
+end
+
+local function send_prompt(message, display, root, behavior, images, content, draft)
   local client = get_client(root)
   local project = project_for_client(client)
   local chat = chat_for(client.root)
@@ -508,13 +528,37 @@ local function send_prompt(message, display, root, behavior, images)
       return nil
     end
   end
-  local display_entry = pending_display(project, message, display, images)
+  local payload
+  if type(content) == "table" and #content > 0 then
+    if has_capability(client, "ordered_prompt_content") then
+      payload = { content = content }
+    else
+      local legacy = ordered_content_as_legacy(content)
+      if not legacy then
+        local restored, restore_err = chat:restore_prompt_draft(draft)
+        local err =
+          "The installed Pi process cannot preserve text between or after image attachments. Restart with a Pi process that advertises ordered_prompt_content."
+        if not restored and restore_err then
+          err = err .. "; " .. restore_err
+        end
+        notify_error(err)
+        chat:open(false)
+        return nil
+      end
+      payload = { message = legacy.message }
+      if #legacy.images > 0 then
+        payload.images = legacy.images
+      end
+    end
+  else
+    payload = { message = message }
+    if type(images) == "table" and #images > 0 then
+      payload.images = images
+    end
+  end
+  local display_entry = pending_display(project, message, display, images, content)
   if display_entry then
     table.insert(project.display_queue, display_entry)
-  end
-  local payload = { message = message }
-  if type(images) == "table" and #images > 0 then
-    payload.images = images
   end
   if behavior == "followUp" and (client.state == "streaming" or client.state == "compacting") then
     payload.streamingBehavior = "followUp"
@@ -527,7 +571,12 @@ local function send_prompt(message, display, root, behavior, images)
     end
     if not success then
       remove_pending_display(project.display_queue, display_entry)
-      if type(images) == "table" and #images > 0 then
+      if draft then
+        local _, restore_err = chat:restore_prompt_draft(draft)
+        if restore_err then
+          err = (err or "Prompt failed") .. "; " .. restore_err
+        end
+      elseif type(images) == "table" and #images > 0 then
         local _, restore_err = chat:restore_image_attachments(images)
         if restore_err then
           err = (err or "Prompt failed") .. "; " .. restore_err

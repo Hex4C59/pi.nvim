@@ -25,11 +25,23 @@ let resourceGeneration = 0;
 let permissionMode = "manual";
 let activeModel = { provider: "fake", id: "fixture", contextWindow: 100000 };
 
-const runPrompt = (request, userText = request.message) => {
+const requestContent = (request) => request.content ?? [
+  { type: "text", text: request.message ?? "" },
+  ...(request.images ?? []),
+];
+const requestText = (request) => requestContent(request)
+  .filter((block) => block.type === "text")
+  .map((block) => block.text)
+  .join("");
+
+const runPrompt = (request, userText) => {
   respond(request);
   const suffix = request.id || "anonymous";
   send({ type: "agent_start" });
-  send({ type: "message_start", message: { role: "user", content: [{ type: "text", text: userText }] } });
+  send({
+    type: "message_start",
+    message: { role: "user", content: userText === undefined ? requestContent(request) : [{ type: "text", text: userText }] },
+  });
   send({ type: "message_start", message: { role: "assistant", content: [] } });
   send({
     type: "message_update",
@@ -58,7 +70,19 @@ const runPrompt = (request, userText = request.message) => {
   send({ type: "tool_execution_update", toolCallId: `fixture-tool-${suffix}`, toolName: "read", partialResult: { content: [{ type: "text", text: "partial output" }] } });
   send({ type: "tool_execution_end", toolCallId: `fixture-tool-${suffix}`, toolName: "read", result: { content: [{ type: "text", text: "final output" }] }, isError: false });
   send({ type: "tool_execution_start", toolCallId: `fixture-edit-${suffix}`, toolName: "edit", args: { path: "lua/example.lua", edits: [{ oldText: "local old = true", newText: "local ready = true" }] } });
-  send({ type: "tool_execution_end", toolCallId: `fixture-edit-${suffix}`, toolName: "edit", result: { content: [{ type: "text", text: "Updated lua/example.lua" }] }, isError: false });
+  send({
+    type: "tool_execution_end",
+    toolCallId: `fixture-edit-${suffix}`,
+    toolName: "edit",
+    result: {
+      content: [{ type: "text", text: "Updated lua/example.lua" }],
+      details: {
+        diff: "- 7 local old = true\n+ 7 local ready = true",
+        firstChangedLine: 7,
+      },
+    },
+    isError: false,
+  });
   send({ type: "queue_update", steering: [], followUp: [] });
   send({ type: "agent_settled" });
 };
@@ -75,7 +99,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       autoCompactionEnabled: true,
       autoRetryEnabled,
       sessionId: freshSession ? "fixture-fresh" : "fixture-session",
-      rpcCapabilities: ["history_pagination", "administrative_workflows"],
+      rpcCapabilities: ["history_pagination", "administrative_workflows", "ordered_prompt_content"],
     });
     send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: permissionMode });
     if (!freshSession) {
@@ -247,10 +271,11 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (request.type === "logout_provider") {
     respondToRequest();
   } else if (request.type === "prompt") {
-    if (request.message === "/fixture-noop") {
+    const promptText = requestText(request);
+    if (promptText === "/fixture-noop") {
       respondToRequest();
-    } else if (request.message.startsWith("/permissions ")) {
-      permissionMode = request.message.slice("/permissions ".length);
+    } else if (promptText.startsWith("/permissions ")) {
+      permissionMode = promptText.slice("/permissions ".length);
       respondToRequest();
       send({
         type: "extension_ui_request",
@@ -258,13 +283,13 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         statusKey: "pi.permission_mode",
         statusText: permissionMode,
       });
-    } else if (request.message === "/fixture-prefill") {
+    } else if (promptText === "/fixture-prefill") {
       respondToRequest();
       send({ type: "extension_ui_request", id: "fixture-prefill", method: "set_editor_text", text: "extension draft" });
-    } else if (request.message === "/fixture-clear") {
+    } else if (promptText === "/fixture-clear") {
       respondToRequest();
       send({ type: "extension_ui_request", id: "fixture-clear", method: "set_editor_text", text: "" });
-    } else if (request.message === "/fixture-dialog-cancel") {
+    } else if (promptText === "/fixture-dialog-cancel") {
       respondToRequest();
       send({
         type: "extension_ui_request",
@@ -276,18 +301,18 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       setTimeout(() => {
         send({ type: "extension_ui_cancel", id: "fixture-dialog-cancel", reason: "timeout" });
       }, 25);
-    } else if (request.message === "first accepted") {
+    } else if (promptText === "first accepted") {
       delayedPrompt = request;
-    } else if (request.message === "second rejected") {
+    } else if (promptText === "second rejected") {
       send({ id: request.id, type: "response", command: "prompt", success: false, error: "fixture rejection" });
       if (delayedPrompt) {
         runPrompt(delayedPrompt);
         delayedPrompt = undefined;
       }
     } else {
-      const userText = request.message.startsWith("/fixture-template")
+      const userText = promptText.startsWith("/fixture-template")
         ? "expanded template payload"
-        : request.message;
+        : undefined;
       runPrompt(request, userText);
     }
   } else if (request.type === "extension_ui_response" && request.id === "fixture-dialog-cancel") {

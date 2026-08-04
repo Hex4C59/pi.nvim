@@ -257,7 +257,7 @@ local function run()
     "clear did not replace stale projection accounting with a bounded welcome"
   )
   assert(
-    next(chat.widget_area.widgets) == nil and #chat.pending_images == 0,
+    next(chat.widget_area.widgets) == nil and #chat.pending_attachments == 0,
     "clear retained widget or attachment state"
   )
   assert(

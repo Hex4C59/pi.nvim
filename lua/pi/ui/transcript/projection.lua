@@ -261,20 +261,56 @@ end
 
 function M.bounded_user(text, content, maximum, image_options)
   text = type(text) == "string" and text or ""
-  local kept_text, omitted = M.utf8_head(text, maximum)
-  local retained = #kept_text
-  local images = {}
+  content = type(content) == "table" and content or {}
+  local has_image = false
+  local content_text = {}
+  for _, block in ipairs(content) do
+    if block.type == "image" then
+      has_image = true
+    elseif block.type == "text" then
+      table.insert(content_text, type(block.text) == "string" and block.text or "")
+    end
+  end
+  if not has_image then
+    local kept_text, omitted = M.utf8_head(text, maximum)
+    return kept_text, {}, #kept_text, omitted
+  end
+
+  local source = content
+  if #content_text == 0 then
+    source = {}
+    if text ~= "" then
+      table.insert(source, { type = "text", text = text })
+    end
+    for _, block in ipairs(content) do
+      if block.type == "image" then
+        table.insert(source, block)
+      end
+    end
+  end
+
+  local retained = 0
+  local omitted = 0
+  local ordered = {}
   local image_count = 0
   local maximum_images = (image_options or {}).attachment_max_count or 4
-  for _, block in ipairs(type(content) == "table" and content or {}) do
-    if block.type == "image" then
+  for _, block in ipairs(source) do
+    if block.type == "text" then
+      local value = type(block.text) == "string" and block.text or ""
+      local kept, removed = M.utf8_head(value, math.max(0, maximum - retained))
+      if kept ~= "" then
+        table.insert(ordered, { type = "text", text = kept })
+        retained = retained + #kept
+      end
+      omitted = omitted + removed
+    elseif block.type == "image" then
       image_count = image_count + 1
       if image_count <= maximum_images and retained < maximum then
         local localized = image_data.localize(block)
-        local bytes = image_data.presentation_bytes(localized)
+        local bytes = localized and image_data.presentation_bytes(localized) or 0
         if localized and retained + bytes <= maximum then
           localized._pi_transcript_bytes = bytes
-          table.insert(images, localized)
+          table.insert(ordered, localized)
           retained = retained + bytes
         elseif localized then
           image_data.release(localized)
@@ -285,7 +321,7 @@ function M.bounded_user(text, content, maximum, image_options)
       end
     end
   end
-  return kept_text, images, retained, omitted
+  return "", ordered, retained, omitted
 end
 
 function M.bounded_assistant(message, maximum, image_options)

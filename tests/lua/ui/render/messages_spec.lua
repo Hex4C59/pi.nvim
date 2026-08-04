@@ -30,13 +30,59 @@ local empty_user_lines = render({ { type = "user", text = "" } })
 assert(vim.deep_equal(empty_user_lines, { " › " }), "empty user message no longer renders its structural row")
 
 local image_block = { type = "image", mimeType = "image/png" }
-local image_user = { type = "user", text = "caption", content = { image_block } }
+local second_image_block = { type = "image", mimeType = "image/jpeg" }
+local image_user = {
+  type = "user",
+  _pi_id = "user:images",
+  text = "",
+  content = {
+    { type = "text", text = "before" },
+    image_block,
+    { type = "text", text = "between" },
+    second_image_block,
+    { type = "text", text = "after" },
+  },
+}
 local image_user_copy = vim.deepcopy(image_user)
-local image_user_lines = render({ image_user })
+local image_user_lines, image_user_marks, _, _, image_user_placements = render(
+  { image_user },
+  { image_terminal = true }
+)
 local image_user_text = rendered_text(image_user_lines)
-assert(image_user_text:find(" › caption", 1, true), "user image message lost its text")
-assert(image_user_text:find("[Image: image/png]", 1, true), "user image message lost its text fallback")
+assert(
+  image_user_text:find(" › before [image 1] between [image 2] after", 1, true),
+  "user attachment tokens lost block order or spacing"
+)
+assert(not image_user_text:find("[Image:", 1, true), "user attachment rendered an inline image fallback")
+assert(#image_user_placements == 2, "user attachment tokens did not emit one descriptor per image")
+assert(
+  image_user_placements[1].token
+    and image_user_placements[1].block == image_block
+    and image_user_placements[2].token
+    and image_user_placements[2].block == second_image_block,
+  "user attachment token descriptors lost image order"
+)
+local token_marks = {}
+for _, mark in ipairs(image_user_marks) do
+  if mark.highlight == "PiUserAttachment" then
+    table.insert(token_marks, mark)
+  end
+end
+assert(#token_marks == 2, "user attachment tokens lost their semantic highlights")
+for index, mark in ipairs(token_marks) do
+  local placement = image_user_placements[index]
+  assert(
+    mark.row == placement.row and mark.start_col == placement.col and mark.end_col == placement.col + placement.width,
+    "user attachment highlight escaped its exact token range"
+  )
+end
 assert(vim.deep_equal(image_user, image_user_copy), "message rendering mutated a user image block")
+
+local legacy_image_lines = render({ { type = "user", text = "caption", content = { image_block } } })
+assert(
+  rendered_text(legacy_image_lines):find(" › caption [image 1]", 1, true),
+  "legacy user text/image projection lost its caption"
+)
 
 local released_user_lines = render({ { type = "user", text = "discarded", body_released = true } })
 assert(

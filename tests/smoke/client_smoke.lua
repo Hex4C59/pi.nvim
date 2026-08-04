@@ -31,6 +31,10 @@ if not baseline_only then
     vim.tbl_contains(client.session.rpcCapabilities or {}, "administrative_workflows"),
     "installed Pi does not advertise administrative workflows"
   )
+  assert(
+    vim.tbl_contains(client.session.rpcCapabilities or {}, "ordered_prompt_content"),
+    "installed Pi does not advertise ordered prompt content"
+  )
 end
 
 local function request(command, payload)

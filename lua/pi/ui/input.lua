@@ -3,6 +3,27 @@
 
 local M = {}
 local attachment_namespace = vim.api.nvim_create_namespace("pi.nvim.input.attachments")
+local attachment_marker_prefix = string.char(0xee, 0x80)
+local attachment_marker_bytes = 3
+local attachment_slot_limit = 32
+
+local function attachment_marker(id)
+  if type(id) ~= "number" or id % 1 ~= 0 or id < 1 or id > attachment_slot_limit then
+    return nil
+  end
+  return attachment_marker_prefix .. string.char(0x7f + id)
+end
+
+local function marker_id_at(line, column)
+  if line:sub(column + 1, column + 2) ~= attachment_marker_prefix then
+    return nil
+  end
+  local suffix = line:byte(column + 3)
+  if not suffix or suffix < 0x80 or suffix > 0x9f then
+    return nil
+  end
+  return suffix - 0x7f
+end
 
 local function name_buffer(buf, kind, root)
   local titles = { chat = "Pi Chat", commands = "Pi Commands", prompt = "Pi", status = "Pi Status" }
@@ -135,6 +156,8 @@ function InputArea.new(deps)
     status_win = nil,
     clipboard = deps.clipboard or require("pi.clipboard"),
     insert_guard_generation = 0,
+    internal_change = 0,
+    selected_attachment_index = nil,
   }, InputArea)
   return self
 end
@@ -369,8 +392,13 @@ end
 function InputArea:set_input(text)
   self.actions.close_command_menu()
   local buf = self:ensure_input_buffer()
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(text or "", "\n", { plain = true }))
+  self.selected_attachment_index = nil
+  local suffix = table.concat(vim.tbl_map(attachment_marker, self:_attachment_ids()))
+  self.internal_change = self.internal_change + 1
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split((text or "") .. suffix, "\n", { plain = true }))
+  self.internal_change = self.internal_change - 1
   self:resize()
+  self:render_attachments()
   if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
     self:focus()
     local last = vim.api.nvim_buf_line_count(buf)
@@ -379,22 +407,364 @@ function InputArea:set_input(text)
   end
 end
 
+function InputArea:_attachment_ids()
+  local ids = self.state_provider().attachment_ids
+  return type(ids) == "table" and ids or {}
+end
+
+function InputArea:_pending_image_count()
+  return #self:_attachment_ids()
+end
+
+function InputArea:_attachment_positions(include_unknown)
+  local active = {}
+  for _, id in ipairs(self:_attachment_ids()) do
+    active[id] = true
+  end
+  local positions = {}
+  if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
+    return positions
+  end
+  for row, line in ipairs(vim.api.nvim_buf_get_lines(self.input_buf, 0, -1, false)) do
+    local column = 0
+    while column <= #line - attachment_marker_bytes do
+      local id = marker_id_at(line, column)
+      if id then
+        if include_unknown or active[id] then
+          table.insert(positions, { id = id, row = row, col = column })
+        end
+        column = column + attachment_marker_bytes
+      else
+        column = column + 1
+      end
+    end
+  end
+  return positions
+end
+
+function InputArea:_position_for_attachment(index)
+  local id = self:_attachment_ids()[index]
+  if not id then
+    return nil
+  end
+  for _, position in ipairs(self:_attachment_positions()) do
+    if position.id == id then
+      return position
+    end
+  end
+  return nil
+end
+
+function InputArea:_clear_attachment_selection(redraw)
+  if self.selected_attachment_index == nil then
+    return false
+  end
+  self.selected_attachment_index = nil
+  if redraw ~= false then
+    self:render_attachments()
+  end
+  return true
+end
+
+function InputArea:_cursor_position()
+  if
+    not self.input_buf
+    or not vim.api.nvim_buf_is_valid(self.input_buf)
+    or not self.input_win
+    or not vim.api.nvim_win_is_valid(self.input_win)
+  then
+    return nil
+  end
+  local cursor = vim.api.nvim_win_get_cursor(self.input_win)
+  return { row = cursor[1], col = cursor[2] }
+end
+
+function InputArea:_attachment_at_cursor(before)
+  local cursor = self:_cursor_position()
+  if not cursor then
+    return nil
+  end
+  for index, position in ipairs(self:_attachment_positions()) do
+    local column = before and position.col or position.col + attachment_marker_bytes
+    if position.row == cursor.row and column == cursor.col then
+      return index
+    end
+  end
+  return nil
+end
+
+function InputArea:_select_attachment(index)
+  local count = self:_pending_image_count()
+  if type(index) ~= "number" or index < 1 or index > count then
+    return false
+  end
+  local position = self:_position_for_attachment(index)
+  if not position then
+    return false
+  end
+  self.selected_attachment_index = math.floor(index)
+  if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
+    vim.api.nvim_win_set_cursor(self.input_win, { position.row, position.col + attachment_marker_bytes })
+  end
+  self.actions.close_command_menu()
+  self:render_attachments()
+  return true
+end
+
+function InputArea:_delete_selected_attachment(backward)
+  local index = self.selected_attachment_index
+  if not index then
+    return false
+  end
+  local id = self:_attachment_ids()[index]
+  local removed = id and self.actions.remove_image_attachment(id)
+  if not removed then
+    self:render_attachments()
+    return true
+  end
+
+  local count = self:_pending_image_count()
+  local next_index
+  if backward then
+    next_index = index > 1 and index - 1 or nil
+  elseif count > 0 then
+    next_index = math.min(index, count)
+  end
+  self.selected_attachment_index = next_index
+  if next_index then
+    self:_select_attachment(next_index)
+  else
+    self:render_attachments()
+  end
+  return true
+end
+
 function InputArea:render_attachments()
   if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
     return
   end
   vim.api.nvim_buf_clear_namespace(self.input_buf, attachment_namespace, 0, -1)
-  local count = self.state_provider().pending_image_count
+  local ids = self:_attachment_ids()
+  local count = #ids
   if count == 0 then
+    self.selected_attachment_index = nil
     return
   end
-  local last = vim.api.nvim_buf_line_count(self.input_buf)
-  local line = vim.api.nvim_buf_get_lines(self.input_buf, last - 1, last, false)[1] or ""
-  vim.api.nvim_buf_set_extmark(self.input_buf, attachment_namespace, last - 1, #line, {
-    virt_text = { { ("  [%d image%s attached]"):format(count, count == 1 and "" or "s"), "PiInputAttachment" } },
-    virt_text_pos = "eol",
-    priority = 120,
-  })
+  if self.selected_attachment_index and self.selected_attachment_index > count then
+    self.selected_attachment_index = nil
+  end
+  local lines = vim.api.nvim_buf_get_lines(self.input_buf, 0, -1, false)
+  local index_by_id = {}
+  for index, id in ipairs(ids) do
+    index_by_id[id] = index
+  end
+  for _, position in ipairs(self:_attachment_positions()) do
+    local index = index_by_id[position.id]
+    local line = lines[position.row] or ""
+    local chunks = {}
+    if position.col > 0 then
+      table.insert(chunks, { " ", "PiInputNormal" })
+    end
+    table.insert(chunks, {
+      count == 1 and "[1 image attached]" or ("[image %d]"):format(index),
+      self.selected_attachment_index == index and "PiInputAttachmentSelected" or "PiInputAttachment",
+    })
+    if
+      position.col + attachment_marker_bytes < #line
+      and not marker_id_at(line, position.col + attachment_marker_bytes)
+    then
+      table.insert(chunks, { " ", "PiInputNormal" })
+    end
+    vim.api.nvim_buf_set_extmark(self.input_buf, attachment_namespace, position.row - 1, position.col, {
+      end_col = position.col + attachment_marker_bytes,
+      conceal = "",
+      virt_text = chunks,
+      virt_text_pos = "inline",
+      priority = 120,
+    })
+  end
+end
+
+function InputArea:_sync_attachment_markers()
+  if self.internal_change > 0 then
+    return
+  end
+  local active = {}
+  for _, id in ipairs(self:_attachment_ids()) do
+    active[id] = true
+  end
+  local seen = {}
+  local ordered = {}
+  local invalid = {}
+  for _, position in ipairs(self:_attachment_positions(true)) do
+    if active[position.id] and not seen[position.id] then
+      seen[position.id] = true
+      table.insert(ordered, position.id)
+    else
+      table.insert(invalid, position)
+    end
+  end
+  if #invalid > 0 then
+    self.internal_change = self.internal_change + 1
+    for index = #invalid, 1, -1 do
+      local position = invalid[index]
+      vim.api.nvim_buf_set_text(
+        self.input_buf,
+        position.row - 1,
+        position.col,
+        position.row - 1,
+        position.col + attachment_marker_bytes,
+        { "" }
+      )
+    end
+    self.internal_change = self.internal_change - 1
+  end
+  self.actions.sync_image_attachments(ordered)
+end
+
+function InputArea:insert_attachment(id, cursor)
+  local marker = attachment_marker(id)
+  if not marker then
+    return false
+  end
+  local buf = self:ensure_input_buffer()
+  cursor = cursor or self:_cursor_position()
+  if not cursor then
+    local row = vim.api.nvim_buf_line_count(buf)
+    local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+    cursor = { row = row, col = #line }
+  end
+  local line = vim.api.nvim_buf_get_lines(buf, cursor.row - 1, cursor.row, false)[1] or ""
+  cursor.col = math.max(0, math.min(cursor.col, #line))
+  self.internal_change = self.internal_change + 1
+  vim.api.nvim_buf_set_text(buf, cursor.row - 1, cursor.col, cursor.row - 1, cursor.col, { marker })
+  self.internal_change = self.internal_change - 1
+  self:_sync_attachment_markers()
+  self:resize()
+  self:render_attachments()
+  for index, candidate in ipairs(self:_attachment_ids()) do
+    if candidate == id then
+      self:_select_attachment(index)
+      break
+    end
+  end
+  return true
+end
+
+function InputArea:remove_attachment(id)
+  local positions = {}
+  for _, position in ipairs(self:_attachment_positions(true)) do
+    if position.id == id then
+      table.insert(positions, position)
+    end
+  end
+  if #positions == 0 then
+    return false
+  end
+  self.internal_change = self.internal_change + 1
+  for index = #positions, 1, -1 do
+    local position = positions[index]
+    vim.api.nvim_buf_set_text(
+      self.input_buf,
+      position.row - 1,
+      position.col,
+      position.row - 1,
+      position.col + attachment_marker_bytes,
+      { "" }
+    )
+  end
+  self.internal_change = self.internal_change - 1
+  self:resize()
+  self:render_attachments()
+  return true
+end
+
+function InputArea:content_parts()
+  if not self.input_buf or not vim.api.nvim_buf_is_valid(self.input_buf) then
+    return {}
+  end
+  local raw = table.concat(vim.api.nvim_buf_get_lines(self.input_buf, 0, -1, false), "\n")
+  local active = {}
+  for _, id in ipairs(self:_attachment_ids()) do
+    active[id] = true
+  end
+  local parts = {}
+  local text_start = 1
+  local column = 0
+  while column <= #raw - attachment_marker_bytes do
+    local id = marker_id_at(raw, column)
+    if id and active[id] then
+      if column + 1 > text_start then
+        table.insert(parts, { type = "text", text = raw:sub(text_start, column) })
+      end
+      table.insert(parts, { type = "attachment", id = id })
+      column = column + attachment_marker_bytes
+      text_start = column + 1
+    else
+      column = column + 1
+    end
+  end
+  if text_start <= #raw then
+    table.insert(parts, { type = "text", text = raw:sub(text_start) })
+  end
+
+  for _, part in ipairs(parts) do
+    if part.type == "text" then
+      part.text = part.text:gsub("^%s+", "")
+      break
+    end
+  end
+  for index = #parts, 1, -1 do
+    if parts[index].type == "text" then
+      parts[index].text = parts[index].text:gsub("%s+$", "")
+      break
+    end
+  end
+  local compact = {}
+  for _, part in ipairs(parts) do
+    if part.type ~= "text" or part.text ~= "" then
+      local previous = compact[#compact]
+      if previous and previous.type == "text" and part.type == "text" then
+        previous.text = previous.text .. part.text
+      else
+        table.insert(compact, part)
+      end
+    end
+  end
+  return compact
+end
+
+local function raw_from_parts(parts)
+  local chunks = {}
+  for _, part in ipairs(parts or {}) do
+    if part.type == "text" then
+      table.insert(chunks, part.text or "")
+    elseif part.type == "attachment" then
+      table.insert(chunks, attachment_marker(part.id) or "")
+    end
+  end
+  return table.concat(chunks)
+end
+
+function InputArea:restore_draft(parts)
+  local buf = self:ensure_input_buffer()
+  local current = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+  local restored = raw_from_parts(parts)
+  if current ~= "" then
+    restored = restored .. "\n" .. current
+  end
+  self.selected_attachment_index = nil
+  self.internal_change = self.internal_change + 1
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, vim.split(restored, "\n", { plain = true }))
+  self.internal_change = self.internal_change - 1
+  self:_sync_attachment_markers()
+  self:resize()
+  self:render_attachments()
+  if self.input_win and vim.api.nvim_win_is_valid(self.input_win) then
+    local row = vim.api.nvim_buf_line_count(buf)
+    local line = vim.api.nvim_buf_get_lines(buf, row - 1, row, false)[1] or ""
+    vim.api.nvim_win_set_cursor(self.input_win, { row, #line })
+  end
 end
 
 function InputArea:focus()
@@ -443,6 +813,7 @@ function InputArea:_insert_text_at_cursor(text)
   if not self.input_win or not vim.api.nvim_win_is_valid(self.input_win) then
     return false
   end
+  self:_clear_attachment_selection(false)
   local cursor = vim.api.nvim_win_get_cursor(self.input_win)
   local lines = vim.split(text, "\n", { plain = true, trimempty = false })
   vim.api.nvim_buf_set_text(self.input_buf, cursor[1] - 1, cursor[2], cursor[1] - 1, cursor[2], lines)
@@ -452,6 +823,7 @@ function InputArea:_insert_text_at_cursor(text)
     vim.api.nvim_win_set_cursor(self.input_win, { cursor[1] + #lines - 1, #lines[#lines] })
   end
   self:resize()
+  self:render_attachments()
   return true
 end
 
@@ -462,7 +834,7 @@ function InputArea:_paste_clipboard(fallback)
     image = nil
   end
   if image then
-    local added, attachment_err = self.actions.add_image_attachment(image)
+    local added, attachment_err = self.actions.add_image_attachment(image, self:_cursor_position())
     if not added and attachment_err then
       vim.notify(attachment_err, vim.log.levels.WARN, { title = "Pi clipboard" })
     end
@@ -507,6 +879,7 @@ function InputArea:paste_at_mouse(mouse)
   row = math.max(1, math.min(row, vim.api.nvim_buf_line_count(self.input_buf)))
   local line = vim.api.nvim_buf_get_lines(self.input_buf, row - 1, row, false)[1] or ""
   column = math.max(0, math.min(column - 1, #line))
+  self:_clear_attachment_selection()
   vim.api.nvim_set_current_win(self.input_win)
   vim.api.nvim_win_set_cursor(self.input_win, { row, column })
   local pasted = self:_paste_clipboard(false)
@@ -531,7 +904,10 @@ function InputArea:ensure_input_buffer()
     group = self.ui_group,
     buffer = input_buf,
     callback = function(event)
+      self:_clear_attachment_selection(false)
+      self:_sync_attachment_markers()
       self:resize()
+      self:render_attachments()
       if event.event == "TextChangedI" then
         vim.schedule(function()
           if self.input_buf and vim.api.nvim_buf_is_valid(self.input_buf) then
@@ -548,6 +924,7 @@ function InputArea:ensure_input_buffer()
     buffer = input_buf,
     callback = function()
       self.actions.close_command_menu()
+      self:_clear_attachment_selection()
     end,
   })
   vim.api.nvim_create_autocmd("InsertLeave", {
@@ -567,17 +944,22 @@ function InputArea:ensure_input_buffer()
   })
 
   local function submit(behavior)
-    local lines = vim.api.nvim_buf_get_lines(input_buf, 0, -1, false)
-    local prompt = vim.trim(table.concat(lines, "\n"))
-    if prompt == "" and self.state_provider().pending_image_count == 0 then
+    local parts = self:content_parts()
+    if #parts == 0 then
       return
     end
-    local images = self.actions.take_image_attachments()
+    self:_clear_attachment_selection(false)
+    local submission = self.actions.take_prompt_draft(parts)
+    if not submission then
+      return
+    end
     self.actions.close_command_menu()
+    self.internal_change = self.internal_change + 1
     vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "" })
+    self.internal_change = self.internal_change - 1
     self:resize()
     vim.api.nvim_win_set_cursor(self.input_win, { 1, 0 })
-    self.actions.submit(prompt, behavior, images)
+    self.actions.submit(submission.message, behavior, submission.images, submission.content, submission.draft)
   end
 
   local function feed(key)
@@ -615,11 +997,13 @@ function InputArea:ensure_input_buffer()
     self:_paste_clipboard(true)
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Down>", function()
+    self:_clear_attachment_selection()
     if not self.actions.select_command(1) then
       feed("<Down>")
     end
   end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Up>", function()
+    self:_clear_attachment_selection()
     if not self.actions.select_command(-1) then
       feed("<Up>")
     end
@@ -629,7 +1013,61 @@ function InputArea:ensure_input_buffer()
       feed("<C-n>")
     end
   end, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<Right>", function()
+    local count = self:_pending_image_count()
+    if self.selected_attachment_index then
+      if self.selected_attachment_index < count then
+        self:_select_attachment(self.selected_attachment_index + 1)
+      end
+      return
+    end
+    local index = self:_attachment_at_cursor(true)
+    if count > 0 and index then
+      self:_select_attachment(index)
+      return
+    end
+    feed("<Right>")
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<Left>", function()
+    if self.selected_attachment_index and self.selected_attachment_index > 1 then
+      self:_select_attachment(self.selected_attachment_index - 1)
+    elseif self.selected_attachment_index then
+      local position = self:_position_for_attachment(1)
+      self:_clear_attachment_selection()
+      if position then
+        vim.api.nvim_win_set_cursor(self.input_win, { position.row, position.col })
+      end
+    else
+      local index = self:_attachment_at_cursor(false)
+      if index then
+        self:_select_attachment(index)
+      else
+        feed("<Left>")
+      end
+    end
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<Home>", function()
+    self:_clear_attachment_selection()
+    feed("<Home>")
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<End>", function()
+    self:_clear_attachment_selection()
+    feed("<End>")
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<BS>", function()
+    if not self:_delete_selected_attachment(true) then
+      feed("<BS>")
+    end
+  end, { buffer = input_buf, silent = true })
+  vim.keymap.set("i", "<Del>", function()
+    if not self:_delete_selected_attachment(false) then
+      feed("<Del>")
+    end
+  end, { buffer = input_buf, silent = true })
   vim.keymap.set("i", "<Esc>", function()
+    if self:_clear_attachment_selection() then
+      return
+    end
     if self.actions.command_menu_visible() then
       self.actions.close_command_menu()
       return
@@ -678,11 +1116,14 @@ function InputArea:ensure_input_buffer()
     self.actions.toggle_thinking()
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<LeftMouse>", function()
+    self:_clear_attachment_selection()
     dispatch_left_mouse(self.actions.left_mouse)
   end, { buffer = input_buf, silent = true })
   vim.keymap.set({ "n", "i" }, "<RightMouse>", function()
+    self:_clear_attachment_selection()
     self:paste_at_mouse()
   end, { buffer = input_buf, silent = true })
+  self:render_attachments()
   return input_buf
 end
 
@@ -703,6 +1144,10 @@ end
 function InputArea:set_windows(input_win, status_win)
   self.input_win = input_win
   self.status_win = status_win
+  if input_win and vim.api.nvim_win_is_valid(input_win) then
+    vim.wo[input_win].conceallevel = 2
+    vim.wo[input_win].concealcursor = "niv"
+  end
 end
 
 function InputArea:buffer()
@@ -723,6 +1168,7 @@ end
 
 function InputArea:close_windows()
   self.insert_guard_generation = self.insert_guard_generation + 1
+  self:_clear_attachment_selection()
   for _, win in pairs({ self.status_win, self.input_win }) do
     if win and vim.api.nvim_win_is_valid(win) then
       vim.api.nvim_win_close(win, true)
@@ -753,4 +1199,5 @@ M.InputArea = InputArea
 M.name_buffer = name_buffer
 M.dispatch_left_mouse = dispatch_left_mouse
 M.truncate_display = truncate_display
+M.attachment_marker = attachment_marker
 return M

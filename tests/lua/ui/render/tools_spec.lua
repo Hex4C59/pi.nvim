@@ -99,8 +99,8 @@ assert(core_text:find("├─ ✓ Edited", 1, true), "tool timeline did not conn
 assert(core_text:find("╰─ ✓ Read", 1, true), "tool timeline did not terminate its last action")
 assert(core_text:find("Edited  lua/example.lua", 1, true), "edit title is missing")
 assert(core_text:find("+1 -1", 1, true), "edit title is missing its diff statistics")
-assert(core_text:find("- local old = true", 1, true), "deleted diff line is missing")
-assert(core_text:find("+ local new = true", 1, true), "added diff line is missing")
+assert(core_text:find("-   │ local old = true", 1, true), "deleted diff line is missing")
+assert(core_text:find("+   │ local new = true", 1, true), "added diff line is missing")
 assert(core_text:find("Ran  printf hello", 1, true), "Bash title is missing")
 assert(core_text:find("line 1", 1, true) and core_text:find("line 12", 1, true), "Bash preview lost its edges")
 assert(not core_text:find("line 6", 1, true), "collapsed Bash preview retained its middle")
@@ -255,7 +255,10 @@ local diff_text = rendered_text(diff_lines)
 assert(diff_text:find("+1 -1", 1, true), "compatibility edit counts changed")
 assert(diff_text:find("+3 -2", 1, true), "multiple edit counts changed")
 assert(diff_text:find("+2", 1, true), "write addition count changed")
-assert(diff_text:find("- 旧二", 1, true) and diff_text:find("+ 新增一", 1, true), "UTF-8 CRLF diff rows changed")
+assert(
+  diff_text:find("-   │ 旧二", 1, true) and diff_text:find("+   │ 新增一", 1, true),
+  "UTF-8 CRLF diff rows changed"
+)
 assert(not diff_text:find("empty.lua  +", 1, true), "empty edit rendered false diff counts")
 local diff_highlights = highlight_set(diff_marks)
 assert(diff_highlights.PiDiffDeleteLine and diff_highlights.PiDiffAddLine, "diff line surfaces are missing")
@@ -278,7 +281,10 @@ assert(
   rendered_text(collapsed_diff_lines):find("diff lines hidden", 1, true),
   "collapsed edit did not summarize diff rows"
 )
-assert(rendered_text(expanded_diff_lines):find("- old 6", 1, true), "expanded edit did not reveal middle diff rows")
+assert(
+  rendered_text(expanded_diff_lines):find("-   │ old 6", 1, true),
+  "expanded edit did not reveal middle diff rows"
+)
 assert(
   expanded_diff_ranges[1].last - expanded_diff_ranges[1].first
     > collapsed_diff_ranges[1].last - collapsed_diff_ranges[1].first,
@@ -302,7 +308,7 @@ assert(
   rendered_text(collapsed_write_lines):find("lines hidden", 1, true),
   "collapsed write did not summarize additions"
 )
-assert(has_row(expanded_write_lines, "+ write 5"), "expanded write did not reveal middle additions")
+assert(has_row(expanded_write_lines, "+  5 │ write 5"), "expanded write did not reveal numbered additions")
 assert(
   expanded_write_ranges[1].last - expanded_write_ranges[1].first
     > collapsed_write_ranges[1].last - collapsed_write_ranges[1].first,
@@ -430,11 +436,83 @@ local code_lines, code_marks, code_ranges = render_tools({
   },
 })
 assert(rendered_text(code_lines):find("local value = true", 1, true), "expanded Lua read is missing")
+assert(
+  rendered_text(code_lines):find("1 │ local value = true", 1, true)
+    and rendered_text(code_lines):find("2 │ return value", 1, true),
+  "expanded Lua read is missing file line numbers"
+)
 local code_highlights = highlight_set(code_marks, code_ranges[1])
+assert(code_highlights.PiCodeLineNumber, "expanded read is missing its semantic line-number gutter")
 if lua_parser_available then
   assert(code_highlights["@keyword.lua"], "expanded Lua read is missing keyword highlighting")
   assert(code_highlights["@boolean.lua"], "expanded Lua read is missing boolean highlighting")
 end
+
+local offset_lines, offset_marks, offset_ranges = render_tools({
+  {
+    type = "tool",
+    id = "read-offset",
+    name = "read",
+    state = "done",
+    expanded = true,
+    args = { path = "lua/offset.lua", offset = 98, limit = 3 },
+    result = result("first\nsecond\nthird\n\n[20 more lines in file. Use offset=101 to continue.]"),
+  },
+})
+local offset_text = rendered_text(offset_lines)
+assert(
+  offset_text:find(" 98 │ first", 1, true)
+    and offset_text:find(" 99 │ second", 1, true)
+    and offset_text:find("100 │ third", 1, true),
+  "read offset did not produce accurate stable-width file line numbers"
+)
+assert(
+  not offset_text:find("101 │", 1, true)
+    and offset_text:find("20 more lines in file", 1, true)
+    and highlight_set(offset_marks, offset_ranges[1]).PiToolOmitted,
+  "read continuation notice was presented as file content"
+)
+
+local completed_edit_lines, completed_edit_marks, completed_edit_ranges = render_tools({
+  {
+    type = "tool",
+    id = "edit-completed",
+    name = "edit",
+    state = "done",
+    expanded = true,
+    args = { path = "lua/completed.lua", oldText = "old argument", newText = "new argument" },
+    result = result("Successfully replaced 1 block", {
+      diff = table.concat({
+        "  41 local before = true",
+        "- 42 local old = true",
+        "+ 42 local ready = true",
+        "  43 return ready",
+      }, "\n"),
+      firstChangedLine = 42,
+    }),
+  },
+})
+local completed_edit_text = rendered_text(completed_edit_lines)
+assert(
+  completed_edit_text:find("  41 │ local before = true", 1, true)
+    and completed_edit_text:find("- 42 │ local old = true", 1, true)
+    and completed_edit_text:find("+ 42 │ local ready = true", 1, true)
+    and completed_edit_text:find("  43 │ return ready", 1, true),
+  "completed edit did not render Pi's authoritative numbered diff"
+)
+assert(
+  not completed_edit_text:find("old argument", 1, true) and not completed_edit_text:find("new argument", 1, true),
+  "completed edit ignored its authoritative result diff"
+)
+local completed_edit_highlights = highlight_set(completed_edit_marks, completed_edit_ranges[1])
+assert(
+  completed_edit_highlights.PiDiffDelete
+    and completed_edit_highlights.PiDiffAdd
+    and completed_edit_highlights.PiDiffDeleteLine
+    and completed_edit_highlights.PiDiffAddLine
+    and completed_edit_highlights.PiCodeLineNumber,
+  "completed edit diff lost symbol, color, or context gutter semantics"
+)
 
 local long_command = string.rep("界", 40)
 local narrow_tools = {

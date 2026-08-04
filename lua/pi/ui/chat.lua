@@ -64,7 +64,7 @@ function Chat.new(root, frontend_actions)
   registry:prepare()
   local chat = setmetatable({
     root = root,
-    pending_images = {},
+    pending_attachments = {},
     tools_expanded = false,
     hide_thinking = true,
     process_expanded = false,
@@ -129,7 +129,8 @@ function Chat.new(root, frontend_actions)
         permission_mode_label = chat:permission_mode_label(),
         model = chat.model,
         thinking = chat.thinking,
-        pending_image_count = #chat.pending_images,
+        pending_image_count = #chat.pending_attachments,
+        attachment_ids = chat:attachment_ids(),
       }
     end,
     actions = {
@@ -151,11 +152,17 @@ function Chat.new(root, frontend_actions)
       accept_command_completion = function()
         return chat:_accept_command_completion()
       end,
-      take_image_attachments = function()
-        return chat:take_image_attachments()
+      take_prompt_draft = function(parts)
+        return chat:take_prompt_draft(parts)
       end,
-      add_image_attachment = function(image)
-        return chat:add_image_attachment(image)
+      add_image_attachment = function(image, cursor)
+        return chat:add_image_attachment(image, cursor)
+      end,
+      remove_image_attachment = function(id)
+        return chat:remove_image_attachment(id)
+      end,
+      sync_image_attachments = function(ids)
+        return chat:sync_image_attachments(ids)
       end,
       submit = action(frontend_actions, "submit"),
       abort = action(frontend_actions, "abort"),
@@ -675,7 +682,7 @@ function Chat:destroy()
   self.transcript:destroy()
   self.transcript_view:destroy()
   self.image_preview:destroy()
-  self.pending_images = {}
+  self.pending_attachments = {}
   self.widget_area:destroy()
   self.command_menu:destroy()
   self.inline_menu:destroy()
@@ -990,7 +997,11 @@ function Chat:clear()
   self.transcript:clear()
   self.transcript_view:clear()
   self:reset_permission_mode()
-  self.pending_images = {}
+  local attachment_ids = self:attachment_ids()
+  self.pending_attachments = {}
+  for _, id in ipairs(attachment_ids) do
+    self.input_area:remove_attachment(id)
+  end
   self.widget_area:clear()
   self.input_area:render_attachments()
 end
@@ -1000,37 +1011,196 @@ end
 function Chat:validate_image_attachments(images)
   return self.transcript:validate_image_attachments(images)
 end
-function Chat:add_image_attachment(image)
+
+function Chat:attachment_ids()
+  local ids = {}
+  for _, attachment in ipairs(self.pending_attachments) do
+    table.insert(ids, attachment.id)
+  end
+  return ids
+end
+
+function Chat:pending_images()
+  local images = {}
+  for _, attachment in ipairs(self.pending_attachments) do
+    table.insert(images, attachment.image)
+  end
+  return images
+end
+
+function Chat:_allocate_attachment_id(used)
+  used = used or {}
+  for _, attachment in ipairs(self.pending_attachments) do
+    used[attachment.id] = true
+  end
+  for id = 1, 32 do
+    if not used[id] then
+      return id
+    end
+  end
+  return nil
+end
+
+function Chat:add_image_attachment(image, cursor)
   if type(image) ~= "table" or image.type ~= "image" then
     return false, "image attachment is invalid"
   end
-  local combined = vim.list_slice(self.pending_images)
+  local combined = self:pending_images()
   table.insert(combined, image)
   local valid, err = self:validate_image_attachments(combined)
   if not valid then
     return false, err
   end
-  table.insert(self.pending_images, image)
+  local id = self:_allocate_attachment_id()
+  if not id then
+    return false, "Too many image attachments (maximum 32)"
+  end
+  table.insert(self.pending_attachments, { id = id, image = image })
+  if not self.input_area:insert_attachment(id, cursor) then
+    table.remove(self.pending_attachments)
+    return false, "image attachment could not be inserted"
+  end
+  return true, nil, id
+end
+
+function Chat:remove_image_attachment(id)
+  if type(id) ~= "number" or id % 1 ~= 0 then
+    return false
+  end
+  local index
+  for candidate, attachment in ipairs(self.pending_attachments) do
+    if attachment.id == id then
+      index = candidate
+      break
+    end
+  end
+  if not index then
+    return false
+  end
+  table.remove(self.pending_attachments, index)
+  self.input_area:remove_attachment(id)
   self.input_area:render_attachments()
   return true
 end
 
+function Chat:sync_image_attachments(ids)
+  local by_id = {}
+  for _, attachment in ipairs(self.pending_attachments) do
+    by_id[attachment.id] = attachment
+  end
+  local ordered = {}
+  local seen = {}
+  for _, id in ipairs(ids or {}) do
+    if not by_id[id] or seen[id] then
+      return false
+    end
+    seen[id] = true
+    table.insert(ordered, by_id[id])
+  end
+  self.pending_attachments = ordered
+  return true
+end
+
+function Chat:take_prompt_draft(parts)
+  local by_id = {}
+  for _, attachment in ipairs(self.pending_attachments) do
+    by_id[attachment.id] = attachment
+  end
+  local content = {}
+  local images = {}
+  local text = {}
+  local used = {}
+  for _, part in ipairs(parts or {}) do
+    if part.type == "text" then
+      table.insert(content, { type = "text", text = part.text })
+      table.insert(text, part.text)
+    elseif part.type == "attachment" and by_id[part.id] and not used[part.id] then
+      used[part.id] = true
+      table.insert(content, by_id[part.id].image)
+      table.insert(images, by_id[part.id].image)
+    else
+      return nil
+    end
+  end
+  local draft = {
+    parts = vim.deepcopy(parts),
+    attachments = vim.deepcopy(self.pending_attachments),
+  }
+  self.pending_attachments = {}
+  self.input_area:render_attachments()
+  return {
+    message = table.concat(text),
+    images = images,
+    content = content,
+    draft = draft,
+  }
+end
+
+function Chat:restore_prompt_draft(draft)
+  if type(draft) ~= "table" or type(draft.parts) ~= "table" or type(draft.attachments) ~= "table" then
+    return false, "prompt draft is invalid"
+  end
+  local combined_images = {}
+  for _, attachment in ipairs(draft.attachments) do
+    table.insert(combined_images, attachment.image)
+  end
+  vim.list_extend(combined_images, self:pending_images())
+  local valid, err = self:validate_image_attachments(combined_images)
+  if not valid then
+    return false, err
+  end
+
+  local used = {}
+  for _, attachment in ipairs(self.pending_attachments) do
+    used[attachment.id] = true
+  end
+  local id_map = {}
+  local restored = {}
+  for _, attachment in ipairs(draft.attachments) do
+    local id = self:_allocate_attachment_id(used)
+    if not id then
+      return false, "Too many image attachments to restore the prompt"
+    end
+    used[id] = true
+    id_map[attachment.id] = id
+    table.insert(restored, { id = id, image = attachment.image })
+  end
+  local parts = vim.deepcopy(draft.parts)
+  for _, part in ipairs(parts) do
+    if part.type == "attachment" then
+      part.id = id_map[part.id]
+    end
+  end
+  vim.list_extend(restored, self.pending_attachments)
+  self.pending_attachments = restored
+  self.input_area:restore_draft(parts)
+  return true
+end
+
 function Chat:take_image_attachments()
-  local images = self.pending_images
-  self.pending_images = {}
+  local images = self:pending_images()
+  local ids = self:attachment_ids()
+  self.pending_attachments = {}
+  for _, id in ipairs(ids) do
+    self.input_area:remove_attachment(id)
+  end
   self.input_area:render_attachments()
   return images
 end
 
 function Chat:restore_image_attachments(images)
-  local combined = vim.list_slice(self.pending_images)
+  local combined = self:pending_images()
   vim.list_extend(combined, images or {})
   local valid, err = self:validate_image_attachments(combined)
   if not valid then
     return false, err
   end
-  self.pending_images = combined
-  self.input_area:render_attachments()
+  for _, image in ipairs(images or {}) do
+    local added, add_err = self:add_image_attachment(image)
+    if not added then
+      return false, add_err
+    end
+  end
   return true
 end
 

@@ -66,15 +66,21 @@ end
 local function add_tool_row(canvas, entry, last_in_group, width, expanded)
   local prefix = last_in_group and "      " or "   │  "
   local available_width = math.max(1, (width or 80) - vim.api.nvim_strwidth(prefix) - 2)
+  local gutter = entry.gutter or ""
+  local content_width = math.max(1, available_width - vim.api.nvim_strwidth(gutter))
   local entry_text = single_line(entry.text)
-  local text = expanded and entry_text or truncate_display(entry_text, available_width)
-  local trailing = math.max(0, available_width - vim.api.nvim_strwidth(text))
-  local line = prefix .. text .. string.rep(" ", trailing)
+  local text = expanded and entry_text or truncate_display(entry_text, content_width)
+  local visible = gutter .. text
+  local trailing = math.max(0, available_width - vim.api.nvim_strwidth(visible))
+  local line = prefix .. visible .. string.rep(" ", trailing)
   local row = canvas:add(line)
   canvas:mark(row, 0, #prefix, "PiToolGutter", 130)
   canvas:mark(row, #prefix, #line, entry.line_highlight or "PiToolSurface", 80)
-  canvas:mark(row, #prefix, #prefix + #text, entry.highlight, 140)
-  return row, prefix
+  if gutter ~= "" then
+    canvas:mark(row, #prefix, #prefix + #gutter, entry.gutter_highlight or "PiCodeLineNumber", 145)
+  end
+  canvas:mark(row, #prefix + #gutter, #prefix + #gutter + #text, entry.highlight, 140)
+  return row, prefix .. gutter
 end
 
 local function omitted_entry(count, noun)
@@ -151,20 +157,57 @@ local function item_edits(item)
 end
 
 local function edit_entries(item)
+  local result_diff = item.result and item.result.details and item.result.details.diff
+  if type(result_diff) == "string" and result_diff ~= "" then
+    local parsed = {}
+    local number_width = 1
+    for _, line in ipairs(split_lines(result_diff)) do
+      local symbol = line:sub(1, 1)
+      local number, body = line:sub(2):match("^%s*(%d+)%s(.*)$")
+      if number and (symbol == "+" or symbol == "-" or symbol == " ") then
+        number_width = math.max(number_width, #number)
+        table.insert(parsed, { symbol = symbol, number = number, text = body })
+      else
+        table.insert(parsed, { symbol = "…", text = vim.trim(line) })
+      end
+    end
+    local entries = {}
+    for _, row in ipairs(parsed) do
+      local kind = row.symbol == "+" and "add" or row.symbol == "-" and "delete" or "context"
+      table.insert(entries, {
+        text = row.text,
+        gutter = ("%s %" .. tostring(number_width) .. "s │ "):format(row.symbol, row.number or ""),
+        gutter_highlight = kind == "add" and "PiDiffAdd" or kind == "delete" and "PiDiffDelete" or "PiCodeLineNumber",
+        highlight = kind == "add" and "PiDiffAdd" or kind == "delete" and "PiDiffDelete" or "PiToolOutput",
+        line_highlight = kind == "add" and "PiDiffAddLine"
+          or kind == "delete" and "PiDiffDeleteLine"
+          or "PiToolSurface",
+        code = kind ~= "context" or row.symbol == " ",
+      })
+    end
+    return entries
+  end
+
   local entries = {}
   for _, edit in ipairs(item_edits(item)) do
     for _, line in ipairs(split_lines(edit.oldText)) do
       table.insert(entries, {
-        text = "- " .. line,
+        text = line,
+        gutter = "-   │ ",
+        gutter_highlight = "PiDiffDelete",
         highlight = "PiDiffDelete",
         line_highlight = "PiDiffDeleteLine",
+        code = true,
       })
     end
     for _, line in ipairs(split_lines(edit.newText)) do
       table.insert(entries, {
-        text = "+ " .. line,
+        text = line,
+        gutter = "+   │ ",
+        gutter_highlight = "PiDiffAdd",
         highlight = "PiDiffAdd",
         line_highlight = "PiDiffAddLine",
+        code = true,
       })
     end
   end
@@ -173,11 +216,16 @@ end
 
 local function write_entries(item)
   local entries = {}
-  for _, line in ipairs(split_lines((item.args and item.args.content) or "")) do
+  local lines = split_lines((item.args and item.args.content) or "")
+  local number_width = #tostring(math.max(1, #lines))
+  for line_number, line in ipairs(lines) do
     table.insert(entries, {
-      text = "+ " .. line,
+      text = line,
+      gutter = ("+ %" .. tostring(number_width) .. "d │ "):format(line_number),
+      gutter_highlight = "PiDiffAdd",
       highlight = "PiDiffAdd",
       line_highlight = "PiDiffAddLine",
+      code = true,
     })
   end
   return entries
@@ -338,16 +386,41 @@ local function render_tool(canvas, item, opts, last_in_group)
     })
   end
 
-  local read_language = item.name == "read"
-      and expanded
+  if item.name == "read" and expanded and not item.error and output ~= "" then
+    local numbered_count = #output_lines
+    if details and details.clientTruncated then
+      numbered_count = 0
+    elseif details and details.truncation and tonumber(details.truncation.outputLines) then
+      numbered_count = math.min(numbered_count, math.max(0, math.floor(details.truncation.outputLines)))
+    elseif tonumber((item.args or {}).limit) then
+      numbered_count = math.min(numbered_count, math.max(0, math.floor(item.args.limit)))
+    end
+    local first_line = math.max(1, math.floor(tonumber((item.args or {}).offset) or 1))
+    local number_width = #tostring(math.max(first_line, first_line + numbered_count - 1))
+    local output_index = 0
+    for _, entry in ipairs(entries) do
+      if entry.highlight == "PiToolOutput" then
+        output_index = output_index + 1
+        if output_index <= numbered_count then
+          entry.gutter = ("%" .. tostring(number_width) .. "d │ "):format(first_line + output_index - 1)
+          entry.gutter_highlight = "PiCodeLineNumber"
+          entry.code = true
+        else
+          entry.highlight = "PiToolOmitted"
+        end
+      end
+    end
+  end
+
+  local code_language = vim.tbl_contains({ "read", "edit", "write" }, item.name)
       and not item.error
       and code.language_for_path((item.args or {}).path)
     or nil
-  local code_block = read_language and { language = read_language, lines = {}, rows = {} } or nil
+  local code_block = code_language and { language = code_language, lines = {}, rows = {} } or nil
   for _, entry in ipairs(entries) do
-    local row, prefix = add_tool_row(canvas, entry, last_in_group, opts.width, expanded)
-    if code_block and entry.highlight == "PiToolOutput" then
-      code_block.prefix = prefix
+    local row, code_prefix = add_tool_row(canvas, entry, last_in_group, opts.width, expanded)
+    if code_block and entry.code then
+      code_block.prefix = code_block.prefix or code_prefix
       table.insert(code_block.lines, entry.text)
       table.insert(code_block.rows, row)
     end

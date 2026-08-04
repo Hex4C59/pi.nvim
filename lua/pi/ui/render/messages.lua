@@ -6,6 +6,70 @@ local format_duration = text.format_duration
 
 local M = {}
 
+local function user_content_lines(item)
+  local lines = { { text = "", tokens = {} } }
+  local image_count = 0
+  local has_text = false
+  for _, block in ipairs(item.content or {}) do
+    if block.type == "image" then
+      image_count = image_count + 1
+    elseif block.type == "text" then
+      has_text = true
+    end
+  end
+
+  local image_index = 0
+  local previous_was_token = false
+  local function append_text(value)
+    value = type(value) == "string" and value or ""
+    local parts = vim.split(value:gsub("\r\n", "\n"):gsub("\r", "\n"), "\n", { plain = true })
+    for index, part in ipairs(parts) do
+      local line = lines[#lines]
+      if previous_was_token and part ~= "" and not part:match("^%s") then
+        line.text = line.text .. " "
+      end
+      line.text = line.text .. part
+      previous_was_token = false
+      if index < #parts then
+        table.insert(lines, { text = "", tokens = {} })
+      end
+    end
+  end
+
+  if not has_text and type(item.text) == "string" and item.text ~= "" then
+    append_text(item.text)
+  end
+
+  for block_index, block in ipairs(item.content or {}) do
+    if block.type == "text" then
+      append_text(block.text)
+    elseif block.type == "image" then
+      image_index = image_index + 1
+      local line = lines[#lines]
+      if line.text ~= "" and not line.text:match("%s$") then
+        line.text = line.text .. " "
+      end
+      local token = ("[image %d]"):format(image_index)
+      local start_col = #line.text
+      line.text = line.text .. token
+      table.insert(line.tokens, {
+        block = block,
+        block_index = block_index,
+        image_index = image_index,
+        image_count = image_count,
+        start_col = start_col,
+        end_col = start_col + #token,
+      })
+      previous_was_token = true
+    end
+  end
+  return lines
+end
+
+local function user_item_identity(item, opts)
+  return tostring(item._pi_id or item.id or (opts.item_ids and opts.item_ids[item]) or "item")
+end
+
 function M.render_user(canvas, item, opts)
   canvas:space()
   if item.body_released then
@@ -16,32 +80,38 @@ function M.render_user(canvas, item, opts)
     canvas:mark(row, 1, 1 + #"›", "PiUserLabel", 140)
     return
   end
-  local lines = split_lines(item.text)
-  local images = {}
-  if type(item.content) == "table" then
-    for block_index, block in ipairs(item.content) do
-      if block.type == "image" then
-        table.insert(images, { block = block, index = block_index })
-      end
-    end
+  local has_images = false
+  for _, block in ipairs(type(item.content) == "table" and item.content or {}) do
+    has_images = has_images or block.type == "image"
   end
+  local lines = has_images and user_content_lines(item) or split_lines(item.text)
   local rendered = false
   for index, line in ipairs(lines) do
     local prefix = index == 1 and " › " or "   "
-    local row = canvas:add(prefix .. line, {
+    local value = type(line) == "table" and line.text or line
+    local row = canvas:add(prefix .. value, {
       highlight = "PiUserMessageText",
       line_highlight = "PiUserMessageBg",
     })
     if index == 1 then
       canvas:mark(row, 1, 1 + #"›", "PiUserLabel", 140)
     end
-    rendered = true
-  end
-  for index, entry in ipairs(images) do
-    local prefix = not rendered and index == 1 and " › " or "   "
-    local row = media.render(canvas, entry.block, prefix, "PiUserMessageBg", item, entry.index, opts)
-    if not rendered and index == 1 and row then
-      canvas:mark(row, 1, 1 + #"›", "PiUserLabel", 140)
+    for _, token in ipairs(type(line) == "table" and line.tokens or {}) do
+      local start_col = #prefix + token.start_col
+      local end_col = #prefix + token.end_col
+      canvas:mark(row, start_col, end_col, "PiUserAttachment", 150)
+      canvas:image({
+        key = table.concat({ user_item_identity(item, opts), tostring(token.block_index), "token" }, ":"),
+        block = token.block,
+        row = row,
+        col = start_col,
+        width = end_col - start_col,
+        height = 1,
+        range_height = 1,
+        token = true,
+        image_index = token.image_index,
+        image_count = token.image_count,
+      })
     end
     rendered = true
   end

@@ -500,14 +500,22 @@ end)
 with_view({}, function(fixture)
   local buf, win = fixture:open(40, 8)
   vim.bo[buf].modifiable = true
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { "one", "two", "three", "four", "five", "six", "seven" })
+  vim.api.nvim_buf_set_lines(
+    buf,
+    0,
+    -1,
+    false,
+    { "body[image 1] gap [image 2]", "two", "three", "four", "five", "six", "seven" }
+  )
   vim.bo[buf].modifiable = false
   local tool = { id = "tool" }
   local process = { first = 5, last = 5, id = "process" }
   local image = { row = 1, col = 1, width = 4, height = 2, range_height = 2, id = "image" }
+  local first_token = { row = 0, col = 4, width = 9, height = 1, range_height = 1, id = "token-1", token = true }
+  local second_token = { row = 0, col = 18, width = 9, height = 1, range_height = 1, id = "token-2", token = true }
   fixture.view.tool_ranges = { { first = 2, last = 4, item = tool } }
   fixture.view.process_ranges = { process }
-  fixture.view.image_placements = { image }
+  fixture.view.image_placements = { image, first_token, second_token }
   assert(
     fixture.view:tool_at_row(2) == tool and fixture.view:tool_at_row(4) == tool,
     "tool hit testing lost an inclusive range boundary"
@@ -521,6 +529,27 @@ with_view({}, function(fixture)
     "image hit testing lost an inclusive placement boundary"
   )
   assert(fixture.view:image_at_row(4) == nil, "image row hit escaped its inclusive bounds")
+  assert(fixture.view:image_at_row(1) == nil, "token row matched without a cursor column")
+  assert(
+    fixture.view:image_at_row(1, 4) == first_token and fixture.view:image_at_row(1, 18) == second_token,
+    "keyboard token lookup did not distinguish same-line attachment ranges"
+  )
+  assert(
+    fixture.view:image_at_row(1, 3) == nil
+      and fixture.view:image_at_row(1, 13) == nil
+      and fixture.view:image_at_row(1, 27) == nil,
+    "keyboard token lookup consumed body text, spacing, or an exclusive end column"
+  )
+  assert(
+    fixture.view:image_at_mouse({ winid = win, line = 1, column = 5 }) == first_token
+      and fixture.view:image_at_mouse({ winid = win, line = 1, column = 19 }) == second_token,
+    "mouse token lookup did not distinguish same-line attachment ranges"
+  )
+  assert(
+    fixture.view:image_at_mouse({ winid = win, line = 1, column = 2 }) == nil
+      and fixture.view:image_at_mouse({ winid = win, line = 1, column = 14 }) == nil,
+    "mouse token lookup consumed body text or spacing"
+  )
   local original_screenpos = vim.fn.screenpos
   vim.fn.screenpos = function()
     return { row = 10, col = 20, endcol = 20, curscol = 20 }
@@ -573,7 +602,7 @@ with_view({}, function(fixture)
     "images were not prepared once in order"
   )
   assert(prepared[1].width == 34 and prepared[2].width == 34, "view width was not passed to image preparation")
-  assert(#fixture.observed.tracked == 2 and #callbacks == 2, "image tracking or preview preparation was not coalesced")
+  assert(#fixture.observed.tracked == 2 and #callbacks == 1, "image tracking or preview preparation was not coalesced")
   assert(#fixture.observed.refreshed == 2, "prepared image accounting was not refreshed")
   callbacks[1].callback()
   assert(#fixture.observed.refreshed == 3 and scheduled == 1, "current image callback did not refresh the view")
@@ -617,6 +646,7 @@ end
 
 local first_terminal_image = prepared_image("first")
 local second_terminal_image = prepared_image("second")
+local assistant_terminal_image = prepared_image("assistant")
 with_view({
   terminal = true,
   items = {
@@ -626,18 +656,26 @@ with_view({
       text = "",
       content = { first_terminal_image, second_terminal_image },
     },
+    {
+      type = "assistant",
+      _pi_id = "image-assistant",
+      message = { content = { assistant_terminal_image } },
+    },
   },
 }, function(fixture)
   fixture:open(48, 10)
   fixture.view:render()
   local sync = fixture.backend.sync_calls[#fixture.backend.sync_calls]
-  assert(sync and #sync.placements == 2, "terminal image descriptors were not sent to the backend")
-  assert(
-    sync.placements[1].block == first_terminal_image and sync.placements[2].block == second_terminal_image,
-    "terminal image placement order diverged from structured content order"
-  )
-  assert(sync.placements[1].row < sync.placements[2].row, "terminal image descriptors lost visible order")
+  assert(sync and #sync.placements == 1, "terminal backend received user attachment token descriptors")
+  assert(sync.placements[1].block == assistant_terminal_image, "terminal backend lost the assistant image descriptor")
   assert(sync.placements[1].width > 0 and sync.placements[1].width <= 42, "terminal image width escaped layout bounds")
+  assert(
+    #fixture.view.image_placements == 3
+      and fixture.view.image_placements[1].token
+      and fixture.view.image_placements[2].token
+      and not fixture.view.image_placements[3].token,
+    "user token and visual image descriptors were not retained separately"
+  )
   assert(
     fixture.view:image_at_row(sync.placements[1].row + 1) == sync.placements[1],
     "rendered terminal placement was not available to image hit testing"
@@ -650,8 +688,8 @@ with_view(
     local buf = fixture:open(40, 8)
     fixture.view:render()
     assert(
-      table.concat(buffer_lines(buf), "\n"):find("[Image:", 1, true),
-      "missing backend did not render a text fallback"
+      table.concat(buffer_lines(buf), "\n"):find("[image 1]", 1, true),
+      "missing backend did not retain the user attachment token"
     )
   end
 )

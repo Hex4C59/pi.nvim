@@ -166,10 +166,49 @@ local function markdown_logical_lines(text, opts)
   return records
 end
 
-local function add_code_surface_line(canvas, text, opts, text_highlight)
+local function annotate_code_lines(records)
+  local code_rows = nil
+  local function finish_block()
+    if not code_rows then
+      return
+    end
+    local width = #tostring(math.max(1, #code_rows))
+    for line_number, record_index in ipairs(code_rows) do
+      records[record_index].code_line_number = line_number
+      records[record_index].code_line_width = width
+    end
+    code_rows = nil
+  end
+
+  for index, record in ipairs(records) do
+    if record.text:match("^%s*```") then
+      if code_rows then
+        finish_block()
+      else
+        code_rows = {}
+      end
+    elseif code_rows then
+      table.insert(code_rows, index)
+    end
+  end
+  finish_block()
+  return records
+end
+
+local function add_code_surface_line(
+  canvas,
+  text,
+  opts,
+  text_highlight,
+  line_number,
+  line_number_width,
+  surface_highlight
+)
   text = text or ""
   local prefix = opts.prefix or "   "
-  local line = prefix .. text
+  local gutter = line_number and (("%" .. tostring(line_number_width) .. "d │ "):format(line_number)) or ""
+  local code_prefix = prefix .. gutter
+  local line = code_prefix .. text
   local margin = (opts.width or 80) >= 8 and 1 or 0
   local target_width = math.max(0, (opts.width or 80) - margin)
   local trailing = math.max(0, target_width - vim.fn.strdisplaywidth(line))
@@ -177,19 +216,22 @@ local function add_code_surface_line(canvas, text, opts, text_highlight)
 
   local row = canvas:add(line, {
     start_col = margin,
-    highlight = "PiCodeBg",
+    highlight = surface_highlight or "PiCodeBg",
     priority = 90,
   })
-  if text_highlight and text ~= "" then
-    canvas:mark(row, #prefix, #prefix + #text, text_highlight, 100)
+  if gutter ~= "" then
+    canvas:mark(row, #prefix, #code_prefix, "PiCodeLineNumber", 145)
   end
-  return row
+  if text_highlight and text ~= "" then
+    canvas:mark(row, #code_prefix, #code_prefix + #text, text_highlight, 100)
+  end
+  return row, code_prefix
 end
 
 function M.add(canvas, text, opts)
   opts = opts or {}
   local code_block = nil
-  for _, record in ipairs(markdown_logical_lines(text, opts)) do
+  for _, record in ipairs(annotate_code_lines(markdown_logical_lines(text, opts))) do
     local line = record.text
     local line_images = record.images
     local fence = line:match("^%s*```%s*(.*)$")
@@ -207,12 +249,24 @@ function M.add(canvas, text, opts)
           language = code.normalize_language(fence),
           lines = {},
           rows = {},
-          prefix = opts.prefix or "   ",
         }
       end
     elseif code_block then
       table.insert(code_block.lines, line)
-      table.insert(code_block.rows, add_code_surface_line(canvas, line, opts, "PiMarkdownCode"))
+      local change = code_block.language == "diff" and line:sub(1, 1) or nil
+      local text_highlight = change == "+" and "PiDiffAdd" or change == "-" and "PiDiffDelete" or "PiMarkdownCode"
+      local surface_highlight = change == "+" and "PiDiffAddLine" or change == "-" and "PiDiffDeleteLine" or nil
+      local row, code_prefix = add_code_surface_line(
+        canvas,
+        line,
+        opts,
+        text_highlight,
+        record.code_line_number,
+        record.code_line_width,
+        surface_highlight
+      )
+      code_block.prefix = code_block.prefix or code_prefix
+      table.insert(code_block.rows, row)
     elseif #line_images > 0 and line_images[1].block._pi_markdown_replace_line then
       for _, image in ipairs(line_images) do
         media.render(

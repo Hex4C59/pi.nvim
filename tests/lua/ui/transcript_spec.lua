@@ -39,15 +39,31 @@ end
 
 local user, user_observed = new_transcript({ transcript_max_bytes = 4096 })
 local source_image = image_block()
-local structured = { source_image, { type = "text", text = "caller-owned" } }
+local second_source_image = image_block()
+local structured = {
+  { type = "text", text = "before" },
+  source_image,
+  { type = "text", text = "between" },
+  second_source_image,
+  { type = "text", text = "after" },
+}
 local authoritative_structured = vim.deepcopy(structured)
-user:add_user("hello", structured)
+user:add_user("beforebetweenafter", structured)
 local user_item = user.items[1]
-assert(user_item.type == "user" and user_item.text == "hello", "text user projection changed")
-assert(user_item.content[1] ~= source_image, "user projection retained an authoritative image block")
-assert(user_item.content[1].data == nil, "localized display image retained source base64")
+assert(user_item.type == "user" and user_item.text == "", "ordered user projection duplicated display text")
+assert(
+  #user_item.content == 5
+    and user_item.content[1].text == "before"
+    and user_item.content[2].type == "image"
+    and user_item.content[3].text == "between"
+    and user_item.content[4].type == "image"
+    and user_item.content[5].text == "after",
+  "user projection lost ordered text/image blocks"
+)
+assert(user_item.content[2] ~= source_image, "user projection retained an authoritative image block")
+assert(user_item.content[2].data == nil, "localized display image retained source base64")
 assert(vim.deep_equal(structured, authoritative_structured), "user projection mutated caller content")
-assert(user_item.body_retained_bytes >= #user_item.text, "user body accounting omitted text")
+assert(user_item.body_retained_bytes >= #"beforebetweenafter", "user body accounting omitted ordered text")
 assert(user_observed.changes[1].immediate == true, "user addition did not request an immediate render")
 local valid, _, payload_bytes = user:validate_image_attachments({ source_image })
 assert(valid and payload_bytes == #png_base64, "valid image attachment was rejected or miscounted")
@@ -59,10 +75,10 @@ local size_ok, size_error = too_large:validate_image_attachments({ source_image 
 assert(not size_ok and size_error:find("too large", 1, true), "attachment payload limit was not enforced")
 local localized = user:localize_images({ source_image })
 assert(localized[1] ~= source_image and localized[1].data == nil, "localize_images retained caller-owned payload")
-assert(vim.deep_equal(source_image, authoritative_structured[1]), "localize_images mutated its source block")
+assert(vim.deep_equal(source_image, authoritative_structured[2]), "localize_images mutated its source block")
 user:release_image(localized[1])
 assert(localized[1]._pi_image == nil, "explicit localized image release retained presentation state")
-local owned_user_image = user_item.content[1]
+local owned_user_image = user_item.content[2]
 user:clear()
 assert(owned_user_image._pi_image == nil, "clear did not release user image ownership")
 assert(#user.items == 0 and user.non_tool_retained_bytes == 0, "clear did not reset user model state")
@@ -71,6 +87,16 @@ local truncated_user = new_transcript({ transcript_max_bytes = 8 })
 truncated_user:add_user("0123456789")
 assert(truncated_user.items[1].body_truncated, "user text truncation marker is missing")
 assert(truncated_user.items[1].body_omitted_bytes == 2, "user omitted byte count changed")
+
+local legacy_user = new_transcript({ transcript_max_bytes = 4096 })
+legacy_user:add_user("caption", { image_block() })
+assert(
+  legacy_user.items[1].text == ""
+    and legacy_user.items[1].content[1].text == "caption"
+    and legacy_user.items[1].content[2].type == "image",
+  "legacy text plus image input was not projected in visible order"
+)
+legacy_user:destroy()
 
 local assistant, assistant_observed = new_transcript({ transcript_max_bytes = 512 })
 local starting_message = {
@@ -226,7 +252,14 @@ assert(history:find_tool("history-tool").state == "done", "history tool result w
 
 local rich_history = new_transcript({ transcript_max_bytes = 4096 })
 local rich_messages = {
-  { role = "user", content = { { type = "text", text = "turn one" }, image_block() } },
+  {
+    role = "user",
+    content = {
+      { type = "text", text = "turn" },
+      image_block(),
+      { type = "text", text = "one" },
+    },
+  },
   {
     role = "assistant",
     content = { { type = "thinking", thinking = "private" }, { type = "text", text = "answer one" } },
@@ -241,7 +274,12 @@ local authoritative_rich_history = vim.deepcopy(rich_messages)
 rich_history:render_history(rich_messages)
 assert(vim.deep_equal(rich_messages, authoritative_rich_history), "rich history projection mutated authoritative input")
 assert(#rich_history.items == 5, "malformed/unmatched history changed projected item count")
-assert(rich_history.items[1].content[1].data == nil, "history image retained source base64")
+assert(
+  rich_history.items[1].content[1].text == "turn"
+    and rich_history.items[1].content[2].data == nil
+    and rich_history.items[1].content[3].text == "one",
+  "history user attachment order was not restored"
+)
 assert(rich_history:find_tool("bash-42").error, "history Bash error state was lost")
 assert(rich_history.items[5].message.errorMessage == "history error", "history assistant error was lost")
 
@@ -339,10 +377,18 @@ assert(tolerant:find_tool("duplicate").args.path == "second", "duplicate tool st
 
 local destroyable = new_transcript({ transcript_max_bytes = 4096 })
 destroyable:add_user("image", { image_block() })
-local destroy_image = destroyable.items[1].content[1]
+local destroy_image = destroyable.items[1].content[2]
 destroyable:destroy()
 destroyable:destroy()
 assert(destroy_image._pi_image == nil, "destroy did not release image presentation state")
 assert(#destroyable.items == 0 and next(destroyable.tools_by_id) == nil, "destroy did not reset indexes")
+
+local budget_release = new_transcript({ transcript_max_bytes = 4096 })
+budget_release:add_user("", { image_block() })
+local budget_image = budget_release.items[1].content[1]
+budget_release:add_user(string.rep("x", 4096))
+assert(budget_release.items[1].body_released, "transcript budget did not release the older user attachment")
+assert(budget_image._pi_image == nil, "transcript budget release retained the user image cache state")
+budget_release:destroy()
 
 print("transcript_spec: ok")

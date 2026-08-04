@@ -39,7 +39,7 @@ assert(text:find("Read lua/example.lua, use ready, then verify.", 1, true), "inl
 assert(not text:find("/tmp/lua/example.lua", 1, true), "Markdown link target leaked into the transcript")
 assert(text:find("- first item", 1, true), "Markdown list item is missing")
 assert(text:find(" │ quoted", 1, true), "Markdown quote is missing")
-assert(text:find(" local value = true", 1, true), "fenced code content is missing")
+assert(text:find(" 1 │ local value = true", 1, true), "fenced code content is missing its block line number")
 
 local code_row
 for row, line in ipairs(lines) do
@@ -67,6 +67,7 @@ for _, group in ipairs({
   "PiMarkdownInlineCode",
   "PiMarkdownLink",
   "PiMarkdownListMarker",
+  "PiCodeLineNumber",
 }) do
   assert(highlights[group], "Markdown semantic highlight is missing: " .. group)
 end
@@ -117,6 +118,33 @@ assert(highlight_set(empty_fence_marks).PiCodeBg, "empty fenced block lost its f
 local fallback_lines, fallback_marks = render_markdown("```language-without-a-parser\nplain fallback\n```")
 assert(table.concat(fallback_lines, "\n"):find("plain fallback", 1, true), "unknown code language did not render")
 assert(highlight_set(fallback_marks).PiMarkdownCode, "unknown code language lost its fallback highlight")
+
+local numbered_source = { "```lua" }
+for index = 1, 12 do
+  table.insert(numbered_source, "local line_" .. index .. " = " .. index)
+end
+table.insert(numbered_source, "```")
+local numbered_lines = render_markdown(table.concat(numbered_source, "\n"))
+local numbered_text = table.concat(numbered_lines, "\n")
+assert(
+  numbered_text:find(" 1 │ local line_1 = 1", 1, true) and numbered_text:find("12 │ local line_12 = 12", 1, true),
+  "fenced code line-number gutter changed width within a block"
+)
+
+local diff_fence_lines, diff_fence_marks = render_markdown("```diff\n-old value\n+new value\n unchanged\n```")
+local diff_fence_text = table.concat(diff_fence_lines, "\n")
+assert(
+  diff_fence_text:find("1 │ -old value", 1, true) and diff_fence_text:find("2 │ +new value", 1, true),
+  "diff fence lost its numbered change symbols"
+)
+local diff_fence_highlights = highlight_set(diff_fence_marks)
+assert(
+  diff_fence_highlights.PiDiffDelete
+    and diff_fence_highlights.PiDiffAdd
+    and diff_fence_highlights.PiDiffDeleteLine
+    and diff_fence_highlights.PiDiffAddLine,
+  "diff fence lost semantic addition/deletion colors"
+)
 
 assert(code.normalize_language("js") == "javascript", "JavaScript language alias changed")
 assert(code.normalize_language("shell") == "bash", "shell language alias changed")

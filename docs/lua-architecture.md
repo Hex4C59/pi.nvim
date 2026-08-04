@@ -57,15 +57,15 @@ through a late top-level require.
 | RPC process, framing, pending requests, authoritative session snapshot mirror | `pi.client` / `pi.protocol` |
 | Per-project clients and RPC event projection | `pi.runtime` |
 | Display correlation queue, history cursor/snapshot/generation, discovered-command map, refresh flags, direct-RPC Bash request | `pi.runtime` |
-| Bounded display items, item IDs, tool correlation, retention counters | `pi.ui.transcript` |
-| Bounded content copies and summaries | `pi.ui.transcript.projection` |
+| Bounded display items, item IDs, ordered user attachment blocks, image lifetime, tool correlation, retention counters | `pi.ui.transcript` |
+| Bounded ordered content copies and summaries | `pi.ui.transcript.projection` |
 | Release candidate ordering and retained-byte total calculation | `pi.ui.transcript.retention` |
 | Persisted-message to display-event ordering | `pi.ui.transcript.history` |
 | Transcript buffer, render cache/timer, semantic ranges, image placements, mouse gesture generation | `pi.ui.transcript.view` |
 | UI namespace, Chat registry, global UI autocmds, shared welcome timer, closed-window gesture invalidation | `pi.ui.chat.registry` |
 | Layout choice, top-level chat window, responsive geometry | `pi.ui.chat.shell` |
-| Component composition, display mirrors, activity state, frontend delegation | `pi.ui.chat` |
-| Prompt and footer buffers/windows, right-click clipboard insertion | `pi.ui.input` |
+| Component composition, display mirrors, activity state, pending prompt attachment records, frontend delegation | `pi.ui.chat` |
+| Prompt and footer buffers/windows, concealed attachment anchors/token focus, right-click clipboard insertion | `pi.ui.input` |
 | Command-menu buffer/window/matches/selection | `pi.ui.command_menu` |
 | Bounded inline-menu stack/query/items/selection/buffer/window | `pi.ui.inline_menu` |
 | Administrative action generations and active authentication prompt correlation | `pi.commands.admin` |
@@ -135,6 +135,19 @@ CommandMenu, InlineMenu, PermissionPanel, and WidgetArea receive explicit depend
 and never read a sibling field. Shell receives window, buffer, state, and action
 providers from Chat; it does not own component behavior.
 
+Chat owns ordered `{ id, image }` pending attachment records, validates payload
+limits, allocates bounded slot IDs, and resolves submitted slots into Pi content
+blocks. InputArea stores only one concealed private-use anchor per slot in the
+prompt buffer and projects each anchor as inline virtual text. Its
+`selected_attachment_index` is local cursor focus; it never copies image
+payloads. Text changes synchronize the surviving anchor order back to Chat, and
+submission drains records only after InputArea has parsed the exact text/slot
+sequence. RPC rejection restores both the text layout and attachment records.
+After Pi accepts a user message, Transcript localizes retained image blocks and
+owns their cache lifetime while preserving their position among copied text
+blocks. Rendering emits compact `[image N]` interaction descriptors rather than
+inline terminal-image placements for those blocks.
+
 TranscriptView owns each left-button gesture as a generation-scoped projection
 of one valid transcript buffer/window pair. It converts mouse byte columns to
 UTF-8 character boundaries, uses Neovim's character selection for drags, and
@@ -142,8 +155,8 @@ copies only the rendered buffer slice through Chat's clipboard boundary. A
 non-drag release delegates the structured tool/process/image hit to Chat.
 Registry `WinClosed`, Chat close/destruction, buffer invalidation, and view
 clearing cancel the generation. InputArea independently owns prompt right-click
-focus, cursor placement, clipboard image attachment, and text insertion; it
-does not mutate global mouse or clipboard options.
+focus, cursor placement, clipboard image anchor insertion, inline token focus,
+and text insertion; it does not mutate global mouse or clipboard options.
 
 Runtime converts structured command and administrative options into
 `select`, `multi_select`, `confirm`, and non-sensitive `input` frames without
@@ -165,9 +178,9 @@ Pi state changes remain projected only from successful responses or refreshes.
 | `render.text` | Line, width, byte, and duration primitives |
 | `render.code` | Language detection and bounded Tree-sitter highlight cache |
 | `render.media` | Terminal image descriptors, block previews, text fallback |
-| `render.markdown` | Terminal-native Markdown and linked images |
+| `render.markdown` | Terminal-native Markdown, block-local code gutters, and linked images |
 | `render.messages` | User, assistant, thinking, status, and stop reasons |
-| `render.tools` | Tool headers, output, diffs, truncation, and row ranges |
+| `render.tools` | Tool headers, authoritative read/diff gutters, truncation, and row ranges |
 | `render.process` | Process segmentation, summaries, and expansion |
 | `render.welcome` | Responsive welcome surface |
 | `render.engine` | Facade orchestration only |
@@ -175,10 +188,23 @@ Pi state changes remain projected only from successful responses or refreshes.
 Renderer modules produce values and do not create or mutate Neovim buffers or
 windows. `TranscriptView` applies their output and retains stable-prefix render
 caching, bounded projection accounting, coalesced redraws, scroll following,
-Extmarks, and terminal image synchronization. It receives items, state, byte
+Extmarks, exact user-attachment token hit ranges, and terminal image
+synchronization. Token descriptors participate in preview lookup but are
+filtered before backend synchronization; assistant, tool, and Markdown image
+descriptors remain drawable. TranscriptView receives items, state, byte
 counts, actions, and lifecycle callbacks through injected providers and does
 not import the Transcript model. `pi.ui.transcript_view` is a stateless
 compatibility alias for `pi.ui.transcript.view`.
+
+Code gutters are presentation state, not a second source of file truth.
+`render.markdown` assigns block-local ordinal numbers to fenced code.
+`render.tools` derives expanded read numbers from the RPC request's `offset`,
+new-file write numbers from the submitted content, and completed edit numbers
+and change kinds from Pi's `result.details.diff`. Missing edit details retain
+the submitted `+`/`-` preview without inferred file positions. Gutter marks,
+change-line backgrounds, and Tree-sitter marks are separate extmarks so themes
+can distinguish structure, change kind, and syntax without relying on color
+alone.
 
 `pi.ui.image` is the stable facade used by Transcript, TranscriptView, and
 renderers. It is the only module that attaches or clears `_pi_image` on a
