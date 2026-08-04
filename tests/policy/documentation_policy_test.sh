@@ -36,13 +36,14 @@ expect_failure() {
 
 node "$checker" --root "$repo_root"
 
-mkdir -p "$fixture/docs" "$fixture/lua/pi"
+mkdir -p "$fixture/.agent" "$fixture/docs" "$fixture/lua/pi"
+printf '%s\n' '# Plans' > "$fixture/.agent/PLANS.md"
 printf '%s\n' '# Existing' > "$fixture/docs/existing.md"
 printf '%s\n' \
   '# Guide' \
   '' \
   'See [the contract](docs/existing.md), `docs/existing.md`, [a section](#guide),' \
-  'and [the external documentation](https://example.com/docs).' \
+  'the `.agent/PLANS.md` workflow, and [the external documentation](https://example.com/docs).' \
   '' \
   '## Repository Map' \
   '' \
@@ -60,6 +61,9 @@ expect_failure 'broken local Markdown link: docs/missing.md'
 printf '%s\n' '# Readme' '[Guide](AGENTS.md)' > "$fixture/README.md"
 printf '%s\n' '# Notes' 'Read `docs/deleted.md` before editing.' > "$fixture/NOTES.md"
 expect_failure 'missing local document reference: docs/deleted.md'
+
+printf '%s\n' '# Notes' 'Read `.agent/missing.md` before editing.' > "$fixture/NOTES.md"
+expect_failure 'missing local document reference: .agent/missing.md'
 
 rm "$fixture/NOTES.md"
 printf '%s\n' \

@@ -383,6 +383,8 @@ explicitly requires it.
 ## Repository Map
 
 ```text
+.agent/PLANS.md              ExecPlan triggers, required form, and lifecycle
+.agent/plans/                Active multi-session implementation plans only
 .github/pull_request_template.md Review and delivery checklist
 docs/compatibility.md         Public API and RPC capability contract
 docs/lua-architecture.md      Durable Lua dependency and state architecture
@@ -429,6 +431,7 @@ tests/lua/                    Headless Lua tests grouped by frontend area
 tests/extensions/             Node tests grouped by Extension owner
 tests/smoke/                  No-model tests against the installed Pi
 tests/policy/                 Repository policy tests
+scripts/check-exec-plans.mjs  Active ExecPlan policy checker
 scripts/check-documentation.mjs Local documentation integrity checker
 scripts/coverage.sh           Validated local coverage orchestration and cleanup
 scripts/coverage/             Lua merge/report and Node source-only reporter
@@ -505,6 +508,15 @@ cleanup behavior, compatibility/migration path, and executable acceptance
 checks. Keep it in the issue or active task unless it defines a durable shipped
 contract. Ordinary local fixes do not require a standalone specification.
 
+Create a checked-in ExecPlan following `.agent/PLANS.md` when the work is
+expected to cross sessions or major milestones, spans the Pi and pi.nvim
+repositories, needs a prototype to resolve a design unknown, or the user asks
+for a durable implementation plan. Keep exactly one current plan under
+`.agent/plans/`, update it as implementation evidence changes, and make it
+self-contained enough to resume from the plan and repository tree alone. A
+checked-in ExecPlan is not required merely because the conversational planning
+rule above applies.
+
 Review findings should prioritize, in order: authoritative ownership and
 security, public/RPC compatibility and fallback, stale callback and resource
 cleanup, bounded memory/context behavior, tests at the owning layer, and
@@ -535,6 +547,9 @@ version matrix. Prefer one explicit minimum Pi version.
 - Design documents must state clearly when they are not implemented.
 - Completed one-time task documents should be removed after durable behavior is
   captured in code, tests, README, or a current architecture document.
+- `.agent/PLANS.md` is the durable planning contract. Files under
+  `.agent/plans/` are active working records; complete their outcome, transfer
+  durable facts, and remove them in the same change when the work closes.
 - Never cite Pi `latest` behavior as current 0.83 behavior without checking the
   installed package.
 - Run the documentation policy test after changing local links, scoped
@@ -556,3 +571,5 @@ Before finishing any feature, verify:
   bounded and released by their authoritative owner?
 - Do tests cover the authoritative layer and the UI adapter separately?
 - Do README and docs describe what is actually shipped?
+- If an ExecPlan was required, is it current while work is active, and was it
+  closed and removed after durable facts were transferred?

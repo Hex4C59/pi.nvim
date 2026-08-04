@@ -11,7 +11,7 @@ owner, not merely by the file that happened to change.
 - Put Lua specs under `tests/lua/` with a recursively discoverable
   `*_spec.lua` name. Put Extension tests under `tests/extensions/` with a
   recursively discoverable `*.test.mjs` name. Repository contracts belong in
-  `tests/policy/*_test.sh`.
+  `tests/policy/*_test.sh`, including ExecPlan structure and lifecycle rules.
 - Keep transport, event projection, rendering, UI composition, and Extension
   policy assertions at their owning layers. Security changes need an
   authoritative Extension assertion plus a separate Lua UI assertion when
@@ -43,6 +43,7 @@ owner, not merely by the file that happened to change.
 - Lua formatting: `make format-check`.
 - Installed no-model compatibility: `make smoke`.
 - GitHub Actions pin policy: `make ci-policy-check`.
+- Focused ExecPlan policy: `node scripts/check-exec-plans.mjs`.
 - Diagnostic coverage, never a correctness replacement: `make coverage`.
 
 Run the owner-focused test while editing and the complete scope-appropriate

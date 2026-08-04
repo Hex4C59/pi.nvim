@@ -85,7 +85,7 @@ for (const file of markdownFiles(repositoryRoot).sort()) {
     }
   }
 
-  const documentReferencePattern = /`((?:docs|tests|lua|extensions|plugin|scripts|\.github)\/[^`\n]*?\.md)`/g;
+  const documentReferencePattern = /`((?:docs|tests|lua|extensions|plugin|scripts|\.github|\.agent)\/[^`\n]*?\.md)`/g;
   for (const match of prose.matchAll(documentReferencePattern)) {
     const destination = match[1];
     if (/[*?{}$<>]/.test(destination)) continue;

@@ -10,8 +10,9 @@ process are kept in the separate smoke target and also do not call a model.
 See [AGENTS.md](../AGENTS.md) for authoritative ownership and security rules and
 [Lua Frontend Architecture](../docs/lua-architecture.md) for frontend module
 boundaries. The [Compatibility Contract](../docs/compatibility.md) defines the
-public surface and RPC fallbacks. Bundled guards are trusted in-process
-guardrails, not a sandbox.
+public surface and RPC fallbacks. The [ExecPlan Guide](../.agent/PLANS.md)
+defines the checked-in workflow for multi-session work. Bundled guards are
+trusted in-process guardrails, not a sandbox.
 
 ## Commands
 
@@ -28,6 +29,7 @@ Run commands from the repository root.
 | `make format-check` | StyLua validation for `lua/`, `plugin/`, `tests/`, and repository coverage helpers | Formatting gate |
 | `make smoke` | Installed Pi RPC startup and bundled Extension loading, without model calls | Installed compatibility gate |
 | `make ci-policy-check` | GitHub Actions immutable-pin policy | CI workflow gate |
+| `node scripts/check-exec-plans.mjs` | ExecPlan guide and active-plan structure | Focused planning-policy check |
 
 Examples:
 
@@ -63,7 +65,7 @@ the focused loop and is not part of CI.
 | `tests/extensions/security/` | Permission, path, workspace, and session-root policy owners |
 | `tests/fixtures/` | Deterministic fake processes and test data |
 | `tests/smoke/` | Installed Pi RPC and Extension loading checks without model calls |
-| `tests/policy/` | Repository architecture, documentation, dependency, runner, and CI policy contracts |
+| `tests/policy/` | Repository architecture, ExecPlan, documentation, dependency, runner, and CI policy contracts |
 
 ## Critical-Path Ownership
 
@@ -105,6 +107,7 @@ native Neovim presentation and adapter behavior.
 | Extension permission/workspace/session policy | Authoritative Node policy test; Lua UI test only if presentation also changes | `make test`, `make smoke` for Extension API/loading changes |
 | Extension todo workflow | Todo Extension test and widget/RPC UI tests when presentation changes | `make test`, `make smoke` for Extension API/loading changes |
 | GitHub Actions workflow | `make ci-policy-check` and policy tests | `make test`, `make ci-policy-check` |
+| ExecPlan guide or active plan | `node scripts/check-exec-plans.mjs` | `make test` |
 | Documentation links, scoped instructions, or repository map | `sh tests/policy/documentation_policy_test.sh` | `make test` |
 | Broad refactor | Owner-focused tests throughout the work | `make test`, `make format-check`, and scope-dependent `make smoke` |
 

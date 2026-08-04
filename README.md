@@ -445,6 +445,11 @@ owned scratch buffers for the stopped project.
 
 ## Development
 
+For work that spans sessions, repositories, major milestones, or a design
+experiment, follow the [ExecPlan guide](.agent/PLANS.md) and keep one current
+plan under `.agent/plans/`. Ordinary local changes do not need a checked-in
+plan.
+
 The test suite does not call a model or require authentication. It includes a
 deterministic fake RPC process that exercises history, streaming messages,
 thinking, tool execution, Extension dialog cancellation, retry settings and
@@ -477,7 +482,7 @@ first, and writes ignored local reports under `coverage/`. It is diagnostic and
 does not replace `make smoke` or introduce a CI percentage threshold.
 
 See the [Compatibility Contract](docs/compatibility.md) for the supported public
-surface and RPC fallbacks. See [`tests/README.md`](tests/README.md) for command
+surface and RPC fallbacks. See the [test guide](tests/README.md) for command
 scope, test ownership, and change-to-test guidance.
 
 The RPC parser deliberately buffers arbitrary stdout chunks and splits only on

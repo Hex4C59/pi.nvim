@@ -24,6 +24,7 @@
 
 ## Documentation And Cleanup
 
+- [ ] A checked-in ExecPlan was not needed, or the active plan is current and follows `.agent/PLANS.md`.
 - [ ] README describes shipped behavior only.
 - [ ] Durable architecture, compatibility, and test documentation is current.
-- [ ] Completed one-time task documents and temporary artifacts were removed.
+- [ ] Completed ExecPlans, one-time task documents, and temporary artifacts were removed after durable facts were transferred.
