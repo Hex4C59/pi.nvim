@@ -45,6 +45,11 @@ local chat = {
 }
 
 local errors = {}
+local notifications = {}
+local original_notify = vim.notify
+vim.notify = function(message, level, options)
+  table.insert(notifications, { message = message, level = level, options = options })
+end
 local refresh_count = 0
 local refresh_value
 local menus = {}
@@ -105,6 +110,14 @@ end
 
 local function run()
   local commands = require("pi.commands.ui")
+
+  commands.hotkeys()
+  assert(
+    notifications[1]
+      and notifications[1].options.title == "Pi hotkeys"
+      and notifications[1].message:find("focus transcript", 1, true),
+    "hotkey help did not describe the shared Escape contract"
+  )
 
   local model_menu = open_settings(commands)
   model_menu.options.on_select(assert(find_item(model_menu.options.items, "Model")))
@@ -211,6 +224,7 @@ package.loaded["pi.runtime"] = previous_modules.runtime
 package.loaded["pi.commands.model"] = previous_modules.model
 package.loaded["pi.commands.permission"] = previous_modules.permission
 package.loaded["pi.commands.ui"] = previous_modules.ui
+vim.notify = original_notify
 if not ok then
   error(err)
 end

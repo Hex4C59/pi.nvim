@@ -50,6 +50,9 @@ local function chat_actions(root)
     load_older_history = function()
       return M.load_older_history(root)
     end,
+    hotkeys = function()
+      return invoke_ui_action("hotkeys")
+    end,
   }
 end
 

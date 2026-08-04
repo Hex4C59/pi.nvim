@@ -4,6 +4,7 @@ local registry = require("pi.ui.chat.registry").default()
 
 local chats = {}
 local scratch_buffers = {}
+local original_columns = vim.o.columns
 
 local function track_chat(root)
   local chat = Chat.new(root)
@@ -167,6 +168,22 @@ local function assert_inline_menu(chat, label)
     label .. " menu gained a detached border"
   )
   assert_window_in_editor(menu_win, label .. " inline menu")
+  local query_win = assert(chat.inline_menu:query_window(), label .. " query window is missing")
+  local query_config = vim.api.nvim_win_get_config(query_win)
+  assert(
+    query_config.relative == "win" and query_config.win == chat.win and query_config.height == 1,
+    label .. " query window lost its canvas parent"
+  )
+  assert(
+    query_config.row >= menu_config.row and query_config.row < menu_config.row + menu_config.height,
+    label .. " query escaped menu"
+  )
+  assert(
+    query_config.col + query_config.width <= vim.api.nvim_win_get_width(chat.win),
+    label .. " query crosses canvas"
+  )
+  assert(vim.api.nvim_get_current_win() == query_win, label .. " query window did not own menu focus")
+  assert_window_in_editor(query_win, label .. " inline query")
 end
 
 config.setup({
@@ -265,6 +282,33 @@ local function run()
   assert(status_config.relative == "win" and status_config.win == main_window, "status is not canvas-relative")
   assert(status_config.focusable == false, "status window can steal focus")
 
+  local function expected_right_width(columns)
+    return math.min(math.max(42, math.floor(columns * 0.55)), math.max(1, columns - 21))
+  end
+  for _, columns in ipairs({ 140, 80, 60 }) do
+    vim.o.columns = columns
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    assert(
+      vim.api.nvim_win_get_width(chat.win) == expected_right_width(columns),
+      ("global resize did not apply the right-layout width at %d columns"):format(columns)
+    )
+    assert_horizontal_alignment(chat, ("right resize %d"):format(columns))
+    assert_window_in_editor(chat.input_area:window(), ("right prompt %d"):format(columns))
+    assert_window_in_editor(chat.input_area:status_window(), ("right status %d"):format(columns))
+  end
+  vim.o.columns = original_columns
+  vim.api.nvim_exec_autocmds("VimResized", {})
+  local responsive_width = vim.api.nvim_win_get_width(chat.win)
+  local manual_width = math.max(1, responsive_width - 2)
+  vim.api.nvim_win_set_width(chat.win, manual_width)
+  vim.api.nvim_exec_autocmds("WinResized", {})
+  assert(vim.api.nvim_win_get_width(chat.win) == manual_width, "WinResized reverted a manual split adjustment")
+  vim.api.nvim_exec_autocmds("VimResized", {})
+  assert(
+    vim.api.nvim_win_get_width(chat.win) == expected_right_width(vim.o.columns),
+    "VimResized did not restore responsive right width"
+  )
+
   chat:open(false)
   assert(
     chat.win == main_window
@@ -321,6 +365,7 @@ local function run()
     status_buffer,
     chat.command_menu:ensure_buffer(),
     chat.inline_menu:buffer(),
+    chat.inline_menu:query_buffer(),
   }
   for _, buf in ipairs(owned) do
     assert(chat:owns_buffer(buf), "Chat did not delegate ownership for a component buffer")
@@ -566,6 +611,7 @@ for _, buf in ipairs(scratch_buffers) do
     pcall(vim.api.nvim_buf_delete, buf, { force = true })
   end
 end
+vim.o.columns = original_columns
 if not ok then
   error(err)
 end

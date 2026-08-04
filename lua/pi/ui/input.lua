@@ -26,7 +26,14 @@ local function marker_id_at(line, column)
 end
 
 local function name_buffer(buf, kind, root)
-  local titles = { chat = "Pi Chat", commands = "Pi Commands", prompt = "Pi", status = "Pi Status" }
+  local titles = {
+    chat = "Pi Chat",
+    commands = "Pi Commands",
+    ["inline-menu"] = "Pi Menu",
+    ["inline-query"] = "Pi Menu Query",
+    prompt = "Pi",
+    status = "Pi Status",
+  }
   local label = ("%s · %s"):format(titles[kind] or "Pi", vim.fs.basename(root))
   local ok = pcall(vim.api.nvim_buf_set_name, buf, label)
   if not ok then
@@ -968,17 +975,17 @@ function InputArea:ensure_input_buffer()
 
   vim.keymap.set("n", "<CR>", function()
     submit(nil)
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Submit Pi prompt" })
   vim.keymap.set("i", "<CR>", function()
     if self.actions.accept_command_completion() then
       return
     end
     submit(nil)
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Accept command or submit Pi prompt" })
   vim.keymap.set({ "n", "i" }, "<M-CR>", function()
     submit("followUp")
-  end, { buffer = input_buf, silent = true })
-  vim.keymap.set("i", "<C-j>", "<CR>", { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Queue Pi follow-up" })
+  vim.keymap.set("i", "<C-j>", "<CR>", { buffer = input_buf, silent = true, desc = "Insert prompt line" })
   vim.keymap.set("i", "<Tab>", function()
     if self.actions.command_menu_visible() then
       self.actions.select_command(1)
@@ -989,30 +996,30 @@ function InputArea:ensure_input_buffer()
       return
     end
     feed("<Tab>")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Complete or indent Pi prompt" })
   vim.keymap.set("i", "<C-v>", function()
     self:_paste_clipboard(true)
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Paste into Pi prompt" })
   vim.keymap.set("i", "<C-S-v>", function()
     self:_paste_clipboard(true)
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Paste into Pi prompt" })
   vim.keymap.set("i", "<Down>", function()
     self:_clear_attachment_selection()
     if not self.actions.select_command(1) then
       feed("<Down>")
     end
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Select next Pi command" })
   vim.keymap.set("i", "<Up>", function()
     self:_clear_attachment_selection()
     if not self.actions.select_command(-1) then
       feed("<Up>")
     end
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Select previous Pi command" })
   vim.keymap.set("i", "<C-n>", function()
     if not self.actions.select_command(1) then
       feed("<C-n>")
     end
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Select next Pi command" })
   vim.keymap.set("i", "<Right>", function()
     local count = self:_pending_image_count()
     if self.selected_attachment_index then
@@ -1027,7 +1034,7 @@ function InputArea:ensure_input_buffer()
       return
     end
     feed("<Right>")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Move right through Pi attachments" })
   vim.keymap.set("i", "<Left>", function()
     if self.selected_attachment_index and self.selected_attachment_index > 1 then
       self:_select_attachment(self.selected_attachment_index - 1)
@@ -1045,25 +1052,25 @@ function InputArea:ensure_input_buffer()
         feed("<Left>")
       end
     end
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Move left through Pi attachments" })
   vim.keymap.set("i", "<Home>", function()
     self:_clear_attachment_selection()
     feed("<Home>")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Move to start of Pi prompt" })
   vim.keymap.set("i", "<End>", function()
     self:_clear_attachment_selection()
     feed("<End>")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Move to end of Pi prompt" })
   vim.keymap.set("i", "<BS>", function()
     if not self:_delete_selected_attachment(true) then
       feed("<BS>")
     end
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Delete before Pi prompt cursor" })
   vim.keymap.set("i", "<Del>", function()
     if not self:_delete_selected_attachment(false) then
       feed("<Del>")
     end
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Delete at Pi prompt cursor" })
   vim.keymap.set("i", "<Esc>", function()
     if self:_clear_attachment_selection() then
       return
@@ -1075,54 +1082,58 @@ function InputArea:ensure_input_buffer()
     local activity = self.state_provider().activity
     if activity ~= "idle" and activity ~= "starting" then
       self.actions.abort()
+      return
     end
-  end, { buffer = input_buf, silent = true })
+    self.insert_guard_generation = self.insert_guard_generation + 1
+    vim.cmd("stopinsert")
+    self.actions.focus_transcript()
+  end, { buffer = input_buf, silent = true, desc = "Dismiss Pi prompt or interrupt active work" })
   vim.keymap.set({ "n", "i", "v" }, "<C-q>", function()
     self.actions.close_command_menu()
     vim.cmd("stopinsert")
     self.actions.return_to_editor()
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Return from Pi to editor" })
   vim.keymap.set({ "n", "i" }, "<C-c>", function()
     self.actions.abort()
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Interrupt Pi" })
   vim.keymap.set({ "n", "i" }, "<C-l>", function()
     self.actions.prefill_command("/model ")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Select Pi model" })
   vim.keymap.set("n", "<C-p>", function()
     self.actions.prefill_command("/model ")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Select Pi model" })
   vim.keymap.set("i", "<C-p>", function()
     if self.actions.select_command(-1) then
       return
     end
     self.actions.prefill_command("/model ")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Navigate command or select Pi model" })
   vim.keymap.set({ "n", "i" }, "<M-p>", function()
     self.actions.prefill_command("/permissions ")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Select Pi permission mode" })
   vim.keymap.set("n", "<S-Tab>", function()
     self.actions.prefill_command("/thinking ")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Select Pi thinking level" })
   vim.keymap.set("i", "<S-Tab>", function()
     if self.actions.select_command(-1) then
       return
     end
     self.actions.prefill_command("/thinking ")
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Navigate command or select Pi thinking level" })
   vim.keymap.set({ "n", "i" }, "<C-o>", function()
     self.actions.toggle_tools()
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Toggle Pi process details" })
   vim.keymap.set({ "n", "i" }, "<C-t>", function()
     self.actions.toggle_thinking()
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Toggle Pi process details" })
   vim.keymap.set({ "n", "i" }, "<LeftMouse>", function()
     self:_clear_attachment_selection()
     dispatch_left_mouse(self.actions.left_mouse)
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Interact with Pi transcript" })
   vim.keymap.set({ "n", "i" }, "<RightMouse>", function()
     self:_clear_attachment_selection()
     self:paste_at_mouse()
-  end, { buffer = input_buf, silent = true })
+  end, { buffer = input_buf, silent = true, desc = "Paste into Pi prompt at pointer" })
   self:render_attachments()
   return input_buf
 end

@@ -178,7 +178,7 @@ local function edit_entries(item)
         text = row.text,
         gutter = ("%s %" .. tostring(number_width) .. "s │ "):format(row.symbol, row.number or ""),
         gutter_highlight = kind == "add" and "PiDiffAdd" or kind == "delete" and "PiDiffDelete" or "PiCodeLineNumber",
-        highlight = kind == "add" and "PiDiffAdd" or kind == "delete" and "PiDiffDelete" or "PiToolOutput",
+        highlight = kind == "add" and "PiDiffAddText" or kind == "delete" and "PiDiffDeleteText" or "PiToolOutput",
         line_highlight = kind == "add" and "PiDiffAddLine"
           or kind == "delete" and "PiDiffDeleteLine"
           or "PiToolSurface",
@@ -195,7 +195,7 @@ local function edit_entries(item)
         text = line,
         gutter = "-   │ ",
         gutter_highlight = "PiDiffDelete",
-        highlight = "PiDiffDelete",
+        highlight = "PiDiffDeleteText",
         line_highlight = "PiDiffDeleteLine",
         code = true,
       })
@@ -205,7 +205,7 @@ local function edit_entries(item)
         text = line,
         gutter = "+   │ ",
         gutter_highlight = "PiDiffAdd",
-        highlight = "PiDiffAdd",
+        highlight = "PiDiffAddText",
         line_highlight = "PiDiffAddLine",
         code = true,
       })
@@ -223,7 +223,7 @@ local function write_entries(item)
       text = line,
       gutter = ("+ %" .. tostring(number_width) .. "d │ "):format(line_number),
       gutter_highlight = "PiDiffAdd",
-      highlight = "PiDiffAdd",
+      highlight = "PiDiffAddText",
       line_highlight = "PiDiffAddLine",
       code = true,
     })

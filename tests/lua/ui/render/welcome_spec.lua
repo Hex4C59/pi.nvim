@@ -43,6 +43,16 @@ assert(not welcome_text:find("Enter send", 1, true), "welcome send hint should b
 assert(not welcome_text:find("Ctrl-J", 1, true), "welcome newline hint should be removed")
 assert(not welcome_text:find("/hotkeys", 1, true), "welcome keybinding hint should be removed")
 assert(not welcome_text:find("/commands", 1, true), "welcome should not advertise the redundant command browser")
+assert(#welcome_lines == 9, "wide welcome retained unnecessary vertical padding")
+assert(
+  welcome_lines[#welcome_lines - 1]:find("/tmp/pi.nvim", 1, true),
+  "wide welcome project row is not adjacent to the bottom border"
+)
+local wide_title_prefix = welcome_lines[1]:match("^(.-)┬")
+assert(
+  wide_title_prefix and vim.fn.strdisplaywidth(wide_title_prefix) == 29,
+  "wide welcome brand column did not use the compact proportion"
+)
 assert_shape(welcome_lines, welcome_marks, 80)
 
 local highlights = {}
@@ -77,7 +87,14 @@ for _, width in ipairs({ 20, 42, 71, 72, 80 }) do
     permission = "full",
   })
   assert_shape(lines, marks, width)
+  assert(#lines == 9, "welcome responsive height changed")
   assert((lines[1]:find("┬", 1, true) ~= nil) == (width >= 72), "welcome responsive breakpoint changed")
+  if width >= 32 and width < 72 then
+    local compact = table.concat(lines, "\n")
+    assert(compact:find("PI · agent for Neovim", 1, true), "compact welcome brand is missing")
+    assert(not compact:find("████", 1, true), "compact welcome retained the four-line logo")
+    assert(lines[#lines - 1]:find("/tmp", 1, true), "compact project row is not next to the border")
+  end
 end
 
 local permission_labels = {

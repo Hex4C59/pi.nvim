@@ -11,6 +11,10 @@ vim.api.nvim_create_user_command("PiChat", function()
   pi().chat()
 end, { desc = "Open the Pi chat buffer" })
 
+vim.api.nvim_create_user_command("PiToggle", function()
+  pi().toggle()
+end, { desc = "Toggle the Pi chat window" })
+
 vim.api.nvim_create_user_command("PiAsk", function(opts)
   pi().ask(opts.args)
 end, { nargs = "*", desc = "Send a prompt to Pi" })

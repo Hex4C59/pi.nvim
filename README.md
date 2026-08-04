@@ -99,9 +99,14 @@ user messages, assistant Markdown, thinking, and tool executions own their
 padding, semantic highlights, and responsive layout. Every transcript begins
 with a full-width Pi welcome card showing the model, thinking level, project,
 and security mode. Its segmented Pi mark rotates through colors derived from
-the active colorscheme, while each field keeps a stable semantic color. It
-remains in scrollback as the conversation grows. Assistant answers stay on the
-plain canvas. Each completed work stage renders its public update first,
+the active colorscheme, while each field keeps a stable semantic color. At 72
+columns and above the card keeps the segmented mark; from 32 through 71 columns
+it uses a compact single-line Pi brand. Both forms stay exactly nine rows high.
+Below a 32-by-8 canvas, the transcript temporarily shows a size hint instead of
+projecting messages, widgets, or images, then rebuilds when space returns. An
+active permission request bypasses that hint so its fail-closed controls remain
+reachable. The welcome card remains in scrollback as the conversation grows.
+Assistant answers stay on the plain canvas. Each completed work stage renders its public update first,
 followed by a quiet disclosure row such as `Thought for 4s, read 6 files`.
 Earlier stages can therefore collapse while Pi is still working. The current
 reasoning stage replaces the generic activity label on the prompt border instead
@@ -130,11 +135,19 @@ an unnumbered `+`/`-` preview rather than inventing file positions.
 The default layout is a focused right sidebar. `:PiLayout` changes the active
 project workspace at runtime without restarting Pi or discarding its
 transcript; bottom, dedicated-tab, and centered-float layouts remain available.
-The sidebar uses a darker semantic canvas with distinct colors for users,
-assistant output, thought timelines, tools, diffs, usage, model, and thinking
-level. During active work, mirrored cyan highlights travel along the prompt
-frame while the elapsed activity label stays centered in its bottom border.
-The frame returns to a uniform cyan outline as soon as Pi becomes idle.
+When the sidebar opens or the terminal is globally resized, its width is
+`min(max(42, floor(columns * chat.width)), max(1, columns - 21))`, reserving a
+20-column editor plus the split separator whenever the terminal permits it.
+Ordinary `WinResized` events only refit Chat overlays, so a manually adjusted
+split does not snap back. The sidebar uses semantic colors for users, assistant
+output, thought timelines, tools, diffs, usage, model, and thinking level. If
+the colorscheme leaves `Normal` transparent, the canvas, welcome area, status
+row, and inline permission surface inherit that transparency while input,
+message, tool, code, diff, widget, and selected-row surfaces remain distinct.
+Light themes use accessible light fallbacks when semantic colors are absent.
+During active work, mirrored cyan highlights travel along the prompt frame
+while the elapsed activity label stays centered in its bottom border. The frame
+returns to a uniform cyan outline as soon as Pi becomes idle.
 
 Below the prompt, a single quiet row keeps the selected model and thinking level
 on the left, and shows the selected permission mode beside context usage. On narrow
@@ -154,21 +167,25 @@ Enable or Disable choice instead of guessing the current value.
 Pi-owned selection workflows render as a temporary, borderless, full-width menu
 inside the Chat canvas above the prompt. This includes model, thinking,
 permission mode, layout, settings, tree/fork, resume, and structured
-administrative selection and confirmation. Printable characters filter the
-current menu, including `j` and `k`; use arrows or `Ctrl-P`/`Ctrl-N` to move,
-`Backspace` to edit the filter, and `Enter` to select. `Tab` toggles an item in a
-multi-select menu. `Esc` returns through settings/tree submenus before closing
-the group, while `Ctrl-Q` closes the whole group and returns to the previous
-editor window. Confirmations start on Cancel. Menus are bounded, disappear
-after use, and never add synthetic messages to Pi's transcript.
+administrative selection and confirmation. Its read-only candidate list places
+a native one-line Insert-mode query over the `Filter:` or `Value:` row, so
+Unicode text, IME composition, paste, and character-wise deletion work like a
+normal Neovim buffer. Typed text filters the current menu, including `j` and
+`k`; use arrows or `Ctrl-P`/`Ctrl-N` to move and `Enter` to select. `Tab` toggles
+an item in a multi-select menu. `Esc` returns through settings/tree submenus
+before closing the group, while `Ctrl-Q` closes the whole group and returns to
+the previous editor window. Confirmations start on Cancel. Menus are bounded,
+disappear after use, and never add synthetic messages to Pi's transcript.
 
 The prompt editor focuses automatically and stays locked in Insert mode while
 it owns focus. Printable keys always edit text instead of invoking Neovim
-Normal or Visual commands. `Esc` closes slash-command completion or interrupts
-active work without leaving the prompt. `Ctrl-Q` is the explicit way back to
-the most recently used non-Pi editor window; it enters Normal mode while the
-chat, draft, and Pi process continue running. If that window no longer exists,
-focus falls back to the Pi canvas in Normal mode.
+Normal or Visual commands. `Esc` first clears attachment-token focus, then
+closes slash-command completion, then interrupts active work. While Pi is idle
+or starting, it instead leaves Insert mode and focuses the transcript canvas in
+Normal mode without discarding the draft or attachments. `Ctrl-Q` is the
+explicit way back to the most recently used non-Pi editor window; it enters
+Normal mode while the chat, draft, and Pi process continue running. If that
+window no longer exists, focus falls back to the Pi canvas in Normal mode.
 
 Pending image attachments appear as keyboard-focusable tokens inside the prompt.
 One image uses `[1 image attached]`; multiple images use `[image 1]`, `[image 2]`,
@@ -193,7 +210,7 @@ The prompt mirrors Pi's primary controls:
 | `Enter` | Accept a selected slash command, otherwise submit or steer |
 | `Ctrl-J` | Insert a newline |
 | `Alt-Enter` | Queue a follow-up |
-| `Esc` | Clear attachment focus, close slash-command completion, or interrupt active work; remain in the prompt |
+| `Esc` | Clear attachment focus, close slash completion, interrupt active work, or focus the canvas while idle/starting |
 | `Right` / `Left` | Enter and navigate image attachment tokens in prompt order |
 | `Backspace` / `Delete` | Remove the focused image attachment and select its previous or next neighbor |
 | `Ctrl-C` | Interrupt active work |
@@ -208,6 +225,7 @@ The prompt mirrors Pi's primary controls:
 | Right click in prompt | Move the cursor to the click and paste text or add a clipboard image attachment |
 | `Ctrl-T` | Toggle complete process details (compatibility alias) |
 | `gH` | Load the next older bounded history page from the transcript |
+| `?` in transcript | Open the same keyboard reference as `/hotkeys` |
 | `Ctrl-V` / `Ctrl-Shift-V` | Paste an image from the system clipboard (text paste is preserved as a fallback) |
 | `/` | Open slash-command completion |
 | `Tab` / `Shift-Tab`, `Up` / `Down` | Select the next or previous command |

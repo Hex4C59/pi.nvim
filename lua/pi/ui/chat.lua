@@ -177,6 +177,9 @@ function Chat.new(root, frontend_actions)
       return_to_editor = function()
         chat:_return_to_editor()
       end,
+      focus_transcript = function()
+        chat:_focus_transcript()
+      end,
       toggle_tools = function()
         chat:toggle_tools()
       end,
@@ -279,6 +282,7 @@ function Chat.new(root, frontend_actions)
         model = chat.model,
         thinking = chat.thinking,
         permission_mode = chat:permission_mode() or "syncing",
+        permission_active = chat.permission_area:active(),
         overlay_height = chat.overlay_height or 0,
       }
     end,
@@ -333,6 +337,7 @@ function Chat.new(root, frontend_actions)
       cycle_model = action(frontend_actions, "cycle_model"),
       cycle_thinking_level = action(frontend_actions, "cycle_thinking_level"),
       load_older_history = action(frontend_actions, "load_older_history"),
+      hotkeys = action(frontend_actions, "hotkeys"),
     },
   })
   chat.transcript = Transcript.new({
@@ -489,8 +494,8 @@ function Chat.new(root, frontend_actions)
     is_open = function()
       return chat:is_open()
     end,
-    layout = function()
-      chat:_layout()
+    layout = function(options)
+      chat:_layout(options)
     end,
     window = function()
       return chat.shell:window()
@@ -592,6 +597,13 @@ function Chat:_return_to_editor()
     end
   end
   vim.cmd("stopinsert")
+end
+
+function Chat:_focus_transcript()
+  local canvas = self.shell:window()
+  if canvas and vim.api.nvim_win_is_valid(canvas) then
+    pcall(vim.api.nvim_set_current_win, canvas)
+  end
 end
 
 function Chat:_stop_animation()
@@ -917,8 +929,8 @@ end
 function Chat:_layout_main()
   return self.shell:layout_main()
 end
-function Chat:_layout()
-  return self.shell:layout()
+function Chat:_layout(options)
+  return self.shell:layout(options)
 end
 function Chat:set_input(text)
   self.input_area:set_input(text)

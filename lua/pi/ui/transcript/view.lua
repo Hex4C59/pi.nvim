@@ -3,6 +3,7 @@ local renderer = require("pi.ui.render")
 local image_data = require("pi.ui.image")
 local markdown_image = require("pi.ui.markdown_image")
 local input_area = require("pi.ui.input")
+local truncate_display = require("pi.ui.render.text").truncate_display
 
 local namespace = vim.api.nvim_create_namespace("pi.nvim")
 local TranscriptView = {}
@@ -43,6 +44,7 @@ function TranscriptView.new(deps)
     mouse_generation = 0,
     mouse_gesture = nil,
     preserve_prepend = false,
+    size_limited = false,
     destroyed = false,
   }, TranscriptView)
   return self
@@ -410,42 +412,45 @@ function TranscriptView:_ensure_buffer()
 
   vim.keymap.set("n", "q", function()
     self.actions.close()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Close Pi chat" })
   for _, key in ipairs({ "i", "a" }) do
     vim.keymap.set("n", key, function()
       self.actions.focus_input()
-    end, { buffer = self.buf, silent = true })
+    end, { buffer = self.buf, silent = true, desc = "Focus Pi prompt" })
   end
+  vim.keymap.set("n", "?", function()
+    self.actions.hotkeys()
+  end, { buffer = self.buf, silent = true, desc = "Show Pi hotkeys" })
   vim.keymap.set("n", "<C-c>", function()
     self.actions.abort()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Interrupt Pi" })
   vim.keymap.set("n", "<C-l>", function()
     self.actions.select_model()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Select Pi model" })
   vim.keymap.set("n", "<C-p>", function()
     self.actions.cycle_model()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Cycle Pi model" })
   vim.keymap.set("n", "<S-Tab>", function()
     self.actions.cycle_thinking_level()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Cycle Pi thinking level" })
   vim.keymap.set("n", "<C-o>", function()
     self.actions.toggle_tools()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Toggle Pi process details" })
   vim.keymap.set("n", "<C-t>", function()
     self.actions.toggle_thinking()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Toggle Pi process details" })
   vim.keymap.set("n", "gH", function()
     self.actions.load_older_history()
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Load older Pi history" })
   vim.keymap.set({ "n", "x" }, "<LeftMouse>", function()
     self:begin_mouse_gesture(vim.fn.getmousepos())
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Start Pi transcript selection" })
   vim.keymap.set({ "n", "x" }, "<LeftDrag>", function()
     self:drag_mouse_gesture(vim.fn.getmousepos())
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Extend Pi transcript selection" })
   vim.keymap.set({ "n", "x" }, "<LeftRelease>", function()
     self:release_mouse_gesture(vim.fn.getmousepos())
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Copy Pi transcript selection" })
   vim.keymap.set("n", "<CR>", function()
     local cursor = vim.api.nvim_win_get_cursor(self:window())
     local descriptor = self:image_at_row(cursor[1], cursor[2])
@@ -454,7 +459,7 @@ function TranscriptView:_ensure_buffer()
     else
       vim.api.nvim_feedkeys(vim.keycode("<CR>"), "n", false)
     end
-  end, { buffer = self.buf, silent = true })
+  end, { buffer = self.buf, silent = true, desc = "Open Pi image preview" })
   return self.buf
 end
 
@@ -499,9 +504,60 @@ function TranscriptView:_clamp_transcript_view()
   return clamped
 end
 
+function TranscriptView:_render_size_hint(width)
+  if not self.size_limited then
+    self.image_generation = self.image_generation + 1
+  end
+  self.size_limited = true
+  self.render_cache = nil
+  self.render_frame = nil
+  self.render_cache_bytes = 0
+  self.render_frame_bytes = 0
+  self.projection_retained_bytes = 0
+  self.prepared_images_width = nil
+  self.tool_ranges = {}
+  self.process_ranges = {}
+  self.image_placements = {}
+  local line = truncate_display("Pi needs 32 x 8", math.max(1, width))
+  self:_with_modifiable(function(buf)
+    vim.api.nvim_buf_clear_namespace(buf, namespace, 0, -1)
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, { line })
+    if line ~= "" then
+      vim.api.nvim_buf_set_extmark(buf, namespace, 0, 0, {
+        end_col = #line,
+        hl_group = "PiPanelMuted",
+      })
+    end
+  end)
+  if self.image_backend then
+    self.image_backend:sync(self.buf, self:window(), {})
+  end
+  local win = self:window()
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_win_set_cursor, win, { 1, 0 })
+  end
+end
+
 function TranscriptView:_render_transcript()
   if self.destroyed then
     return
+  end
+  local win = self:window()
+  local state = self:state()
+  local width = win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_width(win) or 80
+  local height = win and vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_height(win) or 24
+  local canvas_height = math.max(0, height - (state.overlay_height or 0))
+  if (width < 32 or canvas_height < 8) and not state.permission_active then
+    self:_render_size_hint(width)
+    return
+  end
+  if self.size_limited then
+    self.size_limited = false
+    self.image_generation = self.image_generation + 1
+    self:_invalidate_cache()
+    self.render_frame = nil
+    self.render_frame_bytes = 0
+    self.prepared_images_width = nil
   end
   self.materialize()
   local follow_output = true
@@ -526,8 +582,6 @@ function TranscriptView:_render_transcript()
     end
   end
 
-  local width = self:window() and vim.api.nvim_win_is_valid(self:window()) and vim.api.nvim_win_get_width(self:window())
-    or 80
   local process_active = self.process_active()
   local stable_count = #self:items()
   if #self:items() > 0 and (process_active or self:items()[#self:items()].type == "user") then
@@ -544,14 +598,14 @@ function TranscriptView:_render_transcript()
   local security_mode = (config.get().security or {}).mode
   local cache_key = table.concat({
     tostring(width),
-    tostring(self:state().hide_thinking),
-    tostring(self:state().tools_expanded),
-    tostring(self:state().process_expanded),
+    tostring(state.hide_thinking),
+    tostring(state.tools_expanded),
+    tostring(state.process_expanded),
     tostring(image_terminal),
     tostring(self.root),
-    tostring(self:state().model),
-    tostring(self:state().thinking),
-    tostring(self:state().permission_mode or "syncing"),
+    tostring(state.model),
+    tostring(state.thinking),
+    tostring(state.permission_mode or "syncing"),
     tostring(security_mode),
   }, "\0")
   local previous_cache_count = self.render_cache and self.render_cache.count or 0
@@ -565,10 +619,10 @@ function TranscriptView:_render_transcript()
   self:_prepare_images(width, prepare_start, prepare_preview)
 
   local base_opts = {
-    hide_thinking = self:state().hide_thinking,
-    tools_expanded = self:state().tools_expanded,
+    hide_thinking = state.hide_thinking,
+    tools_expanded = state.tools_expanded,
     collapse_processes = true,
-    process_expanded = self:state().process_expanded,
+    process_expanded = state.process_expanded,
     image_terminal = image_terminal,
     root = self.root,
     width = width,
@@ -583,10 +637,10 @@ function TranscriptView:_render_transcript()
     local prefix_opts = vim.tbl_extend("force", {}, base_opts, {
       process_active = false,
       welcome = {
-        model = self:state().model,
-        thinking = self:state().thinking,
+        model = state.model,
+        thinking = state.thinking,
         root = self.root,
-        permission = self:state().permission_mode or "syncing",
+        permission = state.permission_mode or "syncing",
         security = security_mode,
       },
     })
@@ -645,7 +699,7 @@ function TranscriptView:_render_transcript()
     vim.list_extend(dynamic_lines, permission_lines)
     vim.list_extend(dynamic_marks, offset_marks(permission_marks, permission_offset))
   end
-  for _ = 1, self:state().overlay_height or 0 do
+  for _ = 1, state.overlay_height or 0 do
     table.insert(dynamic_lines, "")
   end
   if prefix_rows == 0 and #dynamic_lines == 0 then

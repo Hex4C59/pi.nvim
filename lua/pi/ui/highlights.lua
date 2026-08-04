@@ -28,14 +28,33 @@ local function setup()
   local func = vim.api.nvim_get_hl(0, { name = "Function", link = false })
   local string_hl = vim.api.nvim_get_hl(0, { name = "String", link = false })
   local separator = vim.api.nvim_get_hl(0, { name = "WinSeparator", link = false })
-  local background = normal.bg or 0x1e1e1e
-  local foreground = normal.fg or 0xd4d4d4
-  local canvas = blend(0x000000, background, 0.2)
+  local light = vim.o.background == "light"
+  local fallback = light
+      and {
+        background = 0xf5f5f5,
+        foreground = 0x202020,
+        accent = 0x005f87,
+        success = 0x2e7d32,
+        warning = 0x7a4b00,
+        error = 0xb42318,
+      }
+    or {
+      background = 0x1e1e1e,
+      foreground = 0xd4d4d4,
+      accent = 0x7aa2f7,
+      success = 0x9ece6a,
+      warning = 0xe0af68,
+      error = 0xf7768e,
+    }
+  local reference_background = normal.bg or fallback.background
+  local foreground = normal.fg or fallback.foreground
+  local canvas = light and reference_background or blend(0x000000, reference_background, 0.2)
+  local canvas_background = normal.bg and canvas or nil
   local muted = comment.fg or blend(foreground, canvas, 0.5)
-  local accent = info.fg or 0x7aa2f7
-  local success = ok.fg or 0x9ece6a
-  local warning = warn.fg or 0xe0af68
-  local error_color = err.fg or 0xf7768e
+  local accent = info.fg or fallback.accent
+  local success = ok.fg or fallback.success
+  local warning = warn.fg or fallback.warning
+  local error_color = err.fg or fallback.error
   local palette = {}
   local seen_colors = {}
   local function add_palette_color(color)
@@ -50,20 +69,22 @@ local function setup()
   for _, highlight in ipairs({ hint, special, func, string_hl }) do
     add_palette_color(highlight.fg)
   end
-  for _, color in ipairs({ 0x7aa2f7, 0x9ece6a, 0xe0af68, 0xbb9af7, 0x7dcfff, 0xff9e64 }) do
+  local fallback_palette = light and { 0x005f87, 0x2e7d32, 0x7a4b00, 0x6f42c1, 0x006d77, 0x8a3b12 }
+    or { 0x7aa2f7, 0x9ece6a, 0xe0af68, 0xbb9af7, 0x7dcfff, 0xff9e64 }
+  for _, color in ipairs(fallback_palette) do
     add_palette_color(color)
   end
   welcome_palette = palette
-  welcome_background = canvas
+  welcome_background = canvas_background
   local secondary = palette[4] or accent
   local input_bg = blend(foreground, canvas, 0.07)
   local code_bg = blend(0x000000, canvas, 0.16)
   local tool_bg = blend(foreground, canvas, 0.045)
   local widget_bg = blend(foreground, canvas, 0.055)
-  local diff_add_bg = blend(success, canvas, 0.11)
-  local diff_delete_bg = blend(error_color, canvas, 0.11)
+  local diff_add_bg = blend(success, canvas, 0.07)
+  local diff_delete_bg = blend(error_color, canvas, 0.07)
   local cterm_foreground = normal.ctermfg or 15
-  local cterm_background = normal.ctermbg or 0
+  local cterm_background = normal.ctermbg
   local cterm_muted = comment.ctermfg or 8
   local cterm_accent = info.ctermfg or 14
   local cterm_success = ok.ctermfg or 10
@@ -73,23 +94,23 @@ local function setup()
   local cterm_plan = 13
 
   local groups = {
-    PiCanvasNormal = { fg = foreground, bg = canvas },
+    PiCanvasNormal = { fg = foreground, bg = canvas_background },
     PiPanelTitle = { fg = accent, bold = true },
     PiPanelMuted = { fg = muted },
-    PiPanelBorder = { fg = separator.fg or blend(foreground, canvas, 0.3), bg = canvas },
-    PiWelcomeBorder = { fg = blend(accent, canvas, 0.68), bg = canvas },
-    PiWelcomeTitle = { fg = warning, bg = canvas, bold = true },
-    PiWelcomeAgent = { fg = success, bg = canvas, bold = true },
-    PiWelcomeNeovim = { fg = secondary, bg = canvas, italic = true },
-    PiWelcomeSection = { fg = warning, bg = canvas, bold = true },
-    PiWelcomeLabel = { fg = muted, bg = canvas },
-    PiWelcomeModelValue = { fg = accent, bg = canvas, bold = true },
-    PiWelcomeThinkingValue = { fg = warning, bg = canvas, bold = true },
-    PiWelcomeProjectValue = { fg = secondary, bg = canvas, bold = true },
-    PiWelcomePermissionValue = { fg = warning, bg = canvas, bold = true },
-    PiWelcomePermissionWarning = { fg = warning, bg = canvas, bold = true },
-    PiWelcomePermissionSafe = { fg = success, bg = canvas, bold = true },
-    PiWelcomePermissionDanger = { fg = error_color, bg = canvas, bold = true },
+    PiPanelBorder = { fg = separator.fg or blend(foreground, canvas, 0.3), bg = canvas_background },
+    PiWelcomeBorder = { fg = blend(accent, canvas, 0.68), bg = canvas_background },
+    PiWelcomeTitle = { fg = warning, bg = canvas_background, bold = true },
+    PiWelcomeAgent = { fg = success, bg = canvas_background, bold = true },
+    PiWelcomeNeovim = { fg = secondary, bg = canvas_background, italic = true },
+    PiWelcomeSection = { fg = warning, bg = canvas_background, bold = true },
+    PiWelcomeLabel = { fg = muted, bg = canvas_background },
+    PiWelcomeModelValue = { fg = accent, bg = canvas_background, bold = true },
+    PiWelcomeThinkingValue = { fg = warning, bg = canvas_background, bold = true },
+    PiWelcomeProjectValue = { fg = secondary, bg = canvas_background, bold = true },
+    PiWelcomePermissionValue = { fg = warning, bg = canvas_background, bold = true },
+    PiWelcomePermissionWarning = { fg = warning, bg = canvas_background, bold = true },
+    PiWelcomePermissionSafe = { fg = success, bg = canvas_background, bold = true },
+    PiWelcomePermissionDanger = { fg = error_color, bg = canvas_background, bold = true },
     PiInputBorder = { fg = accent, bg = input_bg },
     PiInputBorderMuted = { fg = blend(accent, canvas, 0.48), bg = input_bg },
     PiInputBorderTrail = { fg = blend(accent, canvas, 0.78), bg = input_bg },
@@ -105,110 +126,110 @@ local function setup()
     PiInputCursor = { fg = 0x000000, bg = 0x000000, bold = true, nocombine = true },
     PiPermissionNormal = {
       fg = foreground,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_foreground,
       ctermbg = cterm_background,
     },
     PiPermissionCursor = {
-      fg = canvas,
-      bg = canvas,
+      fg = canvas_background,
+      bg = canvas_background,
       ctermfg = cterm_background,
       ctermbg = cterm_background,
       nocombine = true,
     },
     PiPermissionVisual = {
       fg = foreground,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_foreground,
       ctermbg = cterm_background,
     },
     PiPermissionEdge = {
       fg = accent,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_accent,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionRule = {
       fg = accent,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_accent,
       ctermbg = cterm_background,
     },
     PiPermissionTitle = {
       fg = accent,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_accent,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionSubject = {
       fg = foreground,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_foreground,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionBody = {
       fg = foreground,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_foreground,
       ctermbg = cterm_background,
     },
     PiPermissionPath = {
       fg = secondary,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_secondary,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionCommand = {
       fg = foreground,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_foreground,
       ctermbg = cterm_background,
     },
     PiPermissionCommandPrompt = {
       fg = accent,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_accent,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionQuestion = {
       fg = warning,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_warning,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionChoice = {
       fg = foreground,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_foreground,
       ctermbg = cterm_background,
     },
     PiPermissionBlock = {
       fg = muted,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_muted,
       ctermbg = cterm_background,
     },
     PiPermissionAllow = {
       fg = muted,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_muted,
       ctermbg = cterm_background,
     },
     PiPermissionSession = {
       fg = muted,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_muted,
       ctermbg = cterm_background,
     },
     PiPermissionMarker = {
       fg = accent,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_accent,
       ctermbg = cterm_background,
       bold = true,
@@ -230,40 +251,40 @@ local function setup()
     },
     PiPermissionShellCommand = {
       fg = accent,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_accent,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionShellOption = {
       fg = secondary,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_secondary,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionShellOperator = {
       fg = muted,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_muted,
       ctermbg = cterm_background,
       bold = true,
     },
     PiPermissionShellString = {
       fg = warning,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_warning,
       ctermbg = cterm_background,
     },
     PiPermissionShellVariable = {
       fg = secondary,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_secondary,
       ctermbg = cterm_background,
     },
     PiPermissionHint = {
       fg = muted,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_muted,
       ctermbg = cterm_background,
     },
@@ -272,7 +293,7 @@ local function setup()
       ctermfg = cterm_foreground,
       bold = true,
     },
-    PiCommandMenu = { fg = muted, bg = canvas },
+    PiCommandMenu = { fg = muted, bg = canvas_background },
     PiCommandSelected = { bg = blend(accent, canvas, 0.075) },
     PiCommandMarker = { fg = accent, bold = true },
     PiCommandName = { fg = foreground },
@@ -281,23 +302,23 @@ local function setup()
     PiCommandHint = { fg = muted, italic = true },
     PiCommandDescription = { fg = muted },
     PiCommandDescriptionSelected = { fg = foreground },
-    PiInlineMenu = { fg = foreground, bg = canvas },
-    PiInlineTitle = { fg = accent, bg = canvas, bold = true },
-    PiInlineQuery = { fg = muted, bg = canvas, bold = true },
-    PiInlineInput = { fg = warning, bg = canvas },
+    PiInlineMenu = { fg = foreground, bg = canvas_background },
+    PiInlineTitle = { fg = accent, bg = canvas_background, bold = true },
+    PiInlineQuery = { fg = muted, bg = canvas_background, bold = true },
+    PiInlineInput = { fg = warning, bg = canvas_background },
     PiInlineSelected = { bg = blend(accent, canvas, 0.075) },
-    PiInlineMarker = { fg = accent, bg = canvas, bold = true },
-    PiInlineItem = { fg = foreground, bg = canvas },
-    PiInlineCurrent = { fg = success, bg = canvas, bold = true },
-    PiInlineDescription = { fg = muted, bg = canvas },
-    PiInlineError = { fg = error_color, bg = canvas, bold = true },
-    PiInlineLoading = { fg = warning, bg = canvas, italic = true },
+    PiInlineMarker = { fg = accent, bg = canvas_background, bold = true },
+    PiInlineItem = { fg = foreground, bg = canvas_background },
+    PiInlineCurrent = { fg = success, bg = canvas_background, bold = true },
+    PiInlineDescription = { fg = muted, bg = canvas_background },
+    PiInlineError = { fg = error_color, bg = canvas_background, bold = true },
+    PiInlineLoading = { fg = warning, bg = canvas_background, italic = true },
     PiUserLabel = { fg = accent, bg = blend(accent, canvas, 0.14), bold = true },
     PiUserMessageText = { fg = foreground, bg = blend(accent, canvas, 0.14) },
     PiUserMessageBg = { bg = blend(accent, canvas, 0.14) },
     PiUserAttachment = { fg = success, bg = blend(accent, canvas, 0.14), bold = true },
-    PiImageSurface = { fg = foreground, bg = canvas },
-    PiImageFallback = { fg = muted, bg = canvas, italic = true },
+    PiImageSurface = { fg = foreground, bg = canvas_background },
+    PiImageFallback = { fg = muted, bg = canvas_background, italic = true },
     PiInputAttachment = { fg = success, bg = input_bg, bold = true },
     PiInputAttachmentSelected = { fg = success, bg = input_bg, bold = true, reverse = true },
     PiWidgetNormal = { fg = foreground, bg = widget_bg },
@@ -331,6 +352,8 @@ local function setup()
     PiToolError = { fg = error_color, bold = true },
     PiDiffAdd = { fg = success, bg = diff_add_bg, bold = true },
     PiDiffDelete = { fg = error_color, bg = diff_delete_bg },
+    PiDiffAddText = { fg = foreground, bg = diff_add_bg },
+    PiDiffDeleteText = { fg = foreground, bg = diff_delete_bg },
     PiDiffAddLine = { bg = diff_add_bg },
     PiDiffDeleteLine = { bg = diff_delete_bg },
     PiCodeBg = { bg = code_bg },
@@ -346,42 +369,42 @@ local function setup()
     PiThinkingLabel = { fg = warning, bold = true },
     PiThinkingText = { fg = blend(warning, canvas, 0.72), italic = true },
     PiHeaderHint = { fg = muted },
-    PiStatusNormal = { fg = foreground, bg = canvas },
-    PiStatusContext = { fg = muted, bg = canvas },
-    PiStatusModel = { fg = accent, bg = canvas, bold = true },
-    PiStatusThinking = { fg = warning, bg = canvas, bold = true },
-    PiStatusPermission = { fg = accent, bg = canvas, bold = true },
+    PiStatusNormal = { fg = foreground, bg = canvas_background },
+    PiStatusContext = { fg = muted, bg = canvas_background },
+    PiStatusModel = { fg = accent, bg = canvas_background, bold = true },
+    PiStatusThinking = { fg = warning, bg = canvas_background, bold = true },
+    PiStatusPermission = { fg = accent, bg = canvas_background, bold = true },
     PiStatusPermissionManual = {
       fg = warning,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_warning,
       ctermbg = cterm_background,
       bold = true,
     },
     PiStatusPermissionAcceptEdits = {
       fg = success,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_success,
       ctermbg = cterm_background,
       bold = true,
     },
     PiStatusPermissionAuto = {
       fg = accent,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_accent,
       ctermbg = cterm_background,
       bold = true,
     },
     PiStatusPermissionPlan = {
       fg = secondary,
-      bg = canvas,
+      bg = canvas_background,
       ctermfg = cterm_plan,
       ctermbg = cterm_background,
       bold = true,
     },
-    PiStatusWorking = { fg = warning, bg = canvas, bold = true },
-    PiStatusWarning = { fg = warning, bg = canvas, bold = true },
-    PiStatusError = { fg = error_color, bg = canvas, bold = true },
+    PiStatusWorking = { fg = warning, bg = canvas_background, bold = true },
+    PiStatusWarning = { fg = warning, bg = canvas_background, bold = true },
+    PiStatusError = { fg = error_color, bg = canvas_background, bold = true },
   }
   for name, attributes in pairs(groups) do
     vim.api.nvim_set_hl(0, name, attributes)

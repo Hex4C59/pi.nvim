@@ -40,13 +40,15 @@ a stable programmatic API until documented here. Modules below `pi.client`,
 four compatibility aliases listed above.
 
 The main prompt is a text-entry surface locked to Insert mode whenever its
-window owns focus. `Esc` may dismiss completion or interrupt active work, but it
-does not leave the prompt. Buffer-local `Ctrl-Q` returns to the most recently
-used non-Pi editor window in Normal mode without closing Chat, discarding the
-draft, or stopping the RPC process; an invalid return window falls back to the
-Pi canvas in Normal mode. This contract applies equally to right, bottom, tab,
-and float layouts. Permission prompts retain their separate fail-closed
-`Ctrl-Q` cancellation behavior.
+window owns focus. `Esc` first clears attachment-token focus, then dismisses
+completion, then interrupts active work. When Pi is idle or starting, `Esc`
+instead leaves Insert mode and focuses the transcript canvas in Normal mode
+without closing Chat or discarding the draft and attachments. Buffer-local
+`Ctrl-Q` returns to the most recently used non-Pi editor window in Normal mode
+without closing Chat, discarding the draft, or stopping the RPC process; an
+invalid return window falls back to the Pi canvas in Normal mode. This contract
+applies equally to right, bottom, tab, and float layouts. Permission prompts
+retain their separate fail-closed `Ctrl-Q` cancellation behavior.
 
 Pending prompt images use concealed buffer anchors projected as inline attachment
 tokens. A single image is `[1 image attached]`; multiple images are separate
@@ -94,12 +96,15 @@ key, or public Lua API.
 Pi-owned selectors opened by slash commands or their `:PiModel`, `:PiThinking`,
 `:PiPermissions`, `:PiSettings`, `:PiLayout`, `:PiTree`, `:PiFork`, and
 `:PiClone` counterparts use one Chat-owned inline menu. The menu is a
-borderless, full-width, canvas-relative `nofile` surface above the prompt; it is
-temporary UI and must not create transcript messages or authoritative state.
-Printable keys filter, arrows and `Ctrl-P`/`Ctrl-N` navigate, `Backspace` edits,
-`Enter` submits, and `Tab` toggles multi-selection. `Esc` pops one bounded
-submenu or closes the root, and `Ctrl-Q` cancels the entire group before
-returning to the prior editor window. Confirmation defaults to Cancel.
+borderless, full-width, canvas-relative candidate surface above the prompt with
+a separate one-line query buffer/window over its `Filter:` or `Value:` row. It
+is temporary UI and must not create transcript messages or authoritative state.
+The query accepts Unicode text, IME composition, and paste through native Insert
+mode; fuzzy matching and Backspace operate on characters rather than UTF-8
+bytes. Arrows and `Ctrl-P`/`Ctrl-N` navigate, `Enter` submits, and `Tab` toggles
+multi-selection. `Esc` pops one bounded submenu or closes the root, and
+`Ctrl-Q` cancels the entire group before returning to the prior editor window.
+Confirmation defaults to Cancel.
 
 Opening an ordinary inline menu closes slash completion. A permission request
 cancels the ordinary menu and remains fail-closed. Chat close/destruction,

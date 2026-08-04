@@ -5,9 +5,10 @@ local created_chats = {}
 local FakeChat = {}
 FakeChat.__index = FakeChat
 
-function FakeChat.new(chat_root)
+function FakeChat.new(chat_root, frontend_actions)
   local chat = setmetatable({
     root = chat_root,
+    frontend_actions = frontend_actions,
     reset_count = 0,
     histories = {},
     history_pages = {},
@@ -245,7 +246,11 @@ local function run()
 
   local admin_events = {}
   local admin_discards = 0
+  local hotkey_requests = 0
   runtime.set_ui_actions({
+    hotkeys = function()
+      hotkey_requests = hotkey_requests + 1
+    end,
     admin_event = function(event_client, event)
       table.insert(admin_events, { client = event_client, event = event })
     end,
@@ -262,6 +267,8 @@ local function run()
 
   local client = runtime.get_client(root)
   local chat = runtime.chat_for(root)
+  chat.frontend_actions.hotkeys()
+  assert(hotkey_requests == 1, "Chat hotkey action bypassed Runtime injection")
   local first_action = runtime.begin_session_action(client)
   assert(runtime.session_action_current(client, first_action), "new session action was not current")
   local second_action = runtime.begin_session_action(client)

@@ -3,6 +3,7 @@ local Registry = require("pi.ui.chat.registry").Registry
 local setup_count = 0
 local refresh_count = 0
 local layout_count = 0
+local layout_options = {}
 local clamp_count = 0
 local mouse_cancel_count = 0
 local current_window = vim.api.nvim_get_current_win()
@@ -28,8 +29,9 @@ local function run()
     is_open = function()
       return true
     end,
-    layout = function()
+    layout = function(options)
       layout_count = layout_count + 1
+      table.insert(layout_options, options)
     end,
     window = function()
       return current_window
@@ -47,7 +49,12 @@ local function run()
   vim.api.nvim_exec_autocmds("ColorScheme", {})
   assert(setup_count == 2 and refresh_count == 1, "registry did not own colorscheme refresh")
   vim.api.nvim_exec_autocmds("VimResized", {})
-  assert(layout_count == 1, "registry did not route resize to the open Chat")
+  vim.api.nvim_exec_autocmds("WinResized", {})
+  assert(layout_count == 2, "registry did not route resize to the open Chat")
+  assert(
+    layout_options[1].global_resize == true and layout_options[2].global_resize == false,
+    "registry did not distinguish global and local resize"
+  )
   vim.api.nvim_exec_autocmds("WinScrolled", { pattern = tostring(current_window) })
   assert(clamp_count == 1, "registry did not clamp the scrolled Chat window")
   vim.api.nvim_exec_autocmds("WinClosed", { pattern = tostring(current_window) })

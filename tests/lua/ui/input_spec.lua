@@ -87,6 +87,7 @@ local function run()
     attachments = {},
     removed_attachments = {},
     return_to_editor = 0,
+    focus_transcript = 0,
     prefilled = {},
     submissions = {},
   }
@@ -220,6 +221,10 @@ local function run()
       vim.api.nvim_set_current_win(parent_win)
       vim.cmd("stopinsert")
     end,
+    focus_transcript = function()
+      calls.focus_transcript = calls.focus_transcript + 1
+      vim.api.nvim_set_current_win(parent_win)
+    end,
     toggle_tools = function() end,
     toggle_thinking = function() end,
     left_mouse = function()
@@ -318,6 +323,7 @@ local function run()
     local map = mapping(input_buf, case.mode, case.lhs)
     assert(type(map.callback) == "function", "prompt mapping is missing: " .. case.lhs)
     assert(map.buffer == 1, "prompt mapping is not buffer-local: " .. case.lhs)
+    assert(type(map.desc) == "string" and map.desc ~= "", "prompt mapping lacks a description: " .. case.lhs)
   end
   assert(mapping(input_buf, "i", "<CR>").expr == 0, "Insert Enter must not run under expression-map textlock")
   assert(mapping(input_buf, "i", "<Down>").expr == 0, "command navigation must redraw outside expression-map textlock")
@@ -741,23 +747,53 @@ local function run()
     vim.o.mouse == original_mouse and vim.o.mousemodel == original_mousemodel and vim.o.clipboard == original_clipboard,
     "prompt mouse paste changed a global mouse or clipboard option"
   )
-  vim.api.nvim_buf_set_lines(input_buf, 0, -1, false, { "first", "second" })
+  set_attachments(1, "first\nsecond")
   vim.api.nvim_win_set_cursor(input_win, { 2, #"second" })
   start_insert_windows = { input_win }
+  local idle_parts = input:content_parts()
+  local idle_attachment_ids = vim.list_slice(state.attachment_ids)
 
   local abort_before_idle_escape = calls.abort
   mapping(input_buf, "i", "<Esc>").callback()
   assert(calls.abort == abort_before_idle_escape, "idle Escape interrupted work")
-  assert(#start_insert_windows == 1, "idle Escape scheduled an unnecessary mode transition")
+  assert(
+    calls.focus_transcript == 1 and vim.api.nvim_get_current_win() == parent_win,
+    "idle Escape missed canvas focus"
+  )
+  assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "n", "idle Escape did not leave Insert mode")
+  assert(vim.deep_equal(input:content_parts(), idle_parts), "idle Escape changed the prompt draft")
+  assert(vim.deep_equal(state.attachment_ids, idle_attachment_ids), "idle Escape changed prompt attachments")
+  assert(vim.wait(300, function()
+    return vim.api.nvim_get_current_win() == parent_win
+  end, 5) and #start_insert_windows == 1, "idle Escape insert guard stole focus back")
 
-  vim.api.nvim_exec_autocmds("InsertLeave", { buffer = input_buf })
+  state.activity = "starting"
+  mapping(input_buf, "i", "<Esc>").callback()
+  assert(calls.abort == abort_before_idle_escape, "starting Escape interrupted work")
+  assert(
+    calls.focus_transcript == 2 and vim.api.nvim_get_current_win() == parent_win,
+    "starting Escape missed canvas focus"
+  )
+  assert(vim.deep_equal(input:content_parts(), idle_parts), "starting Escape changed the prompt draft")
+  assert(vim.deep_equal(state.attachment_ids, idle_attachment_ids), "starting Escape changed prompt attachments")
+  state.activity = "idle"
+
+  vim.api.nvim_set_current_win(input_win)
   assert(
     vim.wait(300, function()
       return #start_insert_windows == 2
     end, 5),
+    "WinEnter guard did not request Insert mode"
+  )
+  start_insert_windows = {}
+  vim.api.nvim_exec_autocmds("InsertLeave", { buffer = input_buf })
+  assert(
+    vim.wait(300, function()
+      return #start_insert_windows == 1
+    end, 5),
     "InsertLeave guard did not request Insert mode"
   )
-  assert(start_insert_windows[2] == input_win, "InsertLeave guard targeted the wrong window")
+  assert(start_insert_windows[1] == input_win, "InsertLeave guard targeted the wrong window")
 
   vim.api.nvim_exec_autocmds("InsertLeave", { buffer = input_buf })
   vim.api.nvim_set_current_win(parent_win)
@@ -771,24 +807,24 @@ local function run()
     end, 5),
     "InsertLeave guard did not drain"
   )
-  assert(#start_insert_windows == 2, "InsertLeave guard ran after leaving the prompt")
+  assert(#start_insert_windows == 1, "InsertLeave guard ran after leaving the prompt")
   assert(vim.api.nvim_get_current_win() == parent_win, "InsertLeave guard stole focus after leaving the prompt")
   assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "n", "leaving the prompt did not preserve Normal mode")
 
   vim.api.nvim_set_current_win(input_win)
   assert(
     vim.wait(300, function()
-      return #start_insert_windows == 3
+      return #start_insert_windows == 2
     end, 5),
     "re-entering the prompt did not request Insert mode"
   )
-  assert(start_insert_windows[3] == input_win, "WinEnter guard targeted the wrong window")
+  assert(start_insert_windows[2] == input_win, "WinEnter guard targeted the wrong window")
   mapping(input_buf, "i", "<C-q>").callback()
   assert(calls.return_to_editor == 1, "Ctrl-Q did not delegate prompt exit")
   assert(vim.api.nvim_get_current_win() == parent_win, "Ctrl-Q did not leave the prompt window")
   assert(vim.api.nvim_get_mode().mode:sub(1, 1) == "n", "Ctrl-Q did not return in Normal mode")
   input:focus()
-  assert(#start_insert_windows == 4, "prompt focus did not request Insert mode after Ctrl-Q")
+  assert(#start_insert_windows == 3, "prompt focus did not request Insert mode after Ctrl-Q")
 
   flags.accept_completion = false
   set_attachments(1, "first\nsecond")

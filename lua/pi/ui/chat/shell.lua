@@ -4,6 +4,10 @@ local M = {}
 local Shell = {}
 Shell.__index = Shell
 
+local function right_width(columns, ratio)
+  return math.min(math.max(42, math.floor(columns * ratio)), math.max(1, columns - 21))
+end
+
 local function style_window(win, normal_group)
   vim.wo[win].wrap = true
   vim.wo[win].linebreak = true
@@ -29,6 +33,7 @@ function Shell.new(deps)
     title = "pi",
     permission_restore_height = nil,
     overlay_height = nil,
+    transcript_height = nil,
   }, Shell)
 end
 
@@ -86,7 +91,11 @@ function Shell:layout_main()
   })
 end
 
-function Shell:layout()
+function Shell:layout(options)
+  options = options or {}
+  if options.global_resize and self.position == "right" and self.win and vim.api.nvim_win_is_valid(self.win) then
+    pcall(vim.api.nvim_win_set_width, self.win, right_width(vim.o.columns, config.get().chat.width))
+  end
   self:layout_main()
   if not self.win or not vim.api.nvim_win_is_valid(self.win) then
     return
@@ -159,9 +168,12 @@ function Shell:layout()
 
   local overlay_height = input_height + footer_height + 2 + widget_height + inline_menu_height
   local overlay_changed = self.overlay_height ~= overlay_height
+  local transcript_height = math.max(0, height - overlay_height)
+  local transcript_height_changed = self.transcript_height ~= transcript_height
   self.overlay_height = overlay_height
+  self.transcript_height = transcript_height
   self.deps.render_status()
-  if overlay_changed or transcript_width_changed then
+  if overlay_changed or transcript_width_changed or transcript_height_changed then
     self.deps.render_transcript()
   end
 end
@@ -179,6 +191,7 @@ function Shell:close()
     vim.api.nvim_win_close(self.win, true)
   end
   self.permission_restore_height = nil
+  self.transcript_height = nil
   self.win = nil
   self.deps.reset_transcript_width()
   self.deps.sync_welcome_animation()
@@ -236,7 +249,7 @@ function Shell:open(focus_input)
   elseif self.position == "right" then
     vim.cmd("botright vnew")
     self.win = vim.api.nvim_get_current_win()
-    vim.api.nvim_win_set_width(self.win, math.max(42, math.floor(vim.o.columns * chat_options.width)))
+    vim.api.nvim_win_set_width(self.win, right_width(vim.o.columns, chat_options.width))
   else
     error("pi.nvim: chat.position must be 'right', 'bottom', 'tab', or 'float'")
   end

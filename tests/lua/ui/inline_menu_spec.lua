@@ -7,9 +7,9 @@ local parent_buf
 local parent_win
 local menu
 
-local function mapping(buf, lhs)
+local function mapping(buf, lhs, mode)
   return vim.api.nvim_buf_call(buf, function()
-    return vim.fn.maparg(lhs, "n", false, true)
+    return vim.fn.maparg(lhs, mode or "n", false, true)
   end)
 end
 
@@ -72,6 +72,26 @@ local function run()
     end,
   })
 
+  local function query_mapping(lhs, mode)
+    return mapping(assert(menu:query_buffer(), "query buffer is missing"), lhs, mode or "i")
+  end
+
+  local function set_query(value)
+    local buf = assert(menu:query_buffer(), "query buffer is missing")
+    local lines = vim.split(value, "\n", { plain = true, trimempty = false })
+    vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
+    vim.api.nvim_exec_autocmds("TextChangedI", { buffer = buf })
+    local expected = tostring(value):gsub("[\r\n]", "")
+    expected = vim.fn.strcharpart(expected, 0, limits.query_chars)
+    assert(
+      vim.wait(300, function()
+        return menu:_frame() and menu:_frame().query == expected
+      end, 5),
+      "query buffer change did not reach the menu frame"
+    )
+    return expected
+  end
+
   local selected
   local items = {
     { id = "alpha", label = "Alpha", description = "first choice" },
@@ -88,16 +108,29 @@ local function run()
     end,
   })
   assert(menu:active() and menu:visible(), "select menu did not open")
-  assert(vim.api.nvim_get_current_win() == menu:window(), "select menu did not take keyboard focus")
-  assert(menu:owns_buffer(menu:buffer()), "InlineMenu does not own its nofile buffer")
+  assert(vim.api.nvim_get_current_win() == menu:query_window(), "query surface did not take keyboard focus")
+  assert(menu:owns_buffer(menu:buffer()) and menu:owns_buffer(menu:query_buffer()), "InlineMenu lost a buffer")
   assert(vim.bo[menu:buffer()].buftype == "nofile" and not vim.bo[menu:buffer()].modifiable, "menu buffer changed")
+  assert(
+    vim.bo[menu:query_buffer()].buftype == "nofile"
+      and vim.bo[menu:query_buffer()].modifiable
+      and not vim.bo[menu:query_buffer()].swapfile
+      and not vim.bo[menu:query_buffer()].undofile
+      and vim.bo[menu:query_buffer()].undolevels == -1,
+    "query buffer is not isolated ephemeral input"
+  )
   assert(
     vim.b[menu:buffer()].pi_kind == "inline-menu" and vim.b[menu:buffer()].pi_root == root,
     "menu buffer metadata changed"
   )
+  assert(
+    vim.b[menu:query_buffer()].pi_kind == "inline-query" and vim.b[menu:query_buffer()].pi_root == root,
+    "query buffer metadata changed"
+  )
   local config = vim.api.nvim_win_get_config(menu:window())
   assert(config.relative == "win" and config.win == parent_win, "menu is not relative to the Chat canvas")
   assert(config.col == 0 and config.width == vim.api.nvim_win_get_width(parent_win), "menu is not full-width")
+  assert(config.focusable == false, "read-only candidate window can steal query focus")
   assert(
     config.border == nil
       or config.border == ""
@@ -105,27 +138,38 @@ local function run()
       or (type(config.border) == "table" and #config.border == 0),
     "menu gained a detached border"
   )
+  local query_config = vim.api.nvim_win_get_config(menu:query_window())
+  assert(
+    query_config.relative == "win"
+      and query_config.win == parent_win
+      and query_config.height == 1
+      and query_config.focusable,
+    "query window is not a one-line canvas-relative input"
+  )
+  assert(query_config.row >= config.row and query_config.row < config.row + config.height, "query window left the menu")
   assert(has_highlight(menu:buffer(), "PiInlineTitle"), "menu title lacks semantic highlighting")
   assert(has_highlight(menu:buffer(), "PiInlineSelected"), "selected row lacks a non-color-only marker surface")
   assert(buffer_text(menu:buffer()):find("* Jupiter", 1, true), "current authoritative value is not marked")
 
-  local j = mapping(menu:buffer(), "j")
-  local k = mapping(menu:buffer(), "k")
-  assert(type(j.callback) == "function" and type(k.callback) == "function", "printable filter mappings are missing")
-  j.callback()
+  assert(mapping(menu:buffer(), "j").lhs == nil, "candidate buffer retained printable ASCII mappings")
+  for _, lhs in ipairs({ "<Down>", "<C-n>", "<Up>", "<C-p>", "<CR>", "<Tab>", "<Esc>", "<C-q>" }) do
+    local map = query_mapping(lhs)
+    assert(type(map.callback) == "function", "query mapping is missing: " .. lhs)
+    assert(type(map.desc) == "string" and map.desc ~= "", "query mapping lacks a description: " .. lhs)
+  end
+  set_query("j")
   assert(menu:_frame().query == "j", "j navigated instead of filtering")
   assert(#menu:_frame().filtered == 1 and menu:_frame().filtered[1].value.id == "jupiter", "j filter was incorrect")
-  k.callback()
+  set_query("jk")
   assert(menu:_frame().query == "jk" and #menu:_frame().filtered == 0, "k did not append to the filter")
-  mapping(menu:buffer(), "<BS>").callback()
-  mapping(menu:buffer(), "<BS>").callback()
+  set_query("")
   assert(menu:_frame().query == "" and #menu:_frame().filtered == 3, "Backspace did not restore candidates")
   local before_navigation = menu:_frame().current
-  mapping(menu:buffer(), "<Down>").callback()
+  query_mapping("<Down>").callback()
   assert(menu:_frame().current == (before_navigation % 3) + 1, "Down did not navigate candidates")
-  mapping(menu:buffer(), "<Up>").callback()
+  query_mapping("<Up>").callback()
   assert(menu:_frame().current == before_navigation, "Up did not navigate candidates")
-  mapping(menu:buffer(), "<CR>").callback()
+  query_mapping("<CR>").callback()
   assert(
     selected == items[before_navigation] and surface.closed and not menu:active(),
     "selection did not close before callback"
@@ -138,6 +182,55 @@ local function run()
   )
   menu:close()
 
+  surface = menu:open({
+    kind = "select",
+    title = "Unicode",
+    items = {
+      { id = "model", label = "模型设置", description = "选择模型" },
+      { id = "workspace", label = "工作区", description = "项目目录" },
+    },
+  })
+  set_query("模型")
+  assert(
+    #menu:_frame().filtered == 1 and menu:_frame().filtered[1].value.id == "model",
+    "direct Chinese query did not match"
+  )
+  set_query("模设")
+  assert(
+    #menu:_frame().filtered == 1 and menu:_frame().filtered[1].value.id == "model",
+    "cross-character Unicode fuzzy query did not match"
+  )
+  assert(set_query("中文\n输入") == "中文输入", "IME/paste query did not collapse to one line")
+  set_query("中文")
+  local query_buf = menu:query_buffer()
+  vim.api.nvim_buf_set_text(query_buf, 0, #"中", 0, #"中文", {})
+  vim.api.nvim_exec_autocmds("TextChangedI", { buffer = query_buf })
+  assert(
+    vim.wait(300, function()
+      return menu:_frame().query == "中"
+    end, 5),
+    "native query deletion split a Unicode character"
+  )
+  local deleted_query_win = menu:query_window()
+  vim.api.nvim_buf_delete(query_buf, { force = true })
+  assert(
+    vim.wait(300, function()
+      return menu:query_buffer()
+        and menu:query_buffer() ~= query_buf
+        and vim.api.nvim_buf_is_valid(menu:query_buffer())
+        and menu:query_window()
+        and vim.api.nvim_win_is_valid(menu:query_window())
+    end, 5),
+    "deleted query buffer was not rebuilt"
+  )
+  assert(not vim.api.nvim_win_is_valid(deleted_query_win), "deleted query buffer retained its old window")
+  assert(buffer_text(menu:query_buffer()) == "中", "rebuilt query surface lost the active Unicode query")
+  local closed_query_buf = menu:query_buffer()
+  local closed_query_win = menu:query_window()
+  surface:close()
+  assert(not menu:query_window() and not vim.api.nvim_win_is_valid(closed_query_win), "close retained query window")
+  assert(buffer_text(closed_query_buf) == "", "close retained query buffer content")
+
   local root_cancelled = 0
   local child_cancelled = 0
   local root_surface = menu:open({
@@ -149,6 +242,8 @@ local function run()
       root_cancelled = root_cancelled + 1
     end,
   })
+  set_query("Mod")
+  local parent_query_win = menu:query_window()
   local child_surface = root_surface:push({
     kind = "select",
     title = "Model",
@@ -158,18 +253,23 @@ local function run()
     end,
   })
   assert(#menu.stack == 2 and buffer_text(menu:buffer()):find("Settings / Model", 1, true), "submenu stack is missing")
-  mapping(menu:buffer(), "<Esc>").callback()
+  assert(
+    menu:query_window() ~= parent_query_win and not vim.api.nvim_win_is_valid(parent_query_win),
+    "submenu switch did not rebuild the query window"
+  )
+  query_mapping("<Esc>").callback()
   assert(menu:active() and #menu.stack == 1, "submenu Escape closed the whole group")
+  assert(buffer_text(menu:query_buffer()) == "Mod", "submenu Escape did not restore the parent query")
   assert(
     child_surface.closed and not root_surface.closed and child_cancelled == 1,
     "submenu cancellation state changed"
   )
-  mapping(menu:buffer(), "<Esc>").callback()
+  query_mapping("<Esc>").callback()
   assert(not menu:active() and root_surface.closed and root_cancelled == 1, "top-level Escape did not close the group")
 
   root_surface = menu:open({ kind = "select", title = "Return", items = { "one" } })
   root_surface:push({ kind = "select", title = "Nested", items = { "two" } })
-  mapping(menu:buffer(), "<C-q>").callback()
+  query_mapping("<C-q>").callback()
   assert(not menu:active() and editor_returns == 1, "Ctrl-Q did not close the full group and return")
 
   local multi_result
@@ -182,9 +282,9 @@ local function run()
       multi_result = result
     end,
   })
-  mapping(menu:buffer(), "<Tab>").callback()
+  query_mapping("<Tab>").callback()
   menu:move(1)
-  mapping(menu:buffer(), "<Tab>").callback()
+  query_mapping("<Tab>").callback()
   menu:submit()
   assert(#multi_result == 1 and multi_result[1] == items[2] and surface.closed, "Tab multi-selection result changed")
 
@@ -211,7 +311,7 @@ local function run()
       input_value = value
     end,
   })
-  mapping(menu:buffer(), "j").callback()
+  set_query("abj")
   menu:submit()
   assert(input_value == "abj", "non-sensitive inline input lost printable text")
 
@@ -266,6 +366,7 @@ local function run()
   })
   assert(#menu:_frame().items == limits.items and menu:_frame().truncated, "candidate retention limit changed")
   assert(vim.fn.strchars(menu:_frame().query) == limits.query_chars, "query limit changed")
+  assert(vim.fn.strchars(buffer_text(menu:query_buffer())) == limits.query_chars, "query buffer escaped its limit")
   assert(vim.fn.strchars(menu:_frame().items[1].label) == limits.line_chars, "single-line limit changed")
   assert(menu:desired_height() <= limits.visible_height, "visible-height limit changed")
 
@@ -293,6 +394,7 @@ local function run()
 end
 
 local ok, err = xpcall(run, debug.traceback)
+local destroyed_query_buf = menu and menu:query_buffer() or nil
 if menu then
   menu:destroy()
   menu:destroy()
@@ -306,5 +408,6 @@ end
 if not ok then
   error(err)
 end
+assert(destroyed_query_buf and not vim.api.nvim_buf_is_valid(destroyed_query_buf), "destroy retained the query buffer")
 
 print("inline_menu_spec: ok")

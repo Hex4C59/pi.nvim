@@ -87,12 +87,22 @@ function Registry:_register_autocmds()
       self:_update_welcome_logo_highlights()
     end,
   })
-  vim.api.nvim_create_autocmd({ "VimResized", "WinResized" }, {
+  vim.api.nvim_create_autocmd("VimResized", {
     group = self.group,
     callback = function()
       for _, entry in pairs(self.instances) do
         if entry.is_open() then
-          entry.layout()
+          entry.layout({ global_resize = true })
+        end
+      end
+    end,
+  })
+  vim.api.nvim_create_autocmd("WinResized", {
+    group = self.group,
+    callback = function()
+      for _, entry in pairs(self.instances) do
+        if entry.is_open() then
+          entry.layout({ global_resize = false })
         end
       end
     end,

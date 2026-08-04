@@ -185,7 +185,7 @@ function M.hotkeys()
     table.concat({
       "Enter          submit",
       "Ctrl-J         new line",
-      "Esc            close completion or interrupt",
+      "Esc            close completion, interrupt, or focus transcript",
       "Ctrl-C         interrupt",
       "Ctrl-Q         return to editor",
       "Alt-Enter      queue follow-up",

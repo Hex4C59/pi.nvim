@@ -54,6 +54,19 @@ function M.chat()
   chat:open()
 end
 
+function M.toggle()
+  local chat = runtime.chats[runtime.client_root()]
+  if not chat or not chat:is_open() then
+    M.chat()
+    return
+  end
+
+  if chat:owns_buffer(vim.api.nvim_get_current_buf()) then
+    vim.cmd("stopinsert")
+  end
+  chat:close()
+end
+
 function M.submit(text, root, behavior, images, content, draft)
   text = vim.trim(text or "")
   if text == "" and (#(images or {}) == 0) then
@@ -121,6 +134,7 @@ runtime.set_ui_actions({
   cycle_model = M.cycle_model,
   cycle_permission_mode = M.cycle_permission_mode,
   cycle_thinking_level = M.cycle_thinking_level,
+  hotkeys = M.hotkeys,
   admin_event = admin_cmds.handle_event,
   admin_discard = admin_cmds.discard,
 })

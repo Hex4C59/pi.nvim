@@ -114,6 +114,8 @@ local core_highlights = highlight_set(core_marks)
 for _, group in ipairs({
   "PiDiffDelete",
   "PiDiffAdd",
+  "PiDiffDeleteText",
+  "PiDiffAddText",
   "PiDiffDeleteLine",
   "PiDiffAddLine",
   "PiToolVerb",
@@ -261,7 +263,13 @@ assert(
 )
 assert(not diff_text:find("empty.lua  +", 1, true), "empty edit rendered false diff counts")
 local diff_highlights = highlight_set(diff_marks)
-assert(diff_highlights.PiDiffDeleteLine and diff_highlights.PiDiffAddLine, "diff line surfaces are missing")
+assert(
+  diff_highlights.PiDiffDeleteLine
+    and diff_highlights.PiDiffAddLine
+    and diff_highlights.PiDiffDeleteText
+    and diff_highlights.PiDiffAddText,
+  "diff line surfaces or neutral code text highlights are missing"
+)
 assert_ranges(diff_lines, diff_ranges, diff_tools)
 
 local large_edits = {}
@@ -508,6 +516,8 @@ local completed_edit_highlights = highlight_set(completed_edit_marks, completed_
 assert(
   completed_edit_highlights.PiDiffDelete
     and completed_edit_highlights.PiDiffAdd
+    and completed_edit_highlights.PiDiffDeleteText
+    and completed_edit_highlights.PiDiffAddText
     and completed_edit_highlights.PiDiffDeleteLine
     and completed_edit_highlights.PiDiffAddLine
     and completed_edit_highlights.PiCodeLineNumber,

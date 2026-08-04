@@ -162,6 +162,26 @@ local function welcome_brand_rows()
   }
 end
 
+local function compact_brand_row()
+  local brand = "PI"
+  local separator = " · "
+  local agent = "agent"
+  local suffix = " for Neovim"
+  local text = brand .. separator .. agent .. suffix
+  return {
+    text = text,
+    marks = {
+      { start_col = 0, end_col = #brand, highlight = "PiWelcomeTitle" },
+      { start_col = #brand + #separator, end_col = #brand + #separator + #agent, highlight = "PiWelcomeAgent" },
+      {
+        start_col = #brand + #separator + #agent,
+        end_col = #text,
+        highlight = "PiWelcomeNeovim",
+      },
+    },
+  }
+end
+
 local function welcome_detail(label, value, highlight)
   local label_width = 13
   local label_text = label .. string.rep(" ", math.max(1, label_width - #label))
@@ -247,7 +267,7 @@ function M.render_into(canvas, opts)
 
   if width >= 72 then
     local split_width = width - 3
-    local left_width = math.min(38, math.max(29, math.floor(split_width * 0.34)))
+    local left_width = math.min(34, math.max(28, math.floor(split_width * 0.31)))
     local right_width = split_width - left_width
     add_welcome_top_border(canvas, left_width, right_width)
     add_welcome_split_row(canvas, left_width, right_width, "", nil, "", nil)
@@ -277,7 +297,6 @@ function M.render_into(canvas, opts)
       { start_col = 0, end_col = #"Workspace", highlight = "PiWelcomeSection" },
     })
     add_welcome_split_row(canvas, left_width, right_width, "", nil, project_row.text, project_row.marks)
-    add_welcome_split_row(canvas, left_width, right_width, "", nil, "", nil)
     canvas:add("╰" .. string.rep("─", left_width) .. "┴" .. string.rep("─", right_width) .. "╯", {
       highlight = "PiWelcomeBorder",
     })
@@ -286,21 +305,17 @@ function M.render_into(canvas, opts)
 
   add_welcome_top_border(canvas, inner_width)
   add_welcome_row(canvas, left, inner_width, "")
-  for _, row in ipairs(brand_rows) do
-    add_welcome_row(canvas, left, inner_width, row.text, row.marks)
-  end
-  add_welcome_row(canvas, left, inner_width, "")
+  local compact_brand = compact_brand_row()
+  add_welcome_row(canvas, left, inner_width, compact_brand.text, compact_brand.marks)
   add_welcome_row(canvas, left, inner_width, "Session", {
     { start_col = 0, end_col = #"Session", highlight = "PiWelcomeSection" },
   })
   add_welcome_row(canvas, left, inner_width, model_row.text, model_row.marks)
   add_welcome_row(canvas, left, inner_width, permission_row.text, permission_row.marks)
-  add_welcome_row(canvas, left, inner_width, "")
   add_welcome_row(canvas, left, inner_width, "Workspace", {
     { start_col = 0, end_col = #"Workspace", highlight = "PiWelcomeSection" },
   })
   add_welcome_row(canvas, left, inner_width, project_row.text, project_row.marks)
-  add_welcome_row(canvas, left, inner_width, "")
   canvas:add(left .. "╰" .. string.rep("─", inner_width) .. "╯", { highlight = "PiWelcomeBorder" })
 end
 

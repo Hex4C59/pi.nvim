@@ -21,6 +21,7 @@ local function new_fixture(overrides)
     model = "fixture-model",
     thinking = "medium",
     permission_mode = "confirm",
+    permission_active = false,
     overlay_height = 0,
   }, overrides.state or {})
   local group = vim.api.nvim_create_augroup("pi_transcript_view_spec_" .. fixture_index, { clear = true })
@@ -65,6 +66,7 @@ local function new_fixture(overrides)
     "toggle_thinking",
     "copy_text",
     "load_older_history",
+    "hotkeys",
     "left_mouse",
     "open_image_preview",
   }) do
@@ -180,12 +182,13 @@ with_view({}, function(fixture)
   assert(vim.bo[buf].modifiable == false, "transcript buffer remained modifiable")
   local mappings = {}
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
-    mappings[mapping.lhs] = true
+    mappings[mapping.lhs] = mapping
   end
   assert(
     mappings.q
       and mappings.i
       and mappings.a
+      and mappings["?"]
       and mappings.gH
       and mappings["<CR>"]
       and mappings["<LeftMouse>"]
@@ -193,6 +196,11 @@ with_view({}, function(fixture)
       and mappings["<LeftRelease>"],
     "transcript keymaps are incomplete"
   )
+  for lhs, map in pairs(mappings) do
+    assert(type(map.desc) == "string" and map.desc ~= "", "transcript mapping lacks a description: " .. lhs)
+  end
+  mappings["?"].callback()
+  assert(fixture.observed.actions[#fixture.observed.actions].name == "hotkeys", "transcript help bypassed its action")
   assert(not mappings["<C-X>"], "transcript retained the removed Ctrl-X copy mapping")
   assert(view:ensure_buffer() == buf, "ensure_buffer replaced a valid owned buffer")
   view:destroy()
@@ -438,7 +446,7 @@ for index = 1, 24 do
 end
 with_view({ items = scroll_items }, function(fixture)
   local view = fixture.view
-  local _, win = fixture:open(32, 6)
+  local _, win = fixture:open(32, 10)
   view:render()
   vim.api.nvim_win_set_cursor(win, { vim.api.nvim_buf_line_count(view.buf), 0 })
   table.insert(scroll_items, { type = "status", _pi_id = "status:25", text = "followed output" })
@@ -491,10 +499,48 @@ with_view({ items = scroll_items }, function(fixture)
   assert(view:clamp(), "blank space below the transcript was not clamped")
   vim.api.nvim_win_set_width(win, 20)
   vim.api.nvim_win_set_height(win, 3)
+  local materialized_before_limit = fixture.observed.materialize
   view:render()
+  assert(
+    table.concat(buffer_lines(view.buf), "\n"):find("32 x 8", 1, true),
+    "minimum-size projection did not replace the transcript"
+  )
+  assert(
+    fixture.observed.materialize == materialized_before_limit,
+    "minimum-size projection materialized transcript work"
+  )
+  assert(
+    #view.tool_ranges == 0 and #view.process_ranges == 0 and #view.image_placements == 0,
+    "size hint retained hits"
+  )
+  local limited_sync = fixture.backend.sync_calls[#fixture.backend.sync_calls]
+  assert(limited_sync and #limited_sync.placements == 0, "size hint retained terminal image placements")
+  vim.api.nvim_win_set_width(win, 32)
+  vim.api.nvim_win_set_height(win, 10)
+  view:render()
+  assert(
+    not table.concat(buffer_lines(view.buf), "\n"):find("32 x 8", 1, true)
+      and table.concat(buffer_lines(view.buf), "\n"):find("preserved output", 1, true),
+    "transcript did not rebuild after recovering from the size limit"
+  )
   vim.api.nvim_win_close(win, true)
   fixture.win = nil
   assert(not view:clamp(), "closed window was treated as a valid scroll owner")
+end)
+
+with_view({
+  state = { permission_active = true },
+  permission_content = function()
+    return { "permission stays reachable" }, {}
+  end,
+}, function(fixture)
+  local view = fixture.view
+  local buf = fixture:open(20, 3)
+  view:render()
+  local text = table.concat(buffer_lines(buf), "\n")
+  assert(text:find("permission stays reachable", 1, true), "small viewport hid the active permission panel")
+  assert(not text:find("32 x 8", 1, true), "size hint covered an active permission panel")
+  assert(fixture.observed.materialize == 1, "permission bypass did not use the normal projection")
 end)
 
 with_view({}, function(fixture)

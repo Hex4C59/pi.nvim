@@ -71,32 +71,43 @@ local function item_description(frame, item)
 end
 
 local function fuzzy_score(text, query)
-  text = text:lower()
-  query = query:lower()
+  text = vim.fn.tolower(text)
+  query = vim.fn.tolower(query)
   if query == "" then
     return 0
   end
   local direct = text:find(query, 1, true)
   if direct then
-    return 100000 - direct * 10 - #text
+    local character_index = vim.fn.strchars(text:sub(1, direct - 1)) + 1
+    return 100000 - character_index * 10 - vim.fn.strchars(text)
+  end
+  local text_chars = {}
+  for index = 0, vim.fn.strchars(text) - 1 do
+    table.insert(text_chars, vim.fn.strcharpart(text, index, 1))
   end
   local cursor = 1
   local score = 0
   local previous
-  for index = 1, #query do
-    local character = query:sub(index, index)
-    local position = text:find(character, cursor, true)
+  for index = 0, vim.fn.strchars(query) - 1 do
+    local character = vim.fn.strcharpart(query, index, 1)
+    local position
+    for candidate = cursor, #text_chars do
+      if text_chars[candidate] == character then
+        position = candidate
+        break
+      end
+    end
     if not position then
       return nil
     end
     score = score + (previous and position == previous + 1 and 20 or 1)
-    if position == 1 or text:sub(position - 1, position - 1):match("[%s%p]") then
+    if position == 1 or text_chars[position - 1]:match("[%s%p]") then
       score = score + 8
     end
     previous = position
     cursor = position + 1
   end
-  return score - #text
+  return score - #text_chars
 end
 
 local function shallow_copy(source)
@@ -116,6 +127,11 @@ function InlineMenu.new(deps)
     stack = {},
     buf = nil,
     win = nil,
+    query_buf = nil,
+    query_win = nil,
+    query_internal_change = 0,
+    query_ignored_tick = nil,
+    query_refresh_pending = false,
     generation = 0,
     next_frame_id = 0,
     autocmds = {},
@@ -140,8 +156,16 @@ function InlineMenu:window()
   return self.win
 end
 
+function InlineMenu:query_buffer()
+  return self.query_buf
+end
+
+function InlineMenu:query_window()
+  return self.query_win
+end
+
 function InlineMenu:owns_buffer(bufnr)
-  return self.buf ~= nil and self.buf == bufnr
+  return (self.buf ~= nil and self.buf == bufnr) or (self.query_buf ~= nil and self.query_buf == bufnr)
 end
 
 function InlineMenu:_frame()
@@ -338,6 +362,236 @@ function InlineMenu:_refresh(frame)
   frame.first = math.max(1, math.min(frame.first, frame.current))
 end
 
+function InlineMenu:_close_query_window()
+  local win = self.query_win
+  self.query_win = nil
+  if win and vim.api.nvim_win_is_valid(win) then
+    pcall(vim.api.nvim_win_close, win, true)
+  end
+end
+
+function InlineMenu:_set_query_buffer(value)
+  local buf = self.query_buf
+  if not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return false
+  end
+  value = bounded_query(value)
+  local lines = vim.api.nvim_buf_get_lines(buf, 0, -1, false)
+  if #lines == 1 and lines[1] == value then
+    return true
+  end
+  self.query_internal_change = self.query_internal_change + 1
+  vim.api.nvim_buf_set_lines(buf, 0, -1, false, { value })
+  self.query_internal_change = self.query_internal_change - 1
+  self.query_ignored_tick = vim.api.nvim_buf_get_changedtick(buf)
+  if self.query_win and vim.api.nvim_win_is_valid(self.query_win) then
+    pcall(vim.api.nvim_win_set_cursor, self.query_win, { 1, #value })
+  end
+  return true
+end
+
+function InlineMenu:_clear_query_buffer()
+  if self.query_buf and vim.api.nvim_buf_is_valid(self.query_buf) then
+    self:_set_query_buffer("")
+  end
+end
+
+function InlineMenu:_schedule_query_refresh()
+  if self.query_refresh_pending then
+    return
+  end
+  self.query_refresh_pending = true
+  vim.schedule(function()
+    self.query_refresh_pending = false
+    if self:active() then
+      self.deps.layout()
+      self:focus()
+    end
+  end)
+end
+
+function InlineMenu:_sync_query_from_buffer()
+  if self.query_internal_change > 0 then
+    return
+  end
+  local frame = self:_frame()
+  local buf = self.query_buf
+  if not frame or not buf or not vim.api.nvim_buf_is_valid(buf) then
+    return
+  end
+  local changedtick = vim.api.nvim_buf_get_changedtick(buf)
+  if self.query_ignored_tick == changedtick then
+    self.query_ignored_tick = nil
+    return
+  end
+  local raw = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "")
+  local query = bounded_query(raw)
+  if frame.query ~= query then
+    frame.query = query
+    frame.first = 1
+    self:_refresh(frame)
+  end
+  if raw ~= query then
+    vim.schedule(function()
+      if self.query_buf == buf and vim.api.nvim_buf_is_valid(buf) then
+        self:_set_query_buffer(query)
+      end
+    end)
+  end
+  self:_schedule_query_refresh()
+end
+
+function InlineMenu:_ensure_query_buffer()
+  if self.destroyed then
+    return nil
+  end
+  if self.query_buf and vim.api.nvim_buf_is_valid(self.query_buf) then
+    return self.query_buf
+  end
+  self.query_buf = vim.api.nvim_create_buf(false, true)
+  local buf = self.query_buf
+  self.name_buffer(buf, "inline-query", self.root)
+  vim.bo[buf].buftype = "nofile"
+  vim.bo[buf].bufhidden = "hide"
+  vim.bo[buf].swapfile = false
+  vim.bo[buf].undofile = false
+  vim.bo[buf].undolevels = -1
+  vim.bo[buf].filetype = "pi_inline_query"
+  vim.bo[buf].complete = ""
+  vim.bo[buf].completefunc = ""
+  vim.bo[buf].omnifunc = ""
+  vim.bo[buf].tagfunc = ""
+  vim.bo[buf].dictionary = ""
+  vim.bo[buf].thesaurus = ""
+  vim.b[buf].completion = false
+
+  local function map(lhs, callback, desc)
+    vim.keymap.set({ "i", "n" }, lhs, callback, {
+      buffer = buf,
+      silent = true,
+      nowait = true,
+      desc = desc,
+    })
+  end
+  for _, key in ipairs({ "<Down>", "<C-n>" }) do
+    map(key, function()
+      self:move(1)
+    end, "Select next Pi menu item")
+  end
+  for _, key in ipairs({ "<Up>", "<C-p>" }) do
+    map(key, function()
+      self:move(-1)
+    end, "Select previous Pi menu item")
+  end
+  map("<CR>", function()
+    self:submit()
+  end, "Submit Pi menu selection")
+  map("<Tab>", function()
+    self:toggle()
+  end, "Toggle Pi menu selection")
+  map("<Esc>", function()
+    self:back()
+  end, "Return from Pi menu")
+  map("<C-q>", function()
+    self:cancel_group(true)
+  end, "Close Pi menu and return to editor")
+
+  table.insert(
+    self.autocmds,
+    vim.api.nvim_create_autocmd({ "TextChanged", "TextChangedI" }, {
+      buffer = buf,
+      callback = function()
+        self:_sync_query_from_buffer()
+      end,
+    })
+  )
+  table.insert(
+    self.autocmds,
+    vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
+      buffer = buf,
+      once = true,
+      callback = function()
+        if self.query_buf == buf then
+          self.query_buf = nil
+          self:_close_query_window()
+          self:_schedule_query_refresh()
+        end
+      end,
+    })
+  )
+  return buf
+end
+
+function InlineMenu:_ensure_query_window(row, col, width)
+  local main_win = self.deps.main_window()
+  if not main_win or not vim.api.nvim_win_is_valid(main_win) then
+    return nil
+  end
+  local buf = self:_ensure_query_buffer()
+  if not buf then
+    return nil
+  end
+  self:_set_query_buffer((self:_frame() or {}).query or "")
+  if not self.query_win or not vim.api.nvim_win_is_valid(self.query_win) then
+    self.query_win = vim.api.nvim_open_win(buf, false, {
+      relative = "win",
+      win = main_win,
+      row = row,
+      col = col,
+      width = width,
+      height = 1,
+      style = "minimal",
+      border = "none",
+      focusable = true,
+      zindex = 54,
+    })
+    local query_win = self.query_win
+    vim.wo[query_win].wrap = false
+    vim.wo[query_win].cursorline = false
+    vim.wo[query_win].number = false
+    vim.wo[query_win].relativenumber = false
+    vim.wo[query_win].signcolumn = "no"
+    vim.wo[query_win].foldcolumn = "0"
+    vim.wo[query_win].fillchars = "eob: "
+    vim.wo[query_win].winblend = 0
+    vim.wo[query_win].winbar = ""
+    vim.wo[query_win].winhighlight = table.concat({
+      "Normal:PiInlineInput",
+      "NormalNC:PiInlineInput",
+      "EndOfBuffer:PiInlineInput",
+      "WinSeparator:PiInlineInput",
+    }, ",")
+    table.insert(
+      self.autocmds,
+      vim.api.nvim_create_autocmd("WinClosed", {
+        pattern = tostring(query_win),
+        once = true,
+        callback = function()
+          if self.query_win == query_win then
+            self.query_win = nil
+            if not self.closing then
+              self:_schedule_query_refresh()
+            end
+          end
+        end,
+      })
+    )
+  end
+  vim.api.nvim_win_set_config(self.query_win, {
+    relative = "win",
+    win = main_win,
+    row = row,
+    col = col,
+    width = width,
+    height = 1,
+    style = "minimal",
+    border = "none",
+    focusable = true,
+    zindex = 54,
+  })
+  return self.query_win
+end
+
 function InlineMenu:_ensure_buffer()
   if self.destroyed then
     return nil
@@ -354,45 +608,6 @@ function InlineMenu:_ensure_buffer()
   vim.bo[buf].undofile = false
   vim.bo[buf].filetype = "pi_inline_menu"
   vim.bo[buf].modifiable = false
-
-  local function map(lhs, callback)
-    vim.keymap.set("n", lhs, callback, { buffer = buf, silent = true, nowait = true })
-  end
-  for _, key in ipairs({ "<Down>", "<C-n>" }) do
-    map(key, function()
-      self:move(1)
-    end)
-  end
-  for _, key in ipairs({ "<Up>", "<C-p>" }) do
-    map(key, function()
-      self:move(-1)
-    end)
-  end
-  for _, key in ipairs({ "<BS>", "<C-h>" }) do
-    map(key, function()
-      self:backspace()
-    end)
-  end
-  map("<CR>", function()
-    self:submit()
-  end)
-  map("<Tab>", function()
-    self:toggle()
-  end)
-  map("<Esc>", function()
-    self:back()
-  end)
-  map("<C-q>", function()
-    self:cancel_group(true)
-  end)
-
-  for byte = 32, 126 do
-    local character = string.char(byte)
-    local lhs = character == " " and "<Space>" or character == "<" and "<lt>" or character
-    map(lhs, function()
-      self:insert(character)
-    end)
-  end
 
   table.insert(
     self.autocmds,
@@ -430,7 +645,7 @@ function InlineMenu:_ensure_window()
     width = 1,
     height = 1,
     style = "minimal",
-    focusable = true,
+    focusable = false,
     zindex = 53,
   })
   local win = self.win
@@ -519,11 +734,10 @@ function InlineMenu:_render(width, height)
     line("  " .. truncate_display(frame.message, content_width), { start_col = 2, group = "PiInlineDescription" })
   end
   local field_label = frame.kind == "input" and "Value: " or "Filter: "
-  line("  " .. field_label .. frame.query, {
+  line("  " .. field_label, {
     start_col = 2,
     label_end = 2 + #field_label,
     group = "PiInlineQuery",
-    value_group = "PiInlineInput",
   })
   if frame.error then
     line("  ! " .. truncate_display(frame.error, math.max(1, content_width - 2)), {
@@ -670,17 +884,25 @@ function InlineMenu:layout(row, width, height)
     width = width,
     height = height,
     style = "minimal",
-    focusable = true,
+    focusable = false,
     zindex = 53,
   })
   self:_render(width, height)
+  local frame = self:_frame()
+  local query_row = math.min(height - 1, 1 + (frame and frame.message ~= "" and 1 or 0))
+  local field_label = frame and frame.kind == "input" and "Value: " or "Filter: "
+  local query_col = math.min(width - 1, 2 + vim.fn.strdisplaywidth(field_label))
+  self:_ensure_query_window(math.max(0, row) + query_row, query_col, math.max(1, width - query_col))
   return true
 end
 
 function InlineMenu:focus()
-  if self:visible() then
-    pcall(vim.api.nvim_set_current_win, self.win)
-    vim.cmd("stopinsert")
+  if self.query_win and vim.api.nvim_win_is_valid(self.query_win) then
+    pcall(vim.api.nvim_set_current_win, self.query_win)
+    local frame = self:_frame()
+    local query = frame and frame.query or ""
+    pcall(vim.api.nvim_win_set_cursor, self.query_win, { 1, #query })
+    vim.cmd("startinsert")
     return true
   end
   return false
@@ -715,6 +937,8 @@ function InlineMenu:push(options)
     end
     return nil
   end
+  self:_close_query_window()
+  self:_clear_query_buffer()
   local frame = self:_new_frame(options or {})
   table.insert(self.stack, frame)
   local surface = self:_make_surface(frame)
@@ -726,6 +950,8 @@ function InlineMenu:replace(options)
   if not self:active() then
     return self:open(options)
   end
+  self:_close_query_window()
+  self:_clear_query_buffer()
   local previous = table.remove(self.stack)
   self:_mark_closed(previous)
   local frame = self:_new_frame(options or {})
@@ -746,6 +972,8 @@ function InlineMenu:close(options)
     self:_mark_closed(frame)
   end
   self.stack = {}
+  self:_close_query_window()
+  self:_clear_query_buffer()
   if self:visible() then
     local win = self.win
     self.win = nil
@@ -771,6 +999,8 @@ function InlineMenu:back()
     return false
   end
   if #self.stack > 1 then
+    self:_close_query_window()
+    self:_clear_query_buffer()
     local frame = table.remove(self.stack)
     self:_mark_closed(frame)
     if frame.on_cancel then
@@ -822,6 +1052,7 @@ function InlineMenu:insert(character)
     return false
   end
   frame.query = bounded_query(frame.query .. character)
+  self:_set_query_buffer(frame.query)
   frame.first = 1
   self:_refresh(frame)
   self:_changed(true)
@@ -834,6 +1065,7 @@ function InlineMenu:backspace()
     return false
   end
   frame.query = vim.fn.strcharpart(frame.query, 0, math.max(0, vim.fn.strchars(frame.query) - 1))
+  self:_set_query_buffer(frame.query)
   frame.first = 1
   self:_refresh(frame)
   self:_changed(true)
@@ -987,10 +1219,16 @@ function InlineMenu:destroy()
     pcall(vim.api.nvim_del_autocmd, autocmd)
   end
   self.autocmds = {}
+  self:_close_query_window()
+  self:_clear_query_buffer()
   if self.buf and vim.api.nvim_buf_is_valid(self.buf) then
     pcall(vim.api.nvim_buf_delete, self.buf, { force = true })
   end
+  if self.query_buf and vim.api.nvim_buf_is_valid(self.query_buf) then
+    pcall(vim.api.nvim_buf_delete, self.query_buf, { force = true })
+  end
   self.buf = nil
+  self.query_buf = nil
 end
 
 M.InlineMenu = InlineMenu

@@ -61,13 +61,13 @@ through a late top-level require.
 | Bounded ordered content copies and summaries | `pi.ui.transcript.projection` |
 | Release candidate ordering and retained-byte total calculation | `pi.ui.transcript.retention` |
 | Persisted-message to display-event ordering | `pi.ui.transcript.history` |
-| Transcript buffer, render cache/timer, semantic ranges, image placements, mouse gesture generation | `pi.ui.transcript.view` |
+| Transcript buffer, render cache/timer, semantic ranges, image placements, minimum-size projection, mouse gesture generation | `pi.ui.transcript.view` |
 | UI namespace, Chat registry, global UI autocmds, shared welcome timer, closed-window gesture invalidation | `pi.ui.chat.registry` |
-| Layout choice, top-level chat window, responsive geometry | `pi.ui.chat.shell` |
+| Layout choice, top-level chat window, global-versus-local resize policy, responsive geometry | `pi.ui.chat.shell` |
 | Component composition, display mirrors, activity state, pending prompt attachment records, frontend delegation | `pi.ui.chat` |
 | Prompt and footer buffers/windows, concealed attachment anchors/token focus, right-click clipboard insertion | `pi.ui.input` |
 | Command-menu buffer/window/matches/selection | `pi.ui.command_menu` |
-| Bounded inline-menu stack/query/items/selection/buffer/window | `pi.ui.inline_menu` |
+| Bounded inline-menu stack/query/items/selection and candidate/query buffers/windows | `pi.ui.inline_menu` |
 | Administrative action generations and active authentication prompt correlation | `pi.commands.admin` |
 | Administrative menu adaptation | `pi.runtime` -> Chat-owned `pi.ui.inline_menu` |
 | Concealed sensitive input | `pi.ui.admin` / `pi.ui.dialog_surface` |
@@ -135,6 +135,13 @@ CommandMenu, InlineMenu, PermissionPanel, and WidgetArea receive explicit depend
 and never read a sibling field. Shell receives window, buffer, state, and action
 providers from Chat; it does not own component behavior.
 
+Registry identifies a global `VimResized` separately from an ordinary
+`WinResized`. Shell recomputes a right split on open and global resize with
+`min(max(42, floor(columns * chat.width)), max(1, columns - 21))`; a local
+window resize only refits overlays and preserves the user's manual split width.
+Shell also tracks the available transcript height so crossing a size threshold
+triggers a fresh projection even when width and overlays did not change.
+
 Chat owns ordered `{ id, image }` pending attachment records, validates payload
 limits, allocates bounded slot IDs, and resolves submitted slots into Pi content
 blocks. InputArea stores only one concealed private-use anchor per slot in the
@@ -158,11 +165,23 @@ clearing cancel the generation. InputArea independently owns prompt right-click
 focus, cursor placement, clipboard image anchor insertion, inline token focus,
 and text insertion; it does not mutate global mouse or clipboard options.
 
+TranscriptView also owns the display-only minimum canvas gate. Below 32 columns
+or 8 available transcript rows, it replaces ordinary transcript, widget, and
+image projection with a bounded size hint while retaining the Transcript model.
+Recovery invalidates the view cache and rebuilds the full projection. An active
+permission request bypasses the gate so the authoritative fail-closed response
+surface remains reachable.
+
 Runtime converts structured command and administrative options into
 `select`, `multi_select`, `confirm`, and non-sensitive `input` frames without
 letting command adapters import Chat. InlineMenu owns only a bounded stack,
 candidate copies, filter query, current row, selected keys, generation, and its
-canvas-relative buffer/window. Shell reserves its measured height above the
+canvas-relative resources. Its candidate buffer/window remains read-only and
+non-focusable; a separate one-line query buffer/window is the keyboard focus
+owner and uses native Insert mode for Unicode, IME, paste, and character-wise
+deletion. Query changes feed a Unicode-character fuzzy scorer, while stack
+replacement, close, buffer deletion, and destruction release or rebuild both
+resource pairs idempotently. Shell reserves the measured menu height above the
 prompt. Final selection closes the group before invoking a layout or RPC action;
 Pi state changes remain projected only from successful responses or refreshes.
 
