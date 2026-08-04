@@ -194,6 +194,52 @@ local function run()
     "local release incorrectly claimed Pi session compaction"
   )
 
+  local paged = track_chat(vim.fn.getcwd() .. "/paged-transcript-budget")
+  for page = 1, 40 do
+    local page_items = {}
+    for entry = 1, 8 do
+      local id = ("page-%02d-entry-%02d"):format(page, entry)
+      table.insert(page_items, {
+        entryId = id,
+        messages = {
+          { role = "user", content = { { type = "text", text = id .. string.rep("u", 700) } } },
+          {
+            role = "assistant",
+            content = { { type = "text", text = id .. string.rep("a", 700) } },
+            stopReason = "stop",
+          },
+        },
+      })
+    end
+    paged:render_history_page(page_items, page > 1)
+    assert(paged:retained_transcript_bytes() <= 4096, "history page merge exceeded the total transcript budget")
+  end
+
+  local unmatched = track_chat(vim.fn.getcwd() .. "/unmatched-history-budget")
+  for page = 1, 140 do
+    local page_items = {}
+    for entry = 1, 8 do
+      local id = ("unmatched-%04d"):format((page - 1) * 8 + entry)
+      table.insert(page_items, {
+        entryId = id,
+        messages = {
+          {
+            role = "toolResult",
+            toolCallId = id,
+            content = { { type = "text", text = string.rep("r", 700) } },
+          },
+        },
+      })
+    end
+    unmatched:render_history_page(page_items, page > 1)
+  end
+  assert(
+    #unmatched.transcript.history_result_order <= 1024
+      and vim.tbl_count(unmatched.transcript.history_results_by_id) <= 1024,
+    "unmatched cross-page tool result indexes grew without a bound"
+  )
+  assert(unmatched:retained_transcript_bytes() <= 4096, "unmatched history results escaped the transcript budget")
+
   local cached_projection = track_chat(vim.fn.getcwd() .. "/cached-transcript-budget")
   cached_projection:add_user("short user body")
   cached_projection:start_assistant({ content = { { type = "text", text = "short assistant body" } } })

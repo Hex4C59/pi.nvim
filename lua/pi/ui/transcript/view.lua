@@ -40,6 +40,7 @@ function TranscriptView.new(deps)
     process_ranges = {},
     image_placements = {},
     image_generation = 0,
+    preserve_prepend = false,
     destroyed = false,
   }, TranscriptView)
   return self
@@ -249,6 +250,9 @@ function TranscriptView:_ensure_buffer()
   vim.keymap.set("n", "<C-x>", function()
     self.actions.copy_last_assistant()
   end, { buffer = self.buf, silent = true })
+  vim.keymap.set("n", "gH", function()
+    self.actions.load_older_history()
+  end, { buffer = self.buf, silent = true })
   vim.keymap.set("n", "<LeftMouse>", function()
     self.actions.left_mouse()
   end, { buffer = self.buf, silent = true })
@@ -311,6 +315,10 @@ function TranscriptView:_render_transcript()
   self.materialize()
   local follow_output = true
   local previous_row = 1
+  local previous_line_count = 1
+  local previous_view
+  local preserve_prepend = self.preserve_prepend
+  self.preserve_prepend = false
   if
     self:window()
     and vim.api.nvim_win_is_valid(self:window())
@@ -318,7 +326,13 @@ function TranscriptView:_render_transcript()
     and vim.api.nvim_buf_is_valid(self.buf)
   then
     previous_row = vim.api.nvim_win_get_cursor(self:window())[1]
-    follow_output = previous_row >= vim.api.nvim_buf_line_count(self.buf) - 1
+    previous_line_count = vim.api.nvim_buf_line_count(self.buf)
+    follow_output = not preserve_prepend and previous_row >= previous_line_count - 1
+    if preserve_prepend then
+      vim.api.nvim_win_call(self:window(), function()
+        previous_view = vim.fn.winsaveview()
+      end)
+    end
   end
 
   local width = self:window() and vim.api.nvim_win_is_valid(self:window()) and vim.api.nvim_win_get_width(self:window())
@@ -542,8 +556,17 @@ function TranscriptView:_render_transcript()
   end
 
   if self:window() and vim.api.nvim_win_is_valid(self:window()) then
-    local row = follow_output and total_lines or math.min(previous_row, total_lines)
-    vim.api.nvim_win_set_cursor(self:window(), { math.max(1, row), 0 })
+    if preserve_prepend and previous_view then
+      local added_lines = math.max(0, total_lines - previous_line_count)
+      previous_view.lnum = math.max(1, math.min(total_lines, previous_row + added_lines))
+      previous_view.topline = math.max(1, math.min(total_lines, previous_view.topline + added_lines))
+      vim.api.nvim_win_call(self:window(), function()
+        vim.fn.winrestview(previous_view)
+      end)
+    else
+      local row = follow_output and total_lines or math.min(previous_row, total_lines)
+      vim.api.nvim_win_set_cursor(self:window(), { math.max(1, row), 0 })
+    end
   end
 end
 
@@ -760,6 +783,10 @@ function TranscriptView:render()
   return self:_render_transcript()
 end
 
+function TranscriptView:preserve_next_prepend()
+  self.preserve_prepend = true
+end
+
 function TranscriptView:clamp()
   return self:_clamp_transcript_view()
 end
@@ -802,6 +829,7 @@ function TranscriptView:destroy()
     pcall(vim.api.nvim_buf_delete, self.buf, { force = true })
   end
   self.buf = nil
+  self.preserve_prepend = false
   self:clear()
 end
 

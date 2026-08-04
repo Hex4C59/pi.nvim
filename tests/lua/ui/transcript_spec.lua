@@ -245,6 +245,86 @@ assert(rich_history.items[1].content[1].data == nil, "history image retained sou
 assert(rich_history:find_tool("bash-42").error, "history Bash error state was lost")
 assert(rich_history.items[5].message.errorMessage == "history error", "history assistant error was lost")
 
+local paged_history = new_transcript({ transcript_max_bytes = 4096 })
+paged_history:render_history_page({
+  {
+    entryId = "new-result",
+    messages = {
+      {
+        role = "toolResult",
+        toolCallId = "cross-page-tool",
+        content = { { type = "text", text = "cross-page result" } },
+      },
+    },
+  },
+  {
+    entryId = "new-answer",
+    messages = {
+      { role = "assistant", content = { { type = "text", text = "newest answer" } }, stopReason = "stop" },
+    },
+  },
+}, false)
+paged_history:set_history_state("more")
+assert(
+  paged_history.items[1].history_control and paged_history.items[1].text == "Older history is available",
+  "paginated history did not expose its structured continuation state"
+)
+paged_history:render_history_page({
+  {
+    entryId = "old-context",
+    messages = {
+      { role = "compactionSummary", summary = "authoritative compacted context" },
+      { role = "custom", display = true, content = "display-only session note" },
+      { role = "user", content = { { type = "text", text = "older question" } } },
+      {
+        role = "assistant",
+        content = {
+          { type = "text", text = "older answer" },
+          { type = "toolCall", id = "cross-page-tool", name = "read", arguments = { path = "old.txt" } },
+        },
+        stopReason = "toolUse",
+      },
+    },
+  },
+}, true)
+local cross_page_tool = assert(paged_history:find_tool("cross-page-tool"), "older page lost its tool call")
+assert(cross_page_tool.state == "done", "newer-page tool result was not correlated with its older tool call")
+assert(
+  text_content(cross_page_tool.result.content) == "cross-page result",
+  "cross-page tool correlation changed the authoritative result"
+)
+assert(
+  paged_history.items[2].text:find("Context summary", 1, true)
+    and paged_history.items[3].text == "display-only session note",
+  "summary or display custom session entries were dropped from paginated history"
+)
+assert(
+  next(paged_history.history_results_by_id) == nil and #paged_history.history_result_order == 0,
+  "cross-page tool result indexes were not released after correlation"
+)
+paged_history:render_history_page({
+  { entryId = "oversized", omitted = true, reason = "max_bytes", originalBytes = 123456 },
+}, true)
+assert(
+  paged_history.items[2].text == "Pi omitted one oversized history entry (123456 bytes)",
+  "structured oversized history omission was not projected"
+)
+paged_history:set_history_state("loading")
+assert(
+  paged_history.items[1].text == "Loading older history...",
+  "history loading state did not replace the control row"
+)
+paged_history:set_history_state("error", "temporary failure")
+assert(
+  paged_history.items[1].error and paged_history.items[1].text:find("temporary failure", 1, true),
+  "history error state was not retryable or structured"
+)
+paged_history:set_history_state(nil)
+assert(
+  paged_history.history_control == nil and not paged_history.items[1].history_control,
+  "completed history kept its control row"
+)
+
 local tolerant = new_transcript()
 tolerant:update_tool("unknown", { content = {} })
 tolerant:end_tool("unknown", { content = {} }, false)

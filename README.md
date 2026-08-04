@@ -11,7 +11,8 @@ The plugin provides a Pi-inspired Neovim frontend over RPC. It implements the
 streamed transcript, user message blocks, collapsible thinking and tool output,
 persistent prompt editor, command completion, model/thinking controls, queue
 state, live footer, settings, session discovery and tree navigation, fork/clone,
-compaction, and native Extension select, confirm, input, and editor dialogs.
+compaction, bounded history pagination, and native Extension select, confirm,
+input, and editor dialogs.
 The bundled todo Extension makes the agent decompose complex implementation work
 into a branch-aware plan, keep it current during execution, and render its
 compact live plan inside the conversation transcript.
@@ -22,12 +23,17 @@ active leaf to an existing entry. Older RPC processes retain exact-path resume
 and tree inspection, and report the missing capability without sending an
 unsupported command.
 
+When Pi advertises `history_pagination`, pi.nvim opens the newest bounded
+history page first and loads older pages on demand with Pi-owned opaque cursors.
+Older Pi processes retain the complete `get_messages` compatibility path.
+
 ## Requirements
 
 - Neovim 0.10 or newer
 - `pi` available on `PATH` with the `extension_ui_cancel` RPC event supported;
   `list_sessions` and `navigate_tree` capabilities enable native session
-  discovery and navigation
+  discovery and navigation, and `history_pagination` enables bounded history
+  loading
 - A model configured in Pi (`pi`, then `/login` when needed)
 - Optional Tree-sitter parsers for syntax highlighting in fenced-code languages
 - Clipboard image capture uses `wl-paste` on Wayland or `xclip` on X11.
@@ -153,6 +159,7 @@ The prompt editor focuses automatically and mirrors Pi's primary controls:
 | Left click | Toggle the clicked process summary or tool output |
 | `Ctrl-T` | Toggle complete process details (compatibility alias) |
 | `Ctrl-X` | Copy the last assistant response |
+| `gH` | Load the next older bounded history page from the transcript |
 | `Ctrl-V` / `Ctrl-Shift-V` | Paste an image from the system clipboard (text paste is preserved as a fallback) |
 | `/` | Open slash-command completion |
 | `Tab` / `Shift-Tab`, `Up` / `Down` | Select the next or previous command |
@@ -181,6 +188,14 @@ resume remains blocked in every security mode. `:PiTree` and `/tree` use
 structured entry IDs; successful navigation reloads the transcript and session
 state only after Pi confirms the new leaf, while cancellation, failure, or a
 stale overlapping action leaves the current projection untouched.
+
+Persisted history uses Pi's `get_messages_page` capability when available. The
+runtime owns the cursor, active-leaf snapshot, duplicate entry set, request
+generation, and retry state; the Transcript owns only its bounded local
+projection. Older pages are prepended without moving the visible transcript
+anchor, oversized entries appear as structured omission rows, and failures
+remain retryable with `gH`. A session or process change invalidates outstanding
+page callbacks before they can alter the new projection.
 
 Typing `/` opens Pi's borderless command menu containing built-ins plus commands
 loaded from extensions, prompt templates, and skills. Command names are fuzzy
@@ -387,6 +402,9 @@ while lightweight identity, status, and timing remain visible; Pi's
 authoritative session is unchanged. The decoded RPC dispatch queue is also
 bounded by message count and bytes; exceeding either limit stops the Pi process
 instead of continuing with partial client state.
+History pagination additionally caps every Pi response at 1 MiB and merges each
+page through the same transcript budget. It does not increase the parser's
+general frame ceiling or decode the complete persisted session in Neovim.
 `context.max_bytes` bounds the complete serialized editor context, including
 wrapper metadata, selection truncation markers, and diagnostics; `max_chars`
 remains a compatibility alias. Diagnostics have additional count, per-message,

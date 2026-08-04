@@ -57,6 +57,31 @@ local function run()
   assert(find_buffer("widget") == nil, "todo setWidget event created a separate buffer")
   assert(chat.widget_area:window("aboveEditor") == nil, "todo setWidget event created a separate window")
 
+  assert(require("pi.runtime").load_older_history(root), "middle history page request did not start")
+  assert(
+    vim.wait(3000, function()
+      local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+      return text:find("middle history question", 1, true) ~= nil
+    end, 20),
+    "middle history page was not prepended"
+  )
+  assert(require("pi.runtime").load_older_history(root), "oldest history page request did not start")
+  assert(
+    vim.wait(3000, function()
+      local text = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+      return text:find("oldest history answer", 1, true) ~= nil
+    end, 20),
+    "oldest history page was not prepended"
+  )
+  local paged_transcript = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+  local oldest_position = assert(paged_transcript:find("oldest history answer", 1, true))
+  local middle_position = assert(paged_transcript:find("middle history question", 1, true))
+  local newest_position = assert(paged_transcript:find("history question", 1, true))
+  assert(
+    oldest_position < middle_position and middle_position < newest_position,
+    "history pages were not projected in authoritative oldest-to-newest order"
+  )
+
   pi.select_permission_mode(root, "auto")
   assert(
     vim.wait(3000, function()

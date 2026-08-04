@@ -71,6 +71,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       isStreaming: false,
       autoCompactionEnabled: true,
       autoRetryEnabled,
+      sessionId: freshSession ? "fixture-fresh" : "fixture-session",
+      rpcCapabilities: ["history_pagination"],
     });
     send({ type: "extension_ui_request", method: "setStatus", statusKey: "pi.permission_mode", statusText: "manual" });
     if (!freshSession) {
@@ -85,6 +87,61 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
   } else if (request.type === "set_auto_retry") {
     autoRetryEnabled = request.enabled;
     respondToRequest();
+  } else if (request.type === "get_messages_page") {
+    if (request.limit !== 50 || request.maxBytes !== 1024 * 1024) {
+      send({
+        id: request.id,
+        type: "response",
+        command: request.type,
+        success: false,
+        error: "unexpected history page budget",
+      });
+    } else if (freshSession) {
+      respondToRequest({ items: [], nextCursor: null, hasMore: false, leafId: null });
+    } else if (request.cursor === "fixture-history:middle") {
+      respondToRequest({
+        items: [{
+          entryId: "history-middle",
+          messages: [{ role: "user", content: [{ type: "text", text: "middle history question" }] }],
+        }],
+        nextCursor: "fixture-history:oldest",
+        hasMore: true,
+        leafId: "fixture-history-leaf",
+      });
+    } else if (request.cursor === "fixture-history:oldest") {
+      respondToRequest({
+        items: [{
+          entryId: "history-oldest",
+          messages: [{ role: "assistant", content: [{ type: "text", text: "oldest history answer" }], stopReason: "stop" }],
+        }],
+        nextCursor: null,
+        hasMore: false,
+        leafId: "fixture-history-leaf",
+      });
+    } else if (request.cursor === "fixture-history:stale") {
+      respondToRequest({
+        items: [],
+        nextCursor: null,
+        hasMore: false,
+        leafId: "stale-history-leaf",
+      });
+    } else {
+      respondToRequest({
+        items: [
+          {
+            entryId: "history-question",
+            messages: [{ role: "user", content: [{ type: "text", text: "history question" }] }],
+          },
+          {
+            entryId: "history-answer",
+            messages: [{ role: "assistant", content: [{ type: "text", text: "history answer" }], stopReason: "stop" }],
+          },
+        ],
+        nextCursor: "fixture-history:middle",
+        hasMore: true,
+        leafId: "fixture-history-leaf",
+      });
+    }
   } else if (request.type === "get_messages") {
     respondToRequest({
       messages: freshSession ? [] : [

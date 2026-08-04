@@ -214,12 +214,6 @@ function Client:start()
     self.session = data or {}
     self.state = self.session.isStreaming and "streaming" or "idle"
     self:_emit({ type = "client_state", state = self.state, data = self.session })
-
-    self:request("get_messages", {}, function(messages_ok, messages)
-      if messages_ok then
-        self:_emit({ type = "history", messages = messages.messages or {} })
-      end
-    end)
   end)
   return true
 end

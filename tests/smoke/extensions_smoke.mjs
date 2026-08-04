@@ -363,6 +363,146 @@ async function smokeSessionDiscoveryAndNavigation() {
   }
 }
 
+async function smokeLargeHistoryPagination() {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-large-history-smoke-"));
+  const agentDir = path.join(cwd, "agent");
+  const sessionDir = path.join(cwd, "sessions");
+  const sessionFile = path.join(sessionDir, "large-session.jsonl");
+  await mkdir(agentDir);
+  await mkdir(sessionDir);
+  const timestamp = "2026-08-04T09:00:00.000Z";
+  const largeText = "x".repeat(11 * 1024 * 1024);
+  const entries = [
+    { type: "session", version: 3, id: "large-smoke-session", timestamp, cwd },
+    {
+      type: "message",
+      id: "huge-user",
+      parentId: null,
+      timestamp,
+      message: { role: "user", content: largeText, timestamp: Date.parse(timestamp) },
+    },
+    {
+      type: "message",
+      id: "small-assistant",
+      parentId: "huge-user",
+      timestamp,
+      message: {
+        role: "assistant",
+        content: [{ type: "text", text: "bounded recent reply" }],
+        api: "anthropic-messages",
+        provider: "fixture",
+        model: "model-a",
+        usage: {
+          input: 1,
+          output: 1,
+          cacheRead: 0,
+          cacheWrite: 0,
+          totalTokens: 2,
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+        },
+        stopReason: "stop",
+        timestamp: Date.parse(timestamp) + 1,
+      },
+    },
+    {
+      type: "message",
+      id: "recent-user",
+      parentId: "small-assistant",
+      timestamp,
+      message: { role: "user", content: "bounded recent prompt", timestamp: Date.parse(timestamp) + 2 },
+    },
+  ];
+  await writeFile(sessionFile, `${entries.map((entry) => JSON.stringify(entry)).join("\n")}\n`, "utf8");
+
+  try {
+    const messages = await new Promise((resolve, reject) => {
+      const child = spawn(
+        piCommand,
+        [
+          "--mode",
+          "rpc",
+          "--session",
+          sessionFile,
+          "--session-dir",
+          sessionDir,
+          "--no-context-files",
+          "--no-approve",
+        ],
+        {
+          cwd,
+          env: { ...process.env, PI_CODING_AGENT_DIR: agentDir },
+          stdio: ["pipe", "pipe", "pipe"],
+        },
+      );
+      const received = [];
+      let stdout = "";
+      let stderr = "";
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("large history pagination smoke timed out"));
+      }, 15000);
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        while (stdout.includes("\n")) {
+          const newline = stdout.indexOf("\n");
+          const line = stdout.slice(0, newline).replace(/\r$/, "");
+          stdout = stdout.slice(newline + 1);
+          if (!line) continue;
+          try {
+            const message = JSON.parse(line);
+            received.push(message);
+            if (message.id === "large-history-state") {
+              assert.equal(message.data?.rpcCapabilities?.includes("history_pagination"), true);
+              child.stdin.write(`${JSON.stringify({
+                type: "get_messages_page",
+                id: "large-history-newest",
+                limit: 2,
+                maxBytes: 1024 * 1024,
+              })}\n`);
+            } else if (message.id === "large-history-newest") {
+              assert.equal(message.success, true, "newest bounded history page failed");
+              assert.equal(Buffer.byteLength(line) + 1 <= 1024 * 1024, true, "newest history frame exceeded maxBytes");
+              assert.equal(message.data?.hasMore, true, "large session did not expose an older page");
+              assert.equal(typeof message.data?.nextCursor, "string", "large session omitted its continuation cursor");
+              child.stdin.write(`${JSON.stringify({
+                type: "get_messages_page",
+                id: "large-history-oldest",
+                cursor: message.data.nextCursor,
+                limit: 2,
+                maxBytes: 1024 * 1024,
+              })}\n`);
+            } else if (message.id === "large-history-oldest") {
+              assert.equal(message.success, true, "oldest bounded history page failed");
+              assert.equal(Buffer.byteLength(line) + 1 <= 1024 * 1024, true, "oldest history frame exceeded maxBytes");
+              const omission = message.data?.items?.find((item) => item.omitted === true);
+              assert.equal(omission?.reason, "max_bytes", "oversized history entry was not represented structurally");
+              assert.equal(omission?.originalBytes > 10 * 1024 * 1024, true, "omission did not describe the large entry");
+              child.stdin.end(`${JSON.stringify({ type: "abort", id: "large-history-done" })}\n`);
+            }
+          } catch (error) {
+            clearTimeout(timer);
+            child.kill("SIGKILL");
+            reject(error);
+          }
+        }
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve(received);
+        else reject(new Error(`large history pagination smoke exited ${code}: ${stderr}`));
+      });
+      child.stdin.write(`${JSON.stringify({ type: "get_state", id: "large-history-state" })}\n`);
+    });
+    assert.equal(messages.find((message) => message.id === "large-history-done")?.success, true);
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}
+
 for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-root-guard.ts", "todo.ts"]) {
   const requests = extension === "permission-gate.ts"
     ? [
@@ -376,5 +516,6 @@ for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-ro
 await smokeAutoRetryState();
 await smokeDialogCancellation();
 await smokeSessionDiscoveryAndNavigation();
+await smokeLargeHistoryPagination();
 
 console.log("extensions_smoke: ok");

@@ -20,14 +20,18 @@ function M.candidates(items, streaming_assistant)
   for _, item in ipairs(items or {}) do
     if item.type == "tool" and item.state == "done" then
       append_tool_actions(actions, item)
-    elseif item.type ~= "tool" and (item.type ~= "assistant" or item ~= streaming_assistant) then
+    elseif
+      item.type ~= "tool"
+      and not item.history_control
+      and (item.type ~= "assistant" or item ~= streaming_assistant)
+    then
       table.insert(actions, { kind = "body", item = item })
     end
   end
   for _, item in ipairs(items or {}) do
     if item.type == "tool" then
       append_tool_actions(actions, item)
-    else
+    elseif not item.history_control then
       table.insert(actions, { kind = "body", item = item })
     end
   end

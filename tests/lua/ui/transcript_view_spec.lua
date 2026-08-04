@@ -64,6 +64,7 @@ local function new_fixture(overrides)
     "toggle_tools",
     "toggle_thinking",
     "copy_last_assistant",
+    "load_older_history",
     "left_mouse",
     "open_image_preview",
   }) do
@@ -180,7 +181,10 @@ with_view({}, function(fixture)
   for _, mapping in ipairs(vim.api.nvim_buf_get_keymap(buf, "n")) do
     mappings[mapping.lhs] = true
   end
-  assert(mappings.q and mappings.i and mappings.a and mappings["<CR>"], "transcript keymaps are incomplete")
+  assert(
+    mappings.q and mappings.i and mappings.a and mappings.gH and mappings["<CR>"],
+    "transcript keymaps are incomplete"
+  )
   assert(view:ensure_buffer() == buf, "ensure_buffer replaced a valid owned buffer")
   view:destroy()
   view:destroy()
@@ -384,6 +388,39 @@ with_view({ items = scroll_items }, function(fixture)
   fixture.state.overlay_height = 2
   view:render()
   assert(vim.api.nvim_win_get_cursor(win)[1] == 3, "scrolled-up cursor was not preserved")
+
+  local anchor_row
+  for row, line in ipairs(buffer_lines(view.buf)) do
+    if line:find("line 5", 1, true) then
+      anchor_row = row
+      break
+    end
+  end
+  vim.api.nvim_win_set_cursor(win, { assert(anchor_row, "history anchor row was not rendered"), 0 })
+  vim.api.nvim_win_call(win, function()
+    vim.cmd("normal! zt")
+  end)
+  local old_count = vim.api.nvim_buf_line_count(view.buf)
+  local old_row = vim.api.nvim_win_get_cursor(win)[1]
+  local old_line = vim.api.nvim_buf_get_lines(view.buf, old_row - 1, old_row, false)[1]
+  local old_view
+  vim.api.nvim_win_call(win, function()
+    old_view = vim.fn.winsaveview()
+  end)
+  table.insert(scroll_items, 1, { type = "status", _pi_id = "status:older-2", text = "older two" })
+  table.insert(scroll_items, 1, { type = "status", _pi_id = "status:older-1", text = "older one" })
+  view:preserve_next_prepend()
+  view:render()
+  local added = vim.api.nvim_buf_line_count(view.buf) - old_count
+  local restored_row = vim.api.nvim_win_get_cursor(win)[1]
+  local restored_line = vim.api.nvim_buf_get_lines(view.buf, restored_row - 1, restored_row, false)[1]
+  local restored_view
+  vim.api.nvim_win_call(win, function()
+    restored_view = vim.fn.winsaveview()
+  end)
+  assert(added > 0 and restored_row == old_row + added, "history prepend did not preserve the cursor anchor")
+  assert(restored_line == old_line, "history prepend changed the logical line under the cursor")
+  assert(restored_view.topline == old_view.topline + added, "history prepend did not preserve the window topline")
 
   vim.api.nvim_win_set_cursor(win, { vim.api.nvim_buf_line_count(view.buf), 0 })
   vim.api.nvim_win_call(win, function()

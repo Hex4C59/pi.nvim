@@ -11,6 +11,8 @@ local clients = {}
 local chats = {}
 local projects = {}
 local ui_actions = {}
+local history_page_limit = 50
+local history_page_max_bytes = 1024 * 1024
 
 local function invoke_ui_action(name, ...)
   local callback = ui_actions[name]
@@ -44,6 +46,9 @@ local function chat_actions(root)
       if client then
         dialog.discard(client)
       end
+    end,
+    load_older_history = function()
+      return M.load_older_history(root)
     end,
   }
 end
@@ -165,21 +170,139 @@ local function refresh_state(client)
   end)
 end
 
+local function has_capability(client, capability)
+  for _, advertised in ipairs((client.session or {}).rpcCapabilities or {}) do
+    if advertised == capability then
+      return true
+    end
+  end
+  return false
+end
+
+local function reset_history_state(project)
+  project.history_generation = project.history_generation + 1
+  project.history_cursor = nil
+  project.history_has_more = false
+  project.history_loading = false
+  project.history_loaded = false
+  project.history_leaf_id = nil
+  project.history_seen = {}
+end
+
+local function history_request_current(project, generation)
+  return project_is_current(project) and project.history_generation == generation
+end
+
+local function set_history_error(project, message)
+  project.history_loading = false
+  project.history_has_more = true
+  chat_for(project.client.root):set_history_state("error", message or "Unknown history error")
+end
+
+local function optional_json_value(value)
+  if value == vim.NIL then
+    return nil
+  end
+  return value
+end
+
+local function request_history_page(project, cursor)
+  if not project_is_current(project) or project.history_loading then
+    return false
+  end
+  project.history_loading = true
+  local generation = project.history_generation
+  local prepend = project.history_loaded
+  if prepend then
+    chat_for(project.client.root):set_history_state("loading")
+  end
+  project.client:request("get_messages_page", {
+    cursor = cursor,
+    limit = history_page_limit,
+    maxBytes = history_page_max_bytes,
+  }, function(success, data, err)
+    if not history_request_current(project, generation) then
+      return
+    end
+    project.history_loading = false
+    if not success or type(data) ~= "table" or type(data.items) ~= "table" then
+      set_history_error(project, err or "Pi returned an invalid history page")
+      return
+    end
+    local leaf_id = optional_json_value(data.leafId)
+    local next_cursor = optional_json_value(data.nextCursor)
+    if type(data.hasMore) ~= "boolean" or (leaf_id ~= nil and type(leaf_id) ~= "string") then
+      set_history_error(project, "Pi returned invalid history page metadata")
+      return
+    end
+    if project.history_leaf_id ~= nil and leaf_id ~= project.history_leaf_id then
+      set_history_error(project, "Pi history snapshot changed while older messages were loading")
+      return
+    end
+    if data.hasMore == true and (type(next_cursor) ~= "string" or next_cursor == cursor) then
+      set_history_error(project, "Pi returned an invalid history continuation cursor")
+      return
+    end
+
+    local unique = {}
+    for _, item in ipairs(data.items) do
+      if type(item) == "table" and type(item.entryId) == "string" and not project.history_seen[item.entryId] then
+        project.history_seen[item.entryId] = true
+        table.insert(unique, item)
+      end
+    end
+    local chat = chat_for(project.client.root)
+    chat:render_history_page(unique, prepend)
+    project.history_loaded = true
+    project.history_leaf_id = leaf_id
+    project.history_cursor = next_cursor
+    project.history_has_more = data.hasMore == true
+    chat:set_history_state(project.history_has_more and "more" or nil)
+  end)
+  return true
+end
+
+local function request_legacy_history(project)
+  local generation = project.history_generation
+  project.history_loading = true
+  project.client:request("get_messages", {}, function(success, data, err)
+    if not history_request_current(project, generation) then
+      return
+    end
+    project.history_loading = false
+    if success and type(data) == "table" then
+      project.history_loaded = true
+      chat_for(project.client.root):render_history(data.messages or {})
+    else
+      project.history_has_more = true
+      chat_for(project.client.root):set_history_state("error", err or "Unable to load session history")
+    end
+  end)
+end
+
+local function begin_history(project, reset_projection)
+  reset_history_state(project)
+  if reset_projection then
+    chat_for(project.client.root):reset_session_projection()
+  end
+  if has_capability(project.client, "history_pagination") then
+    request_history_page(project, nil)
+  else
+    request_legacy_history(project)
+  end
+end
+
 local function reload_session(client)
   local project = project_for_client(client)
   if project then
     project.session_action_generation = project.session_action_generation + 1
   end
   dialog.discard(client)
-  local chat = chat_for(client.root)
-  chat:reset_session_projection()
   refresh_state(client)
   refresh_stats(client)
-  client:request("get_messages", {}, function(success, data)
-    if client_is_current(client) and success and data then
-      chat:render_history(data.messages or {})
-    end
-  end)
+  if project then
+    begin_history(project, true)
+  end
 end
 
 local function attach(client)
@@ -190,6 +313,13 @@ local function attach(client)
     stats_pending = false,
     direct_bash_request_id = nil,
     session_action_generation = 0,
+    history_generation = 0,
+    history_cursor = nil,
+    history_has_more = false,
+    history_loading = false,
+    history_loaded = false,
+    history_leaf_id = nil,
+    history_seen = {},
     unsubscribe = nil,
   }
   projects[client.root] = project
@@ -202,17 +332,17 @@ local function attach(client)
 
     if event.type == "client_state" then
       if event.data then
+        client.session = event.data
         chat:update_state(event.data)
         refresh_stats(client)
         refresh_commands(client)
+        begin_history(project, false)
       else
         if event.state == "starting" then
           chat:reset_permission_mode()
         end
         chat:set_activity(event.state)
       end
-    elseif event.type == "history" then
-      chat:render_history(event.messages)
     elseif event.type == "message_start" and event.message then
       if event.message.role == "user" then
         local pending = table.remove(project.display_queue, 1)
@@ -312,6 +442,18 @@ local function attach(client)
       notify_error(event.error)
     end
   end)
+end
+
+local function load_older_history(root)
+  local client = clients[root]
+  local project = project_for_client(client)
+  if not project or not has_capability(client, "history_pagination") or project.history_loading then
+    return false
+  end
+  if project.history_loaded and not project.history_has_more then
+    return false
+  end
+  return request_history_page(project, project.history_cursor)
 end
 
 local function get_client(root)
@@ -502,6 +644,7 @@ M.refresh_commands = refresh_commands
 M.refresh_stats = refresh_stats
 M.refresh_state = refresh_state
 M.reload_session = reload_session
+M.load_older_history = load_older_history
 M.begin_session_action = begin_session_action
 M.session_action_current = session_action_current
 M.open_session_picker = open_session_picker

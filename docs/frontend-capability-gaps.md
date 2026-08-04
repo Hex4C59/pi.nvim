@@ -27,20 +27,28 @@ No release-blocking failure was found in the normal prompt, streaming, tool, per
 
 | Priority | Gap | Primary owner | Current consequence |
 | --- | --- | --- | --- |
-| P1 | Full-history RPC responses have a fixed 10 MiB frame ceiling | Pi RPC and pi.nvim client | A sufficiently large persisted session cannot be loaded reliably |
-| P2 | Authentication and several administrative workflows are TUI-only | Pi RPC, then pi.nvim UI | Users must leave Neovim for login/logout, reload, trust changes, and related commands |
+| Done | Bounded history pagination | Pi RPC and pi.nvim client | Completed by Task 06; durable behavior is documented in README |
+| P1 | Authentication and several administrative workflows are TUI-only | Pi RPC, then pi.nvim UI | Users must leave Neovim for login/logout, reload, trust changes, and related commands |
 
 Priority describes remediation order and user impact, not security severity. The permission gate, workspace guard, and session-root guard remain authoritative in bundled Pi Extensions.
 
-## 1. Large Session History Is Not Incrementally Loadable
+## 1. Large Session History Is Incrementally Loadable (Completed)
 
 ### Classification
 
-- Priority: P1
-- Status: confirmed architectural limit
+- Priority: completed
+- Status: implemented and verified by Task 06
 - User-visible area: startup, resume, new-session reload, long-running persisted sessions
 - Authoritative owner: Pi session storage and Pi RPC
 - Presentation owner: pi.nvim history projection and local retention budgets
+
+Task 06 added Pi's bounded `get_messages_page` contract and pi.nvim's
+newest-page-first projection, compatibility fallback, explicit older-page
+action, stale-response rejection, retry state, duplicate suppression, scroll
+preservation, and cross-page output limits. The pre-remediation analysis below
+is retained only until the remaining administrative task in this document is
+completed; README and `docs/lua-architecture.md` are the shipped sources of
+truth.
 
 ### Current behavior
 
@@ -337,7 +345,7 @@ Pi Extension APIs such as `ctx.ui.custom()`, component factories, custom headers
 
 The sequence below respects ownership and minimizes frontend compatibility branches.
 
-### Phase 1: paginated history
+### Phase 1: paginated history (completed)
 
 1. Define cursor, snapshot, ordering, and byte-budget semantics in Pi.
 2. Implement bounded history pages and compatibility behavior.
@@ -347,7 +355,7 @@ The sequence below respects ownership and minimizes frontend compatibility branc
 6. Add prepend/scroll/output-budget/stale-session tests.
 7. Verify a session larger than the old 10 MiB ceiling against the installed process.
 
-Large history is the next delivery phase because it is the highest-impact remaining architectural gap and has the broadest protocol and renderer implications.
+Structured administrative workflows are now the remaining delivery phase.
 
 ## Required Verification Matrix
 

@@ -23,6 +23,18 @@ function M.events(messages)
       table.insert(events, { kind = "tool_result", message = message })
     elseif type(message) == "table" and message.role == "bashExecution" then
       table.insert(events, { kind = "bash", message = message })
+    elseif
+      type(message) == "table"
+      and (message.role == "compactionSummary" or message.role == "branchSummary")
+      and type(message.summary) == "string"
+    then
+      table.insert(events, { kind = "summary", message = message })
+    elseif type(message) == "table" and message.role == "custom" and message.display == true then
+      table.insert(events, {
+        kind = "custom",
+        message = message,
+        text = text_content(message.content),
+      })
     end
   end
   return events

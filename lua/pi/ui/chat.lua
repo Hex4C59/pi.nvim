@@ -291,6 +291,7 @@ function Chat.new(root, frontend_actions)
       select_model = action(frontend_actions, "select_model"),
       cycle_model = action(frontend_actions, "cycle_model"),
       cycle_thinking_level = action(frontend_actions, "cycle_thinking_level"),
+      load_older_history = action(frontend_actions, "load_older_history"),
     },
   })
   chat.transcript = Transcript.new({
@@ -482,7 +483,6 @@ function Chat:display_state()
 end
 
 function Chat:reset_session_projection()
-  self.transcript.history_loaded = false
   self:clear()
   self:update_stats({ tokens = {}, contextUsage = {}, cost = 0 })
 end
@@ -1026,6 +1026,17 @@ end
 
 function Chat:render_history(messages)
   self.transcript:render_history(messages)
+end
+
+function Chat:render_history_page(items, prepend)
+  if prepend then
+    self.transcript_view:preserve_next_prepend()
+  end
+  self.transcript:render_history_page(items, prepend)
+end
+
+function Chat:set_history_state(state, detail)
+  self.transcript:set_history_state(state, detail)
 end
 
 M.Chat = Chat

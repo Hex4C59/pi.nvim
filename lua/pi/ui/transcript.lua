@@ -13,6 +13,7 @@ local limited_tool_args = projection.limited_tool_args
 local result_without_content = projection.result_without_content
 local summarized_tool_args = projection.summarized_tool_args
 local utf8_head = projection.utf8_head
+local history_result_max_count = 1024
 
 local Transcript = {}
 Transcript.__index = Transcript
@@ -39,6 +40,10 @@ function Transcript.new(opts)
     non_tool_retained_bytes = 0,
     streaming_assistant = nil,
     history_loaded = false,
+    history_control = nil,
+    history_results_by_id = {},
+    history_result_order = {},
+    history_projecting = false,
     reasoning_buffer = "",
     reasoning_header = nil,
   }, Transcript)
@@ -144,6 +149,11 @@ function Transcript:clear()
   self.tool_retained_bytes = 0
   self.non_tool_retained_bytes = 0
   self.streaming_assistant = nil
+  self.history_loaded = false
+  self.history_control = nil
+  self.history_results_by_id = {}
+  self.history_result_order = {}
+  self.history_projecting = false
   self.reasoning_buffer = ""
   self.reasoning_header = nil
   self:_changed(true)
@@ -423,7 +433,24 @@ function Transcript:_release_tool_args_fully(item)
   return true
 end
 
+function Transcript:_release_pending_history_results()
+  for _, id in ipairs(self.history_result_order) do
+    if self:retained_transcript_bytes() <= self.output.transcript_max_bytes then
+      break
+    end
+    local pending = self.history_results_by_id[id]
+    if pending and (pending.retained_bytes or 0) > 0 then
+      self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - pending.retained_bytes)
+      pending.result = result_without_content(pending.result)
+      pending.retained_bytes = 0
+    end
+  end
+end
+
 function Transcript:_enforce_transcript_budget()
+  if self.history_projecting then
+    return
+  end
   local maximum = self.output.transcript_max_bytes
   if self:retained_transcript_bytes() <= maximum then
     return
@@ -431,6 +458,7 @@ function Transcript:_enforce_transcript_budget()
   self.reasoning_buffer = ""
   self.reasoning_header = nil
   self.on_invalidate()
+  self:_release_pending_history_results()
   local function over_budget()
     return self:retained_transcript_bytes() > maximum
   end
@@ -564,18 +592,47 @@ function Transcript:add_status(text, is_error)
   self:_changed(true)
 end
 
-function Transcript:render_history(messages)
-  if self.history_loaded then
+function Transcript:_remember_history_result(message)
+  local id = message.toolCallId
+  if type(id) ~= "string" or self.history_results_by_id[id] then
     return
   end
-  self.history_loaded = true
-  self:_release_images()
-  self.on_invalidate()
-  self.items = {}
-  self.next_item_id = 0
-  self.tools_by_id = {}
-  self.tool_retained_bytes = 0
-  self.non_tool_retained_bytes = 0
+  local limited, retained = limited_result(message, self.output.tool_max_bytes)
+  self.history_results_by_id[id] = {
+    result = limited,
+    retained_bytes = retained,
+    error = message.isError == true,
+  }
+  table.insert(self.history_result_order, id)
+  self.tool_retained_bytes = self.tool_retained_bytes + retained
+  while #self.history_result_order > history_result_max_count do
+    local released_id = table.remove(self.history_result_order, 1)
+    local released = self.history_results_by_id[released_id]
+    if released then
+      self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - (released.retained_bytes or 0))
+      self.history_results_by_id[released_id] = nil
+    end
+  end
+  self:_enforce_transcript_budget()
+end
+
+function Transcript:_take_history_result(id)
+  local pending = self.history_results_by_id[id]
+  if not pending then
+    return nil
+  end
+  self.history_results_by_id[id] = nil
+  for index, candidate in ipairs(self.history_result_order) do
+    if candidate == id then
+      table.remove(self.history_result_order, index)
+      break
+    end
+  end
+  self.tool_retained_bytes = math.max(0, self.tool_retained_bytes - (pending.retained_bytes or 0))
+  return pending
+end
+
+function Transcript:_append_history_messages(messages, target)
   history.replay(messages, {
     user = function(event)
       local text, images, retained, omitted =
@@ -586,16 +643,16 @@ function Transcript:render_history(messages)
         text = text,
         content = images,
       }
-      table.insert(self.items, item)
+      table.insert(target, item)
+      self:_track_content_images(item.content)
       self:_set_item_body_bytes(item, retained, omitted)
-      self:_enforce_transcript_budget()
     end,
     assistant = function(event)
       local assistant_item = {
         type = "assistant",
         _pi_id = self:_new_item_id("history-assistant"),
       }
-      table.insert(self.items, assistant_item)
+      table.insert(target, assistant_item)
       self:_set_assistant_message(assistant_item, event.message)
     end,
     tool_call = function(event)
@@ -609,8 +666,14 @@ function Transcript:render_history(messages)
         state = "pending",
       }
       self.tools_by_id[block.id] = item
-      table.insert(self.items, item)
+      table.insert(target, item)
       self:_set_tool_args(item, block.arguments or {})
+      local pending = self:_take_history_result(block.id)
+      if pending then
+        item.error = pending.error
+        item.state = "done"
+        self:_set_tool_result(item, pending.result)
+      end
     end,
     tool_result = function(event)
       local message = event.message
@@ -619,6 +682,8 @@ function Transcript:render_history(messages)
         item.error = message.isError == true
         item.state = "done"
         self:_set_tool_result(item, message)
+      else
+        self:_remember_history_result(message)
       end
     end,
     bash = function(event)
@@ -626,21 +691,151 @@ function Transcript:render_history(messages)
       local item = {
         type = "tool",
         _pi_id = self:_new_item_id("history-bash"),
-        id = "bash-" .. tostring(message.timestamp or #self.items),
+        id = "bash-" .. tostring(message.timestamp or self.next_item_id),
         name = "bash",
         args = {},
         error = (message.exitCode or 0) ~= 0,
         state = "done",
       }
       self.tools_by_id[item.id] = item
-      table.insert(self.items, item)
+      table.insert(target, item)
       self:_set_tool_args(item, { command = message.command })
       self:_set_tool_result(item, {
         content = { { type = "text", text = message.output or "" } },
         details = details_without_output(message),
       })
     end,
+    summary = function(event)
+      local label = event.message.role == "compactionSummary" and "Context summary" or "Branch summary"
+      local text, omitted = utf8_head(label .. "\n\n" .. event.message.summary, self.output.transcript_max_bytes)
+      local item = {
+        type = "status",
+        _pi_id = self:_new_item_id("history-summary"),
+        text = text,
+      }
+      table.insert(target, item)
+      self:_set_item_body_bytes(item, #text, omitted)
+    end,
+    custom = function(event)
+      local text, omitted = utf8_head(event.text, self.output.transcript_max_bytes)
+      local item = {
+        type = "status",
+        _pi_id = self:_new_item_id("history-custom"),
+        text = text,
+      }
+      table.insert(target, item)
+      self:_set_item_body_bytes(item, #text, omitted)
+    end,
   })
+end
+
+function Transcript:_reset_history_items()
+  self:_release_images()
+  self.on_invalidate()
+  self.items = {}
+  self.next_item_id = 0
+  self.tools_by_id = {}
+  self.tool_retained_bytes = 0
+  self.non_tool_retained_bytes = 0
+  self.history_control = nil
+  self.history_results_by_id = {}
+  self.history_result_order = {}
+  self.history_projecting = false
+end
+
+function Transcript:render_history(messages)
+  if self.history_loaded then
+    return
+  end
+  self.history_loaded = true
+  self:_reset_history_items()
+  self.history_projecting = true
+  self:_append_history_messages(messages, self.items)
+  self.history_projecting = false
+  self:_enforce_transcript_budget()
+  self:_changed(true)
+end
+
+function Transcript:render_history_page(page_items, prepend)
+  if not prepend then
+    self:_reset_history_items()
+    self.history_loaded = true
+  end
+  local projected = {}
+  self.history_projecting = true
+  for _, page_item in ipairs(page_items or {}) do
+    if type(page_item.messages) == "table" then
+      self:_append_history_messages(page_item.messages, projected)
+    elseif page_item.omitted == true then
+      local bytes = math.max(0, math.floor(tonumber(page_item.originalBytes) or 0))
+      local text = ("Pi omitted one oversized history entry (%d bytes)"):format(bytes)
+      local item = {
+        type = "status",
+        _pi_id = self:_new_item_id("history-omission"),
+        text = text,
+      }
+      table.insert(projected, item)
+      self:_set_item_body_bytes(item, #text, 0)
+    end
+  end
+  self.history_projecting = false
+
+  if prepend then
+    local insertion = self.history_control and 2 or 1
+    for index = #projected, 1, -1 do
+      table.insert(self.items, insertion, projected[index])
+    end
+  else
+    vim.list_extend(self.items, projected)
+  end
+  self:_enforce_transcript_budget()
+  self:_changed(true)
+end
+
+function Transcript:set_history_state(state, detail)
+  local text
+  local is_error = false
+  if state == "more" then
+    text = "Older history is available"
+  elseif state == "loading" then
+    text = "Loading older history..."
+  elseif state == "error" then
+    text = "History page failed: " .. tostring(detail or "unknown error")
+    is_error = true
+  end
+
+  local item = self.history_control
+  if not text then
+    if item then
+      self.non_tool_retained_bytes = math.max(0, self.non_tool_retained_bytes - (item.body_retained_bytes or 0))
+      for index, candidate in ipairs(self.items) do
+        if candidate == item then
+          table.remove(self.items, index)
+          break
+        end
+      end
+      self.history_control = nil
+      self.on_invalidate(item)
+      self:_changed(true)
+    end
+    return
+  end
+
+  if not item then
+    item = {
+      type = "status",
+      _pi_id = self:_new_item_id("history-control"),
+      history_control = true,
+    }
+    self.history_control = item
+    table.insert(self.items, 1, item)
+  end
+  item.text = text
+  item.error = is_error
+  item.body_released = false
+  self:_set_item_body_bytes(item, #text, 0)
+  self.on_invalidate(item)
+  self:_enforce_transcript_budget()
   self:_changed(true)
 end
 
@@ -656,6 +851,11 @@ function Transcript:destroy()
   self.tool_retained_bytes = 0
   self.non_tool_retained_bytes = 0
   self.streaming_assistant = nil
+  self.history_loaded = false
+  self.history_control = nil
+  self.history_results_by_id = {}
+  self.history_result_order = {}
+  self.history_projecting = false
   self.reasoning_buffer = ""
   self.reasoning_header = nil
   self.on_change = function() end

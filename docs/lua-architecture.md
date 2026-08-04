@@ -55,7 +55,7 @@ through a late top-level require.
 | --- | --- |
 | RPC process, framing, pending requests, authoritative session snapshot mirror | `pi.client` / `pi.protocol` |
 | Per-project clients and RPC event projection | `pi.runtime` |
-| Display correlation queue, discovered-command map, refresh flags, direct-RPC Bash request | `pi.runtime` |
+| Display correlation queue, history cursor/snapshot/generation, discovered-command map, refresh flags, direct-RPC Bash request | `pi.runtime` |
 | Bounded display items, item IDs, tool correlation, retention counters | `pi.ui.transcript` |
 | Bounded content copies and summaries | `pi.ui.transcript.projection` |
 | Release candidate ordering and retained-byte total calculation | `pi.ui.transcript.retention` |
@@ -95,10 +95,20 @@ as project identity. A display-state snapshot is detached from Chat, so changing
 the returned table cannot mutate UI state.
 
 Runtime keeps display correlation, discovered commands, stats refresh state,
-direct-RPC Bash identity, and the Client event unsubscriber in one internal
-per-project record tied to the current Client identity. These values are never
-attached to Client objects. Late events and callbacks from a replaced Client
-cannot project into the replacement Chat.
+direct-RPC Bash identity, history pagination state, and the Client event
+unsubscriber in one internal per-project record tied to the current Client
+identity. History state includes Pi's opaque cursor and leaf snapshot, a loaded
+entry-ID set, and a request generation. These values are never attached to
+Client objects. Late events and callbacks from a replaced Client or session
+generation cannot project into the replacement Chat.
+
+On `history_pagination` capable processes, Runtime requests the newest 1 MiB
+page and explicitly prepends older pages. Transcript correlates tool calls and
+results across page boundaries while applying the existing local retention
+budget; TranscriptView preserves cursor and topline anchors across a prepend.
+Pi remains the only owner of ordering, branch identity, cursor validity, and
+structured oversized-entry omissions. Older processes use `get_messages`
+without receiving an unknown pagination command.
 
 `Client.session` is replaced only with successful `get_state` data. Settings
 commands such as auto-retry do not update that mirror optimistically: after a

@@ -1,4 +1,5 @@
 local root = vim.fs.joinpath(vim.fn.getcwd(), "runtime-project")
+local pagination_root = root .. "-paginated"
 local created_chats = {}
 
 local FakeChat = {}
@@ -9,6 +10,8 @@ function FakeChat.new(chat_root)
     root = chat_root,
     reset_count = 0,
     histories = {},
+    history_pages = {},
+    history_states = {},
     stats = {},
     states = {},
     commands = {},
@@ -44,6 +47,14 @@ end
 
 function FakeChat:render_history(messages)
   table.insert(self.histories, messages)
+end
+
+function FakeChat:render_history_page(items, prepend)
+  table.insert(self.history_pages, { items = items, prepend = prepend })
+end
+
+function FakeChat:set_history_state(state, detail)
+  table.insert(self.history_states, { state = state, detail = detail })
 end
 
 function FakeChat:set_commands(commands)
@@ -380,11 +391,95 @@ local function run()
   end
 
   runtime.stop(root)
+
+  local paginated = runtime.get_client(pagination_root)
+  local paginated_chat = runtime.chat_for(pagination_root)
+  paginated:emit({
+    type = "client_state",
+    data = {
+      sessionId = "session-a",
+      rpcCapabilities = { "history_pagination" },
+    },
+  })
+  local first_page = latest_request(paginated, "get_messages_page")
+  assert(
+    first_page.payload.cursor == nil and first_page.payload.limit == 50 and first_page.payload.maxBytes == 1024 * 1024,
+    "initial history page did not use the bounded pagination contract"
+  )
+  assert(#requests_for(paginated, "get_messages") == 0, "capable Pi process received the legacy history request")
+  respond(first_page, true, {
+    items = { { entryId = "entry-new", messages = { { role = "user", content = {} } } } },
+    nextCursor = "cursor-a",
+    hasMore = true,
+    leafId = "leaf-a",
+  })
+  assert(
+    #paginated_chat.history_pages == 1
+      and paginated_chat.history_pages[1].prepend == false
+      and paginated_chat.history_states[#paginated_chat.history_states].state == "more",
+    "newest history page did not initialize the paginated projection"
+  )
+
+  assert(runtime.load_older_history(pagination_root), "older history action did not start a page request")
+  local stale_page = latest_request(paginated, "get_messages_page")
+  assert(stale_page.payload.cursor == "cursor-a", "older history request lost its opaque cursor")
+  runtime.reload_session(paginated)
+  local restarted_page = latest_request(paginated, "get_messages_page")
+  assert(
+    restarted_page ~= stale_page and restarted_page.payload.cursor == nil,
+    "session reload did not restart history"
+  )
+  respond(stale_page, true, {
+    items = { { entryId = "entry-stale", messages = {} } },
+    nextCursor = nil,
+    hasMore = false,
+    leafId = "leaf-a",
+  })
+  assert(#paginated_chat.history_pages == 1, "stale page response crossed the session generation boundary")
+  respond(restarted_page, true, {
+    items = { { entryId = "entry-new", messages = { { role = "assistant", content = {} } } } },
+    nextCursor = "cursor-b",
+    hasMore = true,
+    leafId = "leaf-b",
+  })
+  assert(
+    #paginated_chat.history_pages == 2 and paginated_chat.history_pages[2].prepend == false,
+    "restarted history did not replace the previous projection"
+  )
+
+  assert(runtime.load_older_history(pagination_root), "older page error fixture did not start")
+  local failed_page = latest_request(paginated, "get_messages_page")
+  respond(failed_page, false, nil, "temporary history failure")
+  local failed_state = paginated_chat.history_states[#paginated_chat.history_states]
+  assert(
+    failed_state.state == "error" and failed_state.detail == "temporary history failure",
+    "history page failure was not exposed as retryable structured state"
+  )
+  assert(runtime.load_older_history(pagination_root), "failed history page could not be retried")
+  local retry_page = latest_request(paginated, "get_messages_page")
+  assert(retry_page.payload.cursor == "cursor-b", "history retry changed its continuation cursor")
+  respond(retry_page, true, {
+    items = {
+      { entryId = "entry-new", messages = {} },
+      { entryId = "entry-old", messages = { { role = "user", content = {} } } },
+    },
+    nextCursor = nil,
+    hasMore = false,
+    leafId = "leaf-b",
+  })
+  local older = paginated_chat.history_pages[#paginated_chat.history_pages]
+  assert(
+    older.prepend == true and #older.items == 1 and older.items[1].entryId == "entry-old",
+    "history prepend did not suppress a duplicate session entry"
+  )
+  assert(not runtime.load_older_history(pagination_root), "completed pagination requested a page past the oldest entry")
+  runtime.stop(pagination_root)
 end
 
 local ok, err = xpcall(run, debug.traceback)
 if runtime then
   pcall(runtime.stop, root)
+  pcall(runtime.stop, pagination_root)
 end
 vim.notify = original_notify
 package.loaded["pi.ui.chat"] = previous_modules.chat
