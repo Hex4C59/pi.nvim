@@ -97,6 +97,7 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
       { name: "fixture-noop", description: "No-op extension command", source: "extension" },
       { name: "fixture-prefill", description: "Prefill editor", source: "extension" },
       { name: "fixture-clear", description: "Clear editor", source: "extension" },
+      { name: "fixture-dialog-cancel", description: "Cancel a dialog", source: "extension" },
       { name: "permissions", description: "Select permission mode", source: "extension" },
       { name: "todos", description: "Show or hide todos", source: "extension" },
       { name: "fixture-template", description: "Fixture prompt template", source: "prompt" },
@@ -118,6 +119,18 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
     } else if (request.message === "/fixture-clear") {
       respondToRequest();
       send({ type: "extension_ui_request", id: "fixture-clear", method: "set_editor_text", text: "" });
+    } else if (request.message === "/fixture-dialog-cancel") {
+      respondToRequest();
+      send({
+        type: "extension_ui_request",
+        id: "fixture-dialog-cancel",
+        method: "input",
+        title: "Temporary input",
+        placeholder: "waiting",
+      });
+      setTimeout(() => {
+        send({ type: "extension_ui_cancel", id: "fixture-dialog-cancel", reason: "timeout" });
+      }, 25);
     } else if (request.message === "first accepted") {
       delayedPrompt = request;
     } else if (request.message === "second rejected") {
@@ -132,6 +145,8 @@ readline.createInterface({ input: process.stdin }).on("line", (line) => {
         : request.message;
       runPrompt(request, userText);
     }
+  } else if (request.type === "extension_ui_response" && request.id === "fixture-dialog-cancel") {
+    send({ type: "extension_error", error: "late dialog response" });
   } else if (request.type === "abort") {
     respondToRequest();
     send({ type: "agent_settled" });

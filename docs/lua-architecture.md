@@ -14,7 +14,7 @@ plugin/pi.lua
      -> pi.runtime
         -> pi.client -> pi.protocol
         -> pi.ui.chat
-        -> pi.ui.dialog
+        -> pi.ui.dialog -> pi.ui.dialog_surface
 
 pi.commands.*
   -> pi.runtime
@@ -67,6 +67,8 @@ through a late top-level require.
 | Prompt and footer buffers/windows | `pi.ui.input` |
 | Command-menu buffer/window/matches/selection | `pi.ui.command_menu` |
 | Permission queue, inline projection, focus trap | `pi.ui.permission` |
+| Generic Extension dialog queue and request correlation | `pi.ui.dialog` |
+| Native generic dialog buffers, windows, and mappings | `pi.ui.dialog_surface` |
 | Widget values and widget buffers/windows | `pi.ui.widget` |
 | Per-block `_pi_image` state and stable image API | `pi.ui.image` |
 | MIME, decoded source, dimensions, private cache | `pi.ui.image.source` |
@@ -141,12 +143,21 @@ and `pi.ui.image_preview` paths are compatibility aliases without state.
 
 Closing a Chat delegates window reset to Shell: it stops the per-Chat activity
 animation, closes the image preview, clears transcript image placements,
-cancels permission requests fail-closed, closes component windows, and closes
-the top-level window. Destroying additionally stops the transcript render timer,
-deletes owned scratch buffers, releases transcript images and counters, clears
-component state, and unregisters the project from Registry. The shared welcome
-timer stops when no registered Chat is open. Chat, Registry, and component
-`destroy()` operations are idempotent.
+cancels permission requests fail-closed, discards generic Extension dialogs,
+closes component windows, and closes the top-level window. Destroying
+additionally stops the transcript render timer, deletes owned scratch buffers,
+releases transcript images and counters, clears component state, and unregisters
+the project from Registry. The shared welcome timer stops when no registered
+Chat is open. Chat, Registry, and component `destroy()` operations are
+idempotent.
+
+`pi.ui.dialog` serializes non-permission Extension dialogs and correlates each
+surface by RPC request ID. Pi remains authoritative for timeout, AbortSignal,
+session, and Extension cancellation: `extension_ui_cancel` closes only the
+matching local surface without sending a response. Late callbacks are ignored,
+and client exit, session replacement, or Chat destruction discard all remaining
+generic dialogs without fabricating answers. `pi.ui.dialog_surface` owns the
+native responsive select, confirm, input, and editor presentation.
 
 Permission decisions remain in the bundled permission Extension. The Lua
 permission panel only displays structured requests, validates interaction,
@@ -178,6 +189,7 @@ focused shared helpers. No aggregate security index or policy state remains.
 | Chat activity and component lifecycle | `tests/lua/ui/chat/lifecycle_spec.lua` |
 | Input and command-menu ownership | `tests/lua/ui/input_spec.lua`, `command_menu_spec.lua` |
 | Widget and permission ownership | `tests/lua/ui/widget_spec.lua`, `permission_spec.lua` |
+| Generic Extension dialog manager and native surface | `tests/lua/ui/dialog_spec.lua`, small-viewport and RPC integration specs |
 | Chat facade contract | `tests/lua/ui/chat/facade_spec.lua` |
 | Runtime per-project orchestration | `tests/lua/runtime_spec.lua` |
 | RPC-to-UI integration | `tests/lua/integration/rpc_ui_spec.lua` |
@@ -185,8 +197,8 @@ focused shared helpers. No aggregate security index or policy state remains.
 
 Run `make test-file TEST=<path>` for one known Lua or Extension test owner. Run
 `make test` for the complete deterministic Lua, Extension, and repository policy
-suite; `make format-check` for formatting; and `make smoke` for installed Pi RPC
-and Extension loading without a model call.
+suite; `make format-check` for formatting; and `make smoke` for installed Pi RPC,
+Extension loading, and authoritative dialog cancellation without a model call.
 
 ## Architecture Closeout
 

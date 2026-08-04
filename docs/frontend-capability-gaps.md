@@ -21,7 +21,7 @@ make smoke         passed against the installed Pi 0.83.0 process
 
 The deterministic suite covers the JSONL parser, RPC client, fake RPC event ordering, runtime projection, renderer, layouts, dialogs, permission UI, image lifecycle, output budgets, bundled Extension policies, and repository policy checks. The smoke suite starts the installed Pi RPC process without calling a model and loads every bundled Extension.
 
-No release-blocking failure was found in the normal prompt, streaming, tool, permission, model, thinking, queue, compaction, image, layout, or same-project session workflows. The gaps below concern completeness, long-session scaling, generic Extension UI lifecycle, and several edge cases.
+No release-blocking failure was found in the normal prompt, streaming, tool, permission, model, thinking, queue, compaction, image, layout, or same-project session workflows. The gaps below concern completeness, long-session scaling, and several edge cases.
 
 ## Priority Summary
 
@@ -30,7 +30,6 @@ No release-blocking failure was found in the normal prompt, streaming, tool, per
 | P1 | Full-history RPC responses have a fixed 10 MiB frame ceiling | Pi RPC and pi.nvim client | A sufficiently large persisted session cannot be loaded reliably |
 | P1 | Session listing and in-place tree navigation are absent from RPC | Pi RPC, then pi.nvim UI | `/resume` requires an exact path and the tree cannot activate an existing node |
 | P2 | Authentication and several administrative workflows are TUI-only | Pi RPC, then pi.nvim UI | Users must leave Neovim for login/logout, reload, trust changes, and related commands |
-| P2 | Generic Extension dialogs do not have a complete cancellation lifecycle | Pi RPC and pi.nvim UI | Timed dialogs can remain visible after Pi has stopped waiting |
 | P2 | Auto-retry state and controls are incomplete | Pi RPC, then pi.nvim settings UI | Retry events render, but the current setting cannot be inspected or changed accurately |
 
 Priority describes remediation order and user impact, not security severity. The permission gate, workspace guard, and session-root guard remain authoritative in bundled Pi Extensions.
@@ -494,106 +493,7 @@ Authentication likely needs an event-driven flow rather than a single request be
 - Authentication secrets remain outside transcripts and logs.
 - Unsupported providers/workflows return structured errors and leave existing state unchanged.
 
-## 4. Generic Extension Dialog Lifecycle Is Incomplete
-
-### Classification
-
-- Priority: P2
-- Status: confirmed RPC lifecycle gap
-- User-visible area: third-party/bundled Extension `select`, `confirm`, `input`, and `editor`
-- Authority: the Extension validates responses and owns resulting workflow state
-- Presentation: pi.nvim
-- Timeout completion: Pi RPC is authoritative for when it stops waiting
-
-### Timeout lifecycle defect
-
-Pi 0.83 includes an optional `timeout` field on `select`, `confirm`, and `input` Extension UI requests. In Pi's RPC server, the timer removes the pending server request and resolves the Extension with its default cancellation value.
-
-`lua/pi/ui/dialog.lua` does not inspect `request.timeout`. Consequences:
-
-1. Pi can stop waiting while a Neovim selector remains open.
-2. The local weak pending table still considers the request active.
-3. A later user choice sends a response for an ID the server no longer recognizes.
-4. The stale dialog can obscure the current workflow and mislead the user into thinking Pi is still blocked.
-
-This must be distinguished from permission requests. The bundled permission gate intentionally opens a confirmation with no implicit timeout; the tool batch must remain blocked until the user decides or cancels. No timeout should be invented for permission-sensitive requests.
-
-### Why a frontend-only timer is not fully sufficient
-
-The client can mirror `request.timeout`, but independent timers can race because:
-
-- Pi may resolve early due to an AbortSignal rather than timeout.
-- Event-loop scheduling can make client and server timers fire in different orders.
-- `vim.ui.select` and `vim.ui.input` do not provide a portable API for force-closing UI implementations supplied by other plugins.
-- A third-party selector may invoke its callback after the local request has been invalidated.
-
-The local exactly-once response guard prevents duplicate responses, but it does not necessarily remove stale third-party UI.
-
-### Recommended backend lifecycle addition
-
-Pi RPC should emit an explicit cancellation/closure event whenever a pending Extension dialog stops waiting without a client response:
-
-```json
-{
-  "type": "extension_ui_cancel",
-  "id": "dialog-request-id",
-  "reason": "timeout"
-}
-```
-
-Possible reasons should be structured and bounded, for example:
-
-- `timeout`
-- `signal`
-- `session_switch`
-- `session_shutdown`
-- `extension_unload`
-
-This event does not make the client authoritative. It tells the presentation layer that the authoritative waiter is gone.
-
-### Required frontend dialog manager
-
-A complete native dialog manager should:
-
-- Track one object per request ID.
-- Guarantee at most one response.
-- Close the matching native UI on `extension_ui_cancel`.
-- Invalidate callbacks from already-closed selectors.
-- Cancel all open dialogs on client exit, session replacement, or Chat destruction.
-- Queue or deliberately layer simultaneous non-permission dialogs.
-- Keep permission-sensitive dialogs fail-closed.
-- Clamp every surface to the viewport.
-- Preserve placeholder text separately from submitted input.
-- Avoid exposing secrets in buffer names, command history, or notifications when a future protocol marks an input sensitive.
-
-Replacing generic `vim.ui.select/input` with pi.nvim-owned native surfaces would provide deterministic closure and responsive behavior. If plugin-overridden `vim.ui` remains supported, the adapter must treat it as best effort and clearly define stale callback handling.
-
-### Test requirements
-
-Frontend tests:
-
-- Timeout before user response.
-- User response immediately before timeout.
-- Server cancellation before local mirrored timeout.
-- Callback after cancellation produces no response.
-- Client exit and session switch close all dialogs.
-- Two simultaneous generic dialogs remain correlated by ID.
-- Permission dialog remains open without an implicit timeout.
-
-Backend tests:
-
-- `extension_ui_cancel` emitted exactly once for timeout and AbortSignal.
-- A normal client response does not produce a later cancellation event.
-- Late responses are ignored or receive a defined non-fatal error.
-- Session shutdown cancels every pending request.
-
-### Acceptance criteria
-
-- Timed-out or aborted requests leave no stale Neovim UI.
-- Every request ID receives at most one client response.
-- Permission requests continue to fail closed and never acquire an implicit timeout.
-
-## 5. Auto-Retry Is Rendered but Not Fully Controllable
+## 4. Auto-Retry Is Rendered but Not Fully Controllable
 
 ### Classification
 
@@ -717,16 +617,7 @@ Pi Extension APIs such as `ctx.ui.custom()`, component factories, custom headers
 
 The sequence below respects ownership and minimizes frontend compatibility branches.
 
-### Phase 1: Extension dialog cancellation lifecycle
-
-1. Design `extension_ui_cancel` in the Pi RPC types and documentation.
-2. Implement timeout, AbortSignal, session-switch, and shutdown emission in Pi RPC.
-3. Add Pi tests for exactly-once lifecycle behavior.
-4. Build and install the full local Pi package set.
-5. Add a native pi.nvim dialog manager and fake RPC cancellation events.
-6. Run Pi checks, pi.nvim tests, `make smoke`, and manual small-viewport verification.
-
-### Phase 2: retry state completeness
+### Phase 1: retry state completeness
 
 1. Add `autoRetryEnabled` to Pi RPC state.
 2. Update Pi RPC types, mode implementation, client types, tests, and docs.
@@ -734,9 +625,7 @@ The sequence below respects ownership and minimizes frontend compatibility branc
 4. Add the native settings control and frontend tests.
 5. Verify the installed process reports and changes the setting without a model call.
 
-This can be combined with Phase 1 if both changes target the same Pi release, but each capability should retain independent tests.
-
-### Phase 3: session discovery and navigation
+### Phase 2: session discovery and navigation
 
 1. Define authoritative session-list pagination in Pi core/RPC.
 2. Expose in-place tree navigation through RPC.
@@ -746,7 +635,7 @@ This can be combined with Phase 1 if both changes target the same Pi release, bu
 6. Add same-root, cancellation, stale-response, and event-ordering tests.
 7. Keep cross-project migration blocked until it has a separate lifecycle design.
 
-### Phase 4: paginated history
+### Phase 3: paginated history
 
 1. Define cursor, snapshot, ordering, and byte-budget semantics in Pi.
 2. Implement bounded history pages and compatibility behavior.
@@ -815,10 +704,8 @@ Automated headless tests should be supplemented with manual checks for:
 
 - Right, bottom, tab, and float layouts.
 - Small and normal terminal dimensions.
-- Default Neovim UI and a plugin-overridden `vim.ui.select/input`.
 - A long persisted session.
 - Session switching while the Chat is open and closed.
-- Dialog timeout while another window has focus.
 - Pi process restart after changing the installed package.
 - Kitty/Ghostty terminal image backend and text/block fallback where available.
 

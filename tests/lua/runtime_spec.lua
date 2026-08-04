@@ -183,10 +183,17 @@ local runtime
 
 local function run()
   local generation = 0
+  local dialog_cancellations = {}
+  local dialog_discards = 0
   package.loaded["pi.ui.chat"] = { Chat = FakeChat }
   package.loaded["pi.ui.dialog"] = {
     handle = function() end,
-    discard = function() end,
+    cancel = function(client, id)
+      table.insert(dialog_cancellations, { client = client, id = id })
+    end,
+    discard = function()
+      dialog_discards = dialog_discards + 1
+    end,
   }
   package.loaded["pi.client"] = {
     Client = {
@@ -207,6 +214,7 @@ local function run()
   local client = runtime.get_client(root)
   local chat = runtime.chat_for(root)
   runtime.reload_session(client)
+  assert(dialog_discards == 1, "session reload did not discard dialogs from the previous session")
   assert(chat.reset_count == 1, "session reload bypassed the Chat projection facade")
   assert(#requests_for(client, "get_state") == 1, "session reload did not refresh state exactly once")
   assert(#requests_for(client, "get_session_stats") == 1, "session reload did not refresh stats exactly once")
@@ -221,6 +229,14 @@ local function run()
   assert(client.session.model.id == "fixture", "session reload did not update the declared Client session mirror")
   assert(#chat.stats == 1 and chat.stats[1].cost == 1, "stats refresh did not reach Chat")
   assert(#chat.histories == 1, "session history did not reach Chat")
+
+  client:emit({ type = "extension_ui_cancel", id = "server-cancelled" })
+  assert(
+    #dialog_cancellations == 1
+      and dialog_cancellations[1].client == client
+      and dialog_cancellations[1].id == "server-cancelled",
+    "runtime did not route the authoritative Extension UI cancellation"
+  )
 
   runtime.refresh_stats(client)
   runtime.refresh_stats(client)

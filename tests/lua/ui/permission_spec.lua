@@ -71,14 +71,24 @@ local function run()
     },
   })
   local direct_decision
+  local direct_queued_decision
   direct_panel:show({ id = "direct", method = "confirm", title = "Confirm", message = "fixture" }, function(value)
     direct_decision = value
   end)
+  direct_panel:show({ id = "direct-queued", method = "confirm", title = "Queued", message = "fixture" }, function(value)
+    direct_queued_decision = value
+  end)
   assert(direct_panel:active(), "PermissionPanel could not be constructed without Chat")
   assert(direct_actions.close_command_menu == 1, "PermissionPanel did not use its injected close action")
+  assert(direct_panel:cancel("missing") == false, "unknown permission cancellation should be ignored")
+  assert(direct_panel:cancel("direct-queued") == true, "queued permission cancellation was not handled")
+  assert(direct_queued_decision == false, "queued permission cancellation did not fail closed")
+  assert(direct_panel:active(), "queued permission cancellation removed the active request")
+  assert(direct_panel:cancel("direct") == true, "active permission cancellation was not handled")
+  assert(direct_decision == false, "active permission cancellation did not fail closed")
+  assert(not direct_panel:active(), "active permission cancellation left the panel active")
   direct_panel:destroy()
   direct_panel:destroy()
-  assert(direct_decision == false, "independent PermissionPanel teardown did not fail closed")
 
   config.setup({
     chat = {

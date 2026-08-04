@@ -2,12 +2,16 @@ local Chat = require("pi.ui.chat").Chat
 
 local root = vim.fs.joinpath(vim.fn.getcwd(), "facade-project")
 local submitted
+local dialog_destroy_count = 0
 local chat
 
 local function run()
   chat = Chat.new(root, {
     submit = function(prompt, behavior, images)
       submitted = { prompt = prompt, behavior = behavior, images = images }
+    end,
+    destroy_dialogs = function()
+      dialog_destroy_count = dialog_destroy_count + 1
     end,
   })
 
@@ -93,6 +97,8 @@ local function run()
     "Chat facade close destroyed reusable state"
   )
   chat:destroy()
+  chat:destroy()
+  assert(dialog_destroy_count == 1, "Chat destruction did not discard dialogs exactly once")
   assert(not vim.api.nvim_buf_is_valid(reusable_transcript), "Chat facade destroy leaked transcript state")
 end
 

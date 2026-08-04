@@ -67,6 +67,93 @@ async function loadExtension(extension, requests = []) {
   }
 }
 
+async function smokeDialogCancellation() {
+  const cwd = await mkdtemp(path.join(tmpdir(), "pi-dialog-cancel-smoke-"));
+  try {
+    const messages = await new Promise((resolve, reject) => {
+      const child = spawn(
+        piCommand,
+        [
+          "--mode",
+          "rpc",
+          "--no-session",
+          "--no-context-files",
+          "--no-approve",
+          "--extension",
+          path.join(repository, "tests", "smoke", "dialog_timeout.ts"),
+        ],
+        { cwd, stdio: ["pipe", "pipe", "pipe"] },
+      );
+      const received = [];
+      let stdout = "";
+      let stderr = "";
+      let dialogId;
+      let sentLateResponse = false;
+      const timer = setTimeout(() => {
+        child.kill("SIGKILL");
+        reject(new Error("dialog cancellation smoke timed out"));
+      }, 8000);
+
+      child.stderr.on("data", (chunk) => {
+        stderr += chunk;
+      });
+      child.stdout.on("data", (chunk) => {
+        stdout += chunk;
+        while (stdout.includes("\n")) {
+          const newline = stdout.indexOf("\n");
+          const line = stdout.slice(0, newline).replace(/\r$/, "");
+          stdout = stdout.slice(newline + 1);
+          if (!line) continue;
+          try {
+            const message = JSON.parse(line);
+            received.push(message);
+            if (message.type === "extension_ui_request" && message.method === "input") {
+              dialogId = message.id;
+            }
+            if (message.type === "extension_ui_cancel" && !sentLateResponse) {
+              assert.equal(message.id, dialogId, "dialog cancellation used the wrong request ID");
+              assert.equal(message.reason, "timeout", "dialog cancellation used the wrong reason");
+              sentLateResponse = true;
+              child.stdin.end(
+                `${JSON.stringify({ type: "extension_ui_response", id: dialogId, value: "late" })}\n${JSON.stringify({ type: "get_state", id: "after-late" })}\n`,
+              );
+            }
+          } catch (error) {
+            clearTimeout(timer);
+            child.kill("SIGKILL");
+            reject(error);
+          }
+        }
+      });
+      child.on("error", reject);
+      child.on("close", (code) => {
+        clearTimeout(timer);
+        if (code === 0) resolve(received);
+        else reject(new Error(`dialog cancellation smoke exited ${code}: ${stderr}`));
+      });
+      child.stdin.write(`${JSON.stringify({ type: "prompt", id: "dialog-command", message: "/smoke-dialog-timeout" })}\n`);
+    });
+
+    assert.equal(
+      messages.find((message) => message.id === "dialog-command")?.success,
+      true,
+      "dialog command failed",
+    );
+    assert.equal(
+      messages.find((message) => message.id === "after-late")?.success,
+      true,
+      "late dialog response disrupted RPC",
+    );
+    assert.equal(
+      messages.some((message) => message.type === "extension_error"),
+      false,
+      "dialog cancellation produced an extension error",
+    );
+  } finally {
+    await rm(cwd, { recursive: true, force: true });
+  }
+}
+
 for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-root-guard.ts", "todo.ts"]) {
   const requests = extension === "permission-gate.ts"
     ? [
@@ -76,5 +163,7 @@ for (const extension of ["permission-gate.ts", "workspace-guard.ts", "session-ro
     : [];
   await loadExtension(extension, requests);
 }
+
+await smokeDialogCancellation();
 
 console.log("extensions_smoke: ok");

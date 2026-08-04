@@ -81,6 +81,7 @@ function Chat.new(root, frontend_actions)
       return vim.fn.setreg("+", text)
     end),
     notify = boundary(frontend_actions, "notify", vim.notify),
+    on_destroy = action(frontend_actions, "destroy_dialogs"),
   }, Chat)
   chat.command_menu = command_menu.CommandMenu.new({
     root = root,
@@ -582,6 +583,7 @@ function Chat:destroy()
     return
   end
   self.destroying = true
+  self.on_destroy()
   self:close()
   self.transcript:destroy()
   self.transcript_view:destroy()
@@ -799,6 +801,10 @@ end
 function Chat:select_permission(request, callback)
   self:open(false)
   self.permission_area:show(request, callback)
+end
+
+function Chat:cancel_permission(id)
+  return self.permission_area:cancel(id)
 end
 function Chat:_close_image_preview()
   self.image_preview:set_backend(self.image_backend)

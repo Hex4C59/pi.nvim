@@ -88,6 +88,25 @@ local function run()
     "set_editor_text did not clear the Pi prompt"
   )
 
+  pi.submit("/fixture-dialog-cancel", root)
+  assert(
+    vim.wait(3000, function()
+      return find_buffer("extension_dialog") ~= nil
+    end, 10),
+    "fake RPC dialog request did not open a native surface"
+  )
+  assert(
+    vim.wait(3000, function()
+      return find_buffer("extension_dialog") == nil
+    end, 10),
+    "extension_ui_cancel left a stale native surface"
+  )
+  local after_dialog_cancel = table.concat(vim.api.nvim_buf_get_lines(chat_buf, 0, -1, false), "\n")
+  assert(
+    not after_dialog_cancel:find("late dialog response", 1, true),
+    "server cancellation produced a late UI response"
+  )
+
   pi.submit("/fixture-noop", root)
   pi.submit("hello from fixture", root)
   local settled = vim.wait(3000, function()

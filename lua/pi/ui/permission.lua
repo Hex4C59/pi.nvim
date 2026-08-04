@@ -424,6 +424,28 @@ function PermissionPanel:cancel_all(force_normal, target_win)
   self.return_mode = nil
 end
 
+function PermissionPanel:cancel(id)
+  if self.current and self.current.request.id == id then
+    local callback = self.current.callback
+    self.current = nil
+    if callback then
+      callback(false)
+    end
+    self:_advance()
+    return true
+  end
+  for index, item in ipairs(self.queue) do
+    if item.request.id == id then
+      table.remove(self.queue, index)
+      if item.callback then
+        item.callback(false)
+      end
+      return true
+    end
+  end
+  return false
+end
+
 function PermissionPanel:destroy()
   self:cancel_all()
   self.body_lines = {}

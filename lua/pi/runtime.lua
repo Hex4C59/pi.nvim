@@ -38,6 +38,12 @@ local function chat_actions(root)
     cycle_thinking_level = function()
       return invoke_ui_action("cycle_thinking_level", root)
     end,
+    destroy_dialogs = function()
+      local client = clients[root]
+      if client then
+        dialog.discard(client)
+      end
+    end,
   }
 end
 
@@ -159,6 +165,7 @@ local function refresh_state(client)
 end
 
 local function reload_session(client)
+  dialog.discard(client)
   local chat = chat_for(client.root)
   chat:reset_session_projection()
   refresh_state(client)
@@ -234,6 +241,9 @@ local function attach(client)
         confirm = function(request, respond)
           chat:confirm(request, respond)
         end,
+        cancel_permission = function(id)
+          chat:cancel_permission(id)
+        end,
         set_status = function(key, value)
           if key == "pi.permission_mode" then
             chat:update_permission_mode(value)
@@ -250,6 +260,8 @@ local function attach(client)
           chat:set_input(text)
         end,
       })
+    elseif event.type == "extension_ui_cancel" then
+      dialog.cancel(client, event.id)
     elseif event.type == "agent_start" then
       chat:set_activity("working")
     elseif event.type == "agent_settled" then

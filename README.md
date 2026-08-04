@@ -11,7 +11,7 @@ The plugin provides a Pi-inspired Neovim frontend over RPC. It implements the
 streamed transcript, user message blocks, collapsible thinking and tool output,
 persistent prompt editor, command completion, model/thinking controls, queue
 state, live footer, settings, session tree inspection, fork/clone, compaction,
-and extension confirmation dialogs.
+and native Extension select, confirm, input, and editor dialogs.
 The bundled todo Extension makes the agent decompose complex implementation work
 into a branch-aware plan, keep it current during execution, and render its
 compact live plan inside the conversation transcript.
@@ -24,7 +24,7 @@ interactive resume picker.
 ## Requirements
 
 - Neovim 0.10 or newer
-- `pi` available on `PATH`
+- `pi` available on `PATH` with the `extension_ui_cancel` RPC event supported
 - A model configured in Pi (`pi`, then `/login` when needed)
 - Optional Tree-sitter parsers for syntax highlighting in fenced-code languages
 - Clipboard image capture uses `wl-paste` on Wayland or `xclip` on X11.
@@ -153,6 +153,15 @@ conversation and captures its navigation keys while the chat stays read-only,
 so completion, search, cursor-line, and other editor plugins cannot alter it.
 Use `j`/`k` or arrows to select, `Enter` to confirm, `Esc` to block, and `Ctrl-Q`
 to cancel safely and return to the Pi canvas in Neovim Normal mode.
+
+Generic Extension dialogs use pi.nvim-owned scratch buffers instead of
+plugin-overridden `vim.ui` surfaces. They are queued and correlated by request
+ID; an authoritative Pi `extension_ui_cancel` event closes only its matching
+dialog, and a callback that arrives after cancellation cannot send a response.
+Chat teardown and session replacement discard all generic dialogs. On a small
+viewport the surface reuses the current window and restores its previous buffer
+and local options when it closes. Permission prompts remain a separate,
+fail-closed surface with no client-invented timeout.
 
 Typing `/` opens Pi's borderless command menu containing built-ins plus commands
 loaded from extensions, prompt templates, and skills. Command names are fuzzy
@@ -372,7 +381,8 @@ owned scratch buffers for the stopped project.
 
 The test suite does not call a model or require authentication. It includes a
 deterministic fake RPC process that exercises history, streaming messages,
-thinking, tool execution, queue updates, and agent settlement end to end:
+thinking, tool execution, Extension dialog cancellation, queue updates, and
+agent settlement end to end:
 
 ```bash
 make test

@@ -1,35 +1,7 @@
+local surface = require("pi.ui.dialog_surface")
+
 local M = {}
-local truncate_display = require("pi.format").truncate_display
-
-local pending = setmetatable({}, { __mode = "k" })
-local editor_group = vim.api.nvim_create_augroup("PiNvimExtensionEditors", { clear = false })
-
-local function client_pending(client)
-  local requests = pending[client]
-  if not requests then
-    requests = {}
-    pending[client] = requests
-  end
-  return requests
-end
-
-local function cancel(client, id)
-  local requests = client_pending(client)
-  if requests[id] ~= true then
-    return
-  end
-  requests[id] = nil
-  client:respond_ui(id, { cancelled = true })
-end
-
-local function respond_once(client, id, response)
-  local requests = client_pending(client)
-  if requests[id] ~= true then
-    return
-  end
-  requests[id] = nil
-  client:respond_ui(id, response)
-end
+local managers = setmetatable({}, { __mode = "k" })
 
 local function permission_select(request)
   local options = request.options
@@ -48,170 +20,134 @@ local function permission_request(request)
   return copy
 end
 
-local function tabline_height()
-  if vim.o.showtabline == 2 then
-    return 1
+local function manager_for(client)
+  local manager = managers[client]
+  if manager then
+    return manager
   end
-  return vim.o.showtabline == 1 and #vim.api.nvim_list_tabpages() > 1 and 1 or 0
-end
-
-local function editor_geometry(line_count)
-  local columns = math.max(1, vim.o.columns)
-  local statusline = vim.o.laststatus == 0 and 0 or 1
-  local reserved_rows = math.max(1, vim.o.cmdheight) + statusline + tabline_height()
-  local usable_rows = math.max(1, vim.o.lines - reserved_rows)
-  local maximum_width = math.max(1, columns - 2)
-  local maximum_height = math.max(1, usable_rows - 2)
-  if maximum_width < 40 or maximum_height < 8 then
-    return nil
-  end
-
-  local width = math.min(maximum_width, math.max(40, math.floor(columns * 0.65)))
-  local height = math.min(maximum_height, math.max(8, math.min(line_count + 4, math.floor(usable_rows * 0.6))))
-  return {
-    width = width,
-    height = height,
-    row = math.max(0, math.floor((usable_rows - height - 2) / 2)),
-    col = math.max(0, math.floor((columns - width - 2) / 2)),
+  manager = {
+    client = client,
+    by_id = {},
+    queue = {},
+    active = nil,
+    discarding = false,
   }
+  managers[client] = manager
+  return manager
 end
 
-local function editor(client, request)
-  local previous_win = vim.api.nvim_get_current_win()
-  local previous_buf = vim.api.nvim_get_current_buf()
-  local buf = vim.api.nvim_create_buf(false, true)
-  local lines = vim.split(request.prefill or "", "\n", { plain = true })
-  vim.api.nvim_buf_set_lines(buf, 0, -1, false, lines)
-  vim.bo[buf].buftype = "nofile"
-  vim.bo[buf].bufhidden = "wipe"
-  vim.bo[buf].filetype = "markdown"
-  vim.bo[buf].swapfile = false
-
-  local geometry = editor_geometry(#lines)
-  local floating = geometry ~= nil
-  local win
-  if floating then
-    win = vim.api.nvim_open_win(buf, true, {
-      relative = "editor",
-      style = "minimal",
-      border = "rounded",
-      title = truncate_display(request.title or "Pi input", math.max(1, geometry.width - 2)),
-      title_pos = "center",
-      width = geometry.width,
-      height = geometry.height,
-      row = geometry.row,
-      col = geometry.col,
-    })
-  else
-    win = previous_win
-    vim.api.nvim_win_set_buf(win, buf)
-  end
-
-  local finished = false
-  local autocmds = {}
-  local function close(response)
-    if finished then
+local function remove_queued(manager, entry)
+  for index, candidate in ipairs(manager.queue) do
+    if candidate == entry then
+      table.remove(manager.queue, index)
       return
     end
-    finished = true
-    for _, autocmd in ipairs(autocmds) do
-      pcall(vim.api.nvim_del_autocmd, autocmd)
-    end
-    autocmds = {}
-    if floating and vim.api.nvim_win_is_valid(win) then
-      vim.api.nvim_win_close(win, true)
-      if vim.api.nvim_win_is_valid(previous_win) then
-        vim.api.nvim_set_current_win(previous_win)
-      end
-    elseif vim.api.nvim_win_is_valid(win) and vim.api.nvim_win_get_buf(win) == buf then
-      if vim.api.nvim_buf_is_valid(previous_buf) then
-        vim.api.nvim_win_set_buf(win, previous_buf)
-      else
-        vim.api.nvim_buf_delete(buf, { force = true })
-      end
-    end
-    respond_once(client, request.id, response)
   end
+end
 
-  local function submit()
-    close({ value = table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n") })
+local advance
+
+local function finish(manager, entry, response, send_response)
+  if entry.finished then
+    return false
   end
-  vim.keymap.set({ "n", "i" }, "<C-s>", submit, { buffer = buf, silent = true })
-  vim.keymap.set("n", "q", function()
-    close({ cancelled = true })
-  end, { buffer = buf, silent = true })
+  entry.finished = true
+  manager.by_id[entry.request.id] = nil
+  remove_queued(manager, entry)
+  if manager.active == entry then
+    manager.active = nil
+  end
+  if entry.surface then
+    entry.surface:close()
+    entry.surface = nil
+  elseif entry.cancel_external then
+    entry.cancel_external()
+  end
+  if send_response then
+    manager.client:respond_ui(entry.request.id, response)
+  end
+  if not manager.discarding then
+    advance(manager)
+  end
+  return true
+end
 
-  table.insert(
-    autocmds,
-    vim.api.nvim_create_autocmd("WinClosed", {
-      group = editor_group,
-      pattern = tostring(win),
-      once = true,
-      callback = function()
-        close({ cancelled = true })
-      end,
-    })
-  )
-  table.insert(
-    autocmds,
-    vim.api.nvim_create_autocmd({ "BufDelete", "BufWipeout" }, {
-      group = editor_group,
-      buffer = buf,
-      once = true,
-      callback = function()
-        close({ cancelled = true })
-      end,
-    })
-  )
+local function activate_permission(manager, entry)
+  local handlers = entry.handlers
+  entry.cancel_external = function()
+    if handlers.cancel_permission then
+      handlers.cancel_permission(entry.request.id)
+    end
+  end
+  handlers.permission_select(permission_request(entry.request), function(choice)
+    if type(choice) == "string" then
+      finish(manager, entry, { value = choice }, true)
+    else
+      finish(manager, entry, { cancelled = true }, true)
+    end
+  end)
+end
+
+local function activate_native(manager, entry)
+  local request = entry.request
+  if request.method == "select" and (type(request.options) ~= "table" or #request.options == 0) then
+    finish(manager, entry, { cancelled = true }, true)
+    return
+  end
+  entry.surface = surface.open(request, function(response)
+    finish(manager, entry, response, true)
+  end, function()
+    local response = request.method == "confirm" and { confirmed = false } or { cancelled = true }
+    finish(manager, entry, response, true)
+  end)
+end
+
+advance = function(manager)
+  if manager.active or manager.discarding then
+    return
+  end
+  local entry = table.remove(manager.queue, 1)
+  if not entry then
+    return
+  end
+  manager.active = entry
+  if entry.permission then
+    activate_permission(manager, entry)
+  else
+    activate_native(manager, entry)
+  end
+end
+
+local function enqueue(client, request, handlers)
+  if type(request.id) ~= "string" or request.id == "" then
+    return
+  end
+  local manager = manager_for(client)
+  if manager.by_id[request.id] then
+    return
+  end
+  local entry = {
+    request = request,
+    handlers = handlers or {},
+    permission = request.method == "select"
+      and type(handlers) == "table"
+      and type(handlers.permission_select) == "function"
+      and permission_select(request),
+    finished = false,
+  }
+  manager.by_id[request.id] = entry
+  table.insert(manager.queue, entry)
+  advance(manager)
 end
 
 function M.handle(client, request, handlers)
   local set_editor_text = type(handlers) == "function" and handlers or handlers and handlers.set_editor_text
-  local confirm = type(handlers) == "table" and handlers.confirm or nil
-  local show_permission = type(handlers) == "table" and handlers.permission_select or nil
   local set_status = type(handlers) == "table" and handlers.set_status or nil
   local set_widget = type(handlers) == "table" and handlers.set_widget or nil
   local set_title = type(handlers) == "table" and handlers.set_title or nil
   local method = request.method
-  if request.id and (method == "select" or method == "confirm" or method == "input" or method == "editor") then
-    client_pending(client)[request.id] = true
-  end
-  if method == "select" then
-    if show_permission and permission_select(request) then
-      show_permission(permission_request(request), function(choice)
-        if type(choice) ~= "string" then
-          cancel(client, request.id)
-        else
-          respond_once(client, request.id, { value = choice })
-        end
-      end)
-    else
-      vim.ui.select(request.options or {}, { prompt = request.title or "Pi" }, function(choice)
-        if choice == nil then
-          cancel(client, request.id)
-        else
-          respond_once(client, request.id, { value = choice })
-        end
-      end)
-    end
-  elseif method == "confirm" then
-    if confirm then
-      confirm(request, function(confirmed)
-        respond_once(client, request.id, { confirmed = confirmed == true })
-      end)
-    else
-      respond_once(client, request.id, { confirmed = false })
-    end
-  elseif method == "input" then
-    vim.ui.input({ prompt = (request.title or "Pi") .. ": ", default = "" }, function(value)
-      if value == nil then
-        cancel(client, request.id)
-      else
-        respond_once(client, request.id, { value = value })
-      end
-    end)
-  elseif method == "editor" then
-    editor(client, request)
+  if method == "select" or method == "confirm" or method == "input" or method == "editor" then
+    enqueue(client, request, handlers)
   elseif method == "notify" then
     local levels = {
       info = vim.log.levels.INFO,
@@ -230,8 +166,38 @@ function M.handle(client, request, handlers)
   end
 end
 
+function M.cancel(client, id)
+  local manager = managers[client]
+  local entry = manager and manager.by_id[id] or nil
+  if not entry then
+    return false
+  end
+  return finish(manager, entry, nil, false)
+end
+
 function M.discard(client)
-  pending[client] = nil
+  local manager = managers[client]
+  if not manager then
+    return
+  end
+  managers[client] = nil
+  manager.discarding = true
+  local entries = {}
+  for _, entry in pairs(manager.by_id) do
+    table.insert(entries, entry)
+  end
+  manager.by_id = {}
+  manager.queue = {}
+  manager.active = nil
+  for _, entry in ipairs(entries) do
+    entry.finished = true
+    if entry.surface then
+      entry.surface:close()
+      entry.surface = nil
+    elseif entry.cancel_external then
+      entry.cancel_external()
+    end
+  end
 end
 
 return M
