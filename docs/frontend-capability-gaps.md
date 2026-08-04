@@ -32,7 +32,6 @@ No release-blocking failure was found in the normal prompt, streaming, tool, per
 | P2 | Authentication and several administrative workflows are TUI-only | Pi RPC, then pi.nvim UI | Users must leave Neovim for login/logout, reload, trust changes, and related commands |
 | P2 | Generic Extension dialogs do not have a complete responsive/timeout lifecycle | Pi RPC and pi.nvim UI | Small viewports clip the editor; timed dialogs can remain visible after Pi has stopped waiting |
 | P2 | Auto-retry state and controls are incomplete | Pi RPC, then pi.nvim settings UI | Retry events render, but the current setting cannot be inspected or changed accurately |
-| P3 | Session-tree preview truncation is byte-based | pi.nvim | A preview can split a multibyte UTF-8 character |
 
 Priority describes remediation order and user impact, not security severity. The permission gate, workspace guard, and session-root guard remain authoritative in bundled Pi Extensions.
 
@@ -732,73 +731,6 @@ pi.nvim repository:
 - Reconnect/session changes cannot leave a stale optimistic value.
 - Retry interruption remains consistent with Pi's authoritative settled event.
 
-## 6. Session-Tree Preview Truncation Can Split UTF-8
-
-### Classification
-
-- Priority: P3
-- Status: confirmed frontend implementation defect
-- User-visible area: `:PiTree` and `/tree`
-- Owner: pi.nvim
-
-### Current behavior
-
-`entry_text()` normalizes user/assistant message whitespace and limits previews with Lua byte length and byte slicing:
-
-```lua
-local text = text_content(entry.message.content):gsub("%s+", " ")
-if #text > 80 then
-  text = text:sub(1, 77) .. "..."
-end
-```
-
-Lua's `#` and `string.sub` operate on bytes. UTF-8 characters can occupy multiple bytes, so byte 77 can occur in the middle of a Chinese character, emoji, combining sequence, or another non-ASCII code point.
-
-Possible effects include:
-
-- A replacement glyph or malformed preview.
-- Incorrect display width.
-- Picker/highlight behavior that depends on valid UTF-8 becoming inconsistent.
-- A label exceeding or underusing the intended screen width because byte count is not display width.
-
-### Required frontend change
-
-Use a shared display-width-aware truncation helper. The helper should:
-
-1. Normalize text before measuring it.
-2. Reserve display cells for the suffix.
-3. Iterate by UTF-8 character boundary.
-4. Measure with `vim.fn.strdisplaywidth` or an equivalent Neovim-aware API.
-5. Avoid splitting combining sequences where practical.
-6. Return the original text unchanged when it already fits.
-7. Use the same policy for session names, command labels, and other picker rows where appropriate.
-
-The limit should be expressed in display cells, not bytes. The final picker width may be derived from the current viewport rather than fixed at 80.
-
-A conceptual API is:
-
-```lua
-local preview = truncate_display(text, available_cells, "...")
-```
-
-This helper belongs in a small shared formatting module only if more than one frontend surface needs it. Otherwise, keep it local to the session command module.
-
-### Test requirements
-
-- ASCII exactly at, below, and above the limit.
-- Chinese text crossing the old byte-77 boundary.
-- Emoji and wide characters.
-- Combining marks.
-- A narrow picker width.
-- Assertion that the output is valid UTF-8.
-- Assertion that `strdisplaywidth(output)` does not exceed the requested width.
-
-### Acceptance criteria
-
-- Session-tree previews never split UTF-8 code points.
-- Preview display width remains within the picker budget.
-- ASCII behavior remains stable apart from width-correct truncation.
-
 ## Intentional Limitations That Must Not Be Misclassified
 
 The following behaviors are deliberate and should not be “fixed” solely in Lua:
@@ -831,12 +763,11 @@ Pi Extension APIs such as `ctx.ui.custom()`, component factories, custom headers
 
 The sequence below respects ownership and minimizes frontend compatibility branches.
 
-### Phase 1: frontend-only correctness fixes
+### Phase 1: frontend-only dialog correctness
 
-1. Replace byte-based session preview truncation with display-width-aware UTF-8 truncation.
-2. Clamp generic editor dimensions and add a small-viewport fallback.
-3. Add focused Lua tests for both changes.
-4. Run `make test` and `make format-check`.
+1. Clamp generic editor dimensions and add a small-viewport fallback.
+2. Add focused Lua tests for the responsive dialog behavior.
+3. Run `make test` and `make format-check`.
 
 This phase does not require a Pi package rebuild.
 

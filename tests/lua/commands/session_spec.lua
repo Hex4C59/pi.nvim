@@ -1,6 +1,8 @@
 local base = vim.fn.tempname()
 local previous_runtime = package.loaded["pi.runtime"]
 local previous_session_commands = package.loaded["pi.commands.session"]
+local previous_select = vim.ui.select
+local previous_columns = vim.o.columns
 local function run()
   local first = vim.fs.joinpath(base, "first")
   local second = vim.fs.joinpath(base, "second")
@@ -75,9 +77,40 @@ local function run()
   commands.resume(same_path, first)
   assert(reloads == 1, "failed resume cleared or reloaded the active session")
   assert(errors[#errors] == "fixture failure", "RPC resume failure was not reported")
+
+  local selected_items
+  next_result = {
+    success = true,
+    data = {
+      leafId = "leaf",
+      tree = {
+        {
+          entry = {
+            id = "leaf",
+            type = "message",
+            message = { role = "user", content = string.rep("中文🙂e\204\129", 20) },
+          },
+          children = {},
+        },
+      },
+    },
+  }
+  vim.o.columns = 24
+  vim.ui.select = function(items, _, callback)
+    selected_items = items
+    callback(nil)
+  end
+  commands.tree(first)
+  assert(#selected_items == 1, "tree picker did not receive the authoritative node")
+  local label = selected_items[1].label
+  assert(pcall(vim.str_utfindex, label), "tree preview split a UTF-8 code point")
+  assert(vim.fn.strdisplaywidth(label) <= 22, "tree preview exceeded the narrow picker budget")
+  assert(label:find(" ← active", 1, true), "narrow tree preview lost the active-leaf marker")
 end
 
 local ok, err = xpcall(run, debug.traceback)
+vim.ui.select = previous_select
+vim.o.columns = previous_columns
 vim.fn.delete(base, "rf")
 package.loaded["pi.runtime"] = previous_runtime
 package.loaded["pi.commands.session"] = previous_session_commands

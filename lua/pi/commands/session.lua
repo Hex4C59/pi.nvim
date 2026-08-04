@@ -2,6 +2,7 @@ local runtime = require("pi.runtime")
 local session_file = require("pi.session_file")
 local text_content = require("pi.message").text_content
 local compact_count = require("pi.format").compact_count
+local truncate_display = require("pi.format").truncate_display
 local catalog = require("pi.commands.catalog")
 
 local M = {}
@@ -69,24 +70,24 @@ function M.status(root)
   end)
 end
 
-local function entry_text(entry)
+local function entry_text(entry, width)
+  local label
   if entry.type == "message" and entry.message then
     local role = entry.message.role or "message"
     local text = text_content(entry.message.content):gsub("%s+", " ")
-    if #text > 80 then
-      text = text:sub(1, 77) .. "..."
-    end
-    return ("%s: %s"):format(role, text)
+    label = ("%s: %s"):format(role, text)
   elseif entry.type == "compaction" then
-    return "compaction"
+    label = "compaction"
   elseif entry.type == "branch_summary" then
-    return "branch summary"
+    label = "branch summary"
   elseif entry.type == "model_change" then
-    return "model: " .. (entry.modelId or "")
+    label = "model: " .. (entry.modelId or "")
   elseif entry.type == "thinking_level_change" then
-    return "thinking: " .. (entry.thinkingLevel or "")
+    label = "thinking: " .. (entry.thinkingLevel or "")
+  else
+    label = entry.type or "entry"
   end
-  return entry.type or "entry"
+  return truncate_display(label, width)
 end
 
 local function flatten_tree(nodes, leaf_id, prefix, output)
@@ -96,9 +97,13 @@ local function flatten_tree(nodes, leaf_id, prefix, output)
     local last = index == #nodes
     local connector = last and "└─ " or "├─ "
     local active = node.entry.id == leaf_id and " ← active" or ""
+    local row_width = math.max(8, math.min(80, vim.o.columns - 2))
+    local fixed_width = vim.fn.strdisplaywidth(prefix .. connector .. active)
+    local body_width = math.max(1, row_width - fixed_width)
+    local label = prefix .. connector .. entry_text(node.entry, body_width) .. active
     table.insert(output, {
       node = node,
-      label = prefix .. connector .. entry_text(node.entry) .. active,
+      label = truncate_display(label, row_width),
     })
     flatten_tree(node.children, leaf_id, prefix .. (last and "   " or "│  "), output)
   end

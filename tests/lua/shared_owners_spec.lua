@@ -31,6 +31,20 @@ for value, expected in pairs(compact_cases) do
   assert(format.compact_count(value) == expected, ("compact count failed for %s"):format(value))
 end
 
+assert(format.truncate_display("abc", 3) == "abc", "display truncation changed exact-width ASCII")
+assert(format.truncate_display("abcd", 3) == "...", "display truncation did not reserve the ASCII suffix")
+assert(format.truncate_display("abcdef", 5, "..") == "abc..", "custom display suffix changed")
+for _, case in ipairs({
+  { value = "中文中文", width = 7 },
+  { value = "🙂🙂🙂", width = 7 },
+  { value = "e\204\129e\204\129e\204\129", width = 5 },
+  { value = "👩‍💻 work", width = 6 },
+}) do
+  local truncated = format.truncate_display(case.value, case.width)
+  assert(pcall(vim.str_utfindex, truncated), "display truncation produced invalid UTF-8")
+  assert(vim.fn.strdisplaywidth(truncated) <= case.width, "display truncation exceeded its cell budget")
+end
+
 local first = catalog.builtin_commands()
 local second = catalog.builtin_commands()
 assert(first ~= second and first[1] ~= second[1], "built-in catalogue did not return fresh tables")
