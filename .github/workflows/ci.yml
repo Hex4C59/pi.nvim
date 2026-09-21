@@ -21,7 +21,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: make ci-policy-check
       - name: Set up Neovim
-        uses: thinca/action-setup-vim@40587a4deeeaf61ef8086bd3badd42e734a67093 # v3.0.2
+        uses: thinca/action-setup-vim@12357e60838c113ae054e026eaaf94176c9ec769 # v3.0.3
         with:
           vim_type: Neovim
           vim_version: ${{ matrix.neovim }}
@@ -51,7 +51,7 @@ jobs:
         with:
           node-version: 22
       - name: Set up Neovim
-        uses: thinca/action-setup-vim@40587a4deeeaf61ef8086bd3badd42e734a67093 # v3.0.2
+        uses: thinca/action-setup-vim@12357e60838c113ae054e026eaaf94176c9ec769 # v3.0.3
         with:
           vim_type: Neovim
           vim_version: stable
